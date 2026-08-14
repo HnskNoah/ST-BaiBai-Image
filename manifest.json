@@ -1,0 +1,11 @@
+{
+  "display_name": "柏宝绘",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "dist/index.js?ver=0.1.0",
+  "author": "柏柏",
+  "version": "0.1.0",
+  "auto_update": false,
+  "minimum_client_version": "1.12.13"
+}

@@ -1,0 +1,128 @@
+/*
+ * 楼层卡片样式（light DOM）。
+ * 卡片活在楼层 DOM 里，shadow root 样式够不着（DESIGN-FLOOR-UI.md §6.3），
+ * 故以命名前缀 .bbi- 注入 document.head；颜色优先用 ST 主题变量，
+ * 兜底值取中性灰，明暗主题都能看。
+ */
+.bbi-card {
+  border: 1px solid var(--SmartThemeBorderColor, #cfd5dc);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.03));
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--SmartThemeBodyColor, #1c242c);
+  max-width: 560px;
+}
+
+.bbi-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bbi-card__title {
+  font-weight: 600;
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+.bbi-card__stale-tag {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: #e8a33d22;
+  color: #c07f1d;
+  border: 1px solid #c07f1d55;
+}
+
+.bbi-card__spacer {
+  flex: 1;
+}
+
+.bbi-btn {
+  border: 1px solid var(--SmartThemeBorderColor, #cfd5dc);
+  background: var(--SmartThemeBodyColor, #f4f6f8);
+  color: var(--SmartThemeBodyColor, #1c242c);
+  border-radius: 6px;
+  padding: 3px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.bbi-btn--primary {
+  background: var(--SmartThemeFastUIBGColor, #4a7bd6);
+  border-color: transparent;
+  color: #fff;
+}
+
+.bbi-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bbi-btn--mini {
+  padding: 1px 8px;
+  font-size: 11px;
+}
+
+.bbi-card__pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.bbi-card__pager-count {
+  font-size: 11px;
+  opacity: 0.7;
+  min-width: 32px;
+  text-align: center;
+}
+
+.bbi-card__prompt-toggle {
+  margin-top: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--SmartThemeEmColor, #4a7bd6);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bbi-card__prompt {
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--SmartThemeChatTintColor, rgba(0, 0, 0, 0.05));
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.bbi-card__status {
+  margin-top: 8px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.bbi-card__status--error {
+  color: #d64545;
+  opacity: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bbi-card__image {
+  margin-top: 8px;
+}
+
+.bbi-card__image img {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  border-radius: 6px;
+}

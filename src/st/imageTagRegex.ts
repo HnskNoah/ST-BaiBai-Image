@@ -1,0 +1,150 @@
+import { getContext } from '@/st/context';
+
+/**
+ * 柏宝绘生图 tag 的两条托管正则（DESIGN-FLOOR-UI.md §4）：
+ *
+ * - bbi-image-tag-slot（markdownOnly）：显示路径把 <bbi_image>…</bbi_image> 整体
+ *   替换为空锚点 <div data-bbi-slot=""></div>，提示词永不进 DOM。
+ * - bbi-image-tag-hide（promptOnly）：提示词路径把同一 tag 替换为空字符串。
+ *
+ * 两条规则 find 相同、生效路径互斥（引擎条件 markdownOnly&&isMarkdown 与
+ * promptOnly&&isPrompt 不会同时命中），可安全共存。
+ */
+
+export const IMAGE_TAG_FIND_REGEX_LITERAL = '/<bbi_image>[\\s\\S]+?<\\/bbi_image>/gi';
+
+/** 与托管脚本同源的运行时正则：解析 message.mes 原文里的 tag（水合配对用）。 */
+export const IMAGE_TAG_FIND_REGEX = /<bbi_image>[\s\S]+?<\/bbi_image>/gi;
+
+/** 显示侧锚点 DOM 选择器（锚点只用 data 属性，class 会被 DOMPurify 加 custom- 前缀）。 */
+export const BBI_SLOT_SELECTOR = 'div[data-bbi-slot]';
+
+export const IMAGE_TAG_SLOT_REGEX_ID = 'bbi-image-tag-slot';
+export const IMAGE_TAG_HIDE_REGEX_ID = 'bbi-image-tag-hide';
+
+// regex_placement：0=MD_DISPLAY(已弃用) / 1=USER_INPUT / 2=AI_OUTPUT / 3=SLASH_COMMAND。
+// 显示路径的 placement 随消息类型变化（script.js getRegexPlacement）：
+// 用户消息→1，AI 楼层→2；提示词路径 sendMessageAsUser→1、AI 生成→2。
+const PLACEMENT_USER_INPUT = 1;
+const PLACEMENT_AI_OUTPUT = 2;
+
+export interface ManagedRegexScript extends Record<string, unknown> {
+  id: string;
+  scriptName: string;
+  findRegex: string;
+  replaceString: string;
+  placement: number[];
+  disabled: boolean;
+  markdownOnly: boolean;
+  promptOnly: boolean;
+  runOnEdit: boolean;
+}
+
+/** 显示侧：生图 tag → 空锚点（水合时 Vue 卡片渲染进锚点）。 */
+export function imageTagSlotScript(): ManagedRegexScript {
+  return {
+    id: IMAGE_TAG_SLOT_REGEX_ID,
+    scriptName: '柏宝绘 · 生图标签占位',
+    findRegex: IMAGE_TAG_FIND_REGEX_LITERAL,
+    replaceString: '<div data-bbi-slot=""></div>',
+    trimStrings: [],
+    placement: [PLACEMENT_USER_INPUT, PLACEMENT_AI_OUTPUT],
+    disabled: false,
+    markdownOnly: true,
+    promptOnly: false,
+    runOnEdit: true,
+    substituteRegex: 0,
+    minDepth: null,
+    maxDepth: null,
+  };
+}
+
+/** 提示词侧：生图 tag → 空串（提示词路径彻底移除，永不外泄）。 */
+export function imageTagHideScript(): ManagedRegexScript {
+  return {
+    id: IMAGE_TAG_HIDE_REGEX_ID,
+    scriptName: '柏宝绘 · 隐藏生图标签',
+    findRegex: IMAGE_TAG_FIND_REGEX_LITERAL,
+    replaceString: '',
+    trimStrings: [],
+    placement: [PLACEMENT_USER_INPUT, PLACEMENT_AI_OUTPUT],
+    disabled: false,
+    markdownOnly: false,
+    promptOnly: true,
+    runOnEdit: true,
+    substituteRegex: 0,
+    minDepth: null,
+    maxDepth: null,
+  };
+}
+
+/** 从消息原文按出现顺序解析全部生图 tag；无 tag 返回空数组。 */
+export function parseImageTags(mes: string): string[] {
+  return mes.match(IMAGE_TAG_FIND_REGEX) ?? [];
+}
+
+/**
+ * 剔除消息里的全部生图 tag（重新生成前用）。
+ * 插件注入的 tag 独占一行（注入形态：行文本 + 换行 + tag），连同前行换行一起删，
+ * 恰好还原注入前原文；手写内联 tag 前面没有换行，仅删 tag 本身。
+ */
+export function stripImageTags(mes: string): string {
+  return mes.replace(/(?:\r\n|\n|\r)?<bbi_image>[\s\S]+?<\/bbi_image>/gi, '');
+}
+
+export interface ImageTagContent {
+  /** danbooru 短 tag 部分：显式 <tag> 子标签内容，或剔除子标签后的裸文本（存量格式）。 */
+  tag: string;
+  /** 自然语言部分：<nl> 子标签内容，无则空串。 */
+  nl: string;
+}
+
+/**
+ * 解析 tag 原文（含 <bbi_image> 壳）的内部内容。一条容忍式规则覆盖三种形态：
+ * - <bbi_image>xxxx</bbi_image>                    裸文本 = tag（存量兼容）
+ * - <bbi_image>xxxx<nl>yyyy</nl></bbi_image>       裸文本 = tag，<nl> = nl（插件写回的标准形态）
+ * - <bbi_image><tag>x</tag><nl>y</nl></bbi_image>  显式子标签（手写容忍）
+ * 裸文本与显式 <tag> 同时存在时按「裸文本在前」以 ", " 合并进 tag 部分，不丢内容。
+ */
+export function parseImageTagContent(raw: string): ImageTagContent {
+  // 内容统一折叠成单行:手写 tag 可能跨行,而提示词里换行没有意义
+  const oneLine = (text: string) => text.trim().replace(/[\r\n]+/g, ' ');
+  const inner = raw.replace(/^<bbi_image[^>]*>/i, '').replace(/<\/bbi_image>$/i, '');
+  const nlMatch = inner.match(/<nl>([\s\S]*?)<\/nl>/i);
+  const nl = nlMatch ? oneLine(nlMatch[1]) : '';
+  const withoutNl = inner.replace(/<nl>[\s\S]*?<\/nl>/gi, '');
+  const explicit = [...withoutNl.matchAll(/<tag>([\s\S]*?)<\/tag>/gi)]
+    .map(match => oneLine(match[1]))
+    .filter(Boolean);
+  const bare = oneLine(withoutNl.replace(/<tag>[\s\S]*?<\/tag>/gi, ''));
+  const tag = [...(bare ? [bare] : []), ...explicit].join(', ');
+  return { tag, nl };
+}
+
+const MANAGED_SCRIPTS: Array<() => ManagedRegexScript> = [
+  imageTagSlotScript,
+  imageTagHideScript,
+];
+
+/**
+ * 向 ST 全局正则列表注册柏宝绘托管规则。
+ * 固定 id 保证幂等：旧版本或用户改动过的同 id 规则会被更新，其它正则原样保留，
+ * 不重复添加。旧版单条 bbi-image-tag-hide（markdownOnly+promptOnly 双开）会被
+ * 新 hide 定义原位覆盖，并新增 slot 规则，存量用户无缝迁移。
+ */
+export function ensureImageTagRegexRegistered(): boolean {
+  const context = getContext();
+  const extensionSettings = context?.extensionSettings;
+  if (!extensionSettings) return false;
+  if (!Array.isArray(extensionSettings.regex)) extensionSettings.regex = [];
+
+  const list = extensionSettings.regex as Array<Record<string, unknown>>;
+  for (const make of MANAGED_SCRIPTS) {
+    const script = make();
+    const index = list.findIndex(item => item?.id === script.id);
+    if (index >= 0) list[index] = { ...list[index], ...script };
+    else list.push(script);
+  }
+  context.saveSettingsDebounced?.();
+  return true;
+}
