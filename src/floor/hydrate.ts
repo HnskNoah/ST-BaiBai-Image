@@ -1,10 +1,15 @@
-import { h, render } from 'vue';
+import { h, render, watch } from 'vue';
 
 import Card from '@/floor/Card.vue';
+import { clearAutoGenerateFlags } from '@/floor/autoGenerate';
+import { cardStyleSheet, cardStyleTextFallback } from '@/floor/cardStyles';
+import { setNaiConcurrency } from '@/floor/genQueue';
+import { clearAllGen, pruneGenSlots } from '@/floor/genState';
 import { SlotRegistry } from '@/floor/registry';
 import { historyEntries, latestStaleEntry, promptHash, readStore } from '@/floor/storage';
 import { getContext, type STContext } from '@/st/context';
 import { BBI_SLOT_SELECTOR, parseImageTagContent, parseImageTags } from '@/st/imageTagRegex';
+import { settings } from '@/state/settings';
 
 /**
  * 楼层水合框架（DESIGN-FLOOR-UI.md §5.2 / §6）。
@@ -12,11 +17,62 @@ import { BBI_SLOT_SELECTOR, parseImageTagContent, parseImageTags } from '@/st/im
  * 渲染事件触发 → 定位楼层 .mes_text → 锚点列表（DOM 顺序）与
  * parseImageTags(message.mes) 解析出的 tag 列表按序一一配对 → 每个锚点
  * 挂载一张卡片。锚点每次渲染重建，水合每次事件重建，全程幂等。
+ *
+ * 卡片渲进锚点自己的 **shadow root**（不是锚点本身）：楼层在 ST 的 light DOM 里，
+ * ST 全局样式与用户装的美化主题会直接改到卡片上。shadow 边界双向隔离，
+ * 与 index.ts 主窗口同构，只是从「一个大 host」变成「每槽位一个小 host」。
  */
 
 export const slotRegistry = new SlotRegistry();
 
 let bound = false;
+
+/**
+ * 可继承的排版属性——shadow DOM 不隔离继承，这些会透过 host 从 ST 漏进来。
+ * 与 index.ts 的 INHERITED_RESET 同一份职责（那里是主窗口 host，这里是每张卡片 host）；
+ * 卡片要**跟随聊天字号**故不钉 font-size，只钉会破坏布局与配色的那些。
+ */
+const CARD_INHERITED_RESET: Record<string, string> = {
+  'font-style': 'normal',
+  'font-weight': '400',
+  'font-variant': 'normal',
+  'letter-spacing': 'normal',
+  'word-spacing': 'normal',
+  'text-align': 'left',
+  'text-transform': 'none',
+  'text-indent': '0',
+  'text-shadow': 'none',
+  'white-space': 'normal',
+  'line-height': '1.6',
+  direction: 'ltr',
+};
+
+/**
+ * 备好锚点的 shadow root:挂样式 + 钉死继承属性(幂等)。
+ * 锚点每次楼层渲染都是新元素,但 MESSAGE_UPDATED 等事件下也可能复用同一元素,
+ * 故 attachShadow 前先查 shadowRoot——重复 attach 会抛。
+ */
+function ensureShadow(anchor: HTMLElement): ShadowRoot {
+  const existing = anchor.shadowRoot;
+  if (existing) return existing;
+
+  const shadow = anchor.attachShadow({ mode: 'open' });
+  const sheet = cardStyleSheet();
+  if (sheet) {
+    // 全部卡片共享同一个 CSSStyleSheet 对象:N 张卡零重复、零重复解析
+    shadow.adoptedStyleSheets = [sheet];
+  } else {
+    // 老浏览器兜底:每个 shadow 一份 <style>
+    const style = document.createElement('style');
+    style.textContent = cardStyleTextFallback();
+    shadow.appendChild(style);
+  }
+
+  for (const [prop, value] of Object.entries(CARD_INHERITED_RESET)) {
+    anchor.style.setProperty(prop, value, 'important');
+  }
+  return shadow;
+}
 
 /** 楼层 .mes_text 元素；楼层不在 DOM（未渲染/群聊懒渲染）时返回 null。 */
 function findMesText(messageId: number): HTMLElement | null {
@@ -53,6 +109,10 @@ export function hydrateMessage(messageId: number, ctx: STContext): void {
   if (!message) return;
 
   const tags = parseImageTags(message.mes);
+  const swipeId = message.swipe_id ?? 0;
+  // 槽位可能整个消失(用户删掉 tag / swipe 到 tag 更少的一版):那些槽位再没有卡片
+  // 来对账,运行态记录会永久留存,日后同 key 复现时被新卡片误认领。按 tag 数剪掉越界的。
+  pruneGenSlots(chatId ?? '-', messageId, swipeId, tags.length);
   if (tags.length === 0) return;
 
   const mesText = findMesText(messageId);
@@ -65,7 +125,6 @@ export function hydrateMessage(messageId: number, ctx: STContext): void {
     );
   }
   const count = Math.min(anchors.length, tags.length);
-  const swipeId = message.swipe_id ?? 0;
 
   for (let seq = 0; seq < count; seq++) {
     const key = slotRegistry.key(chatId, messageId, swipeId, seq);
@@ -78,18 +137,24 @@ export function hydrateMessage(messageId: number, ctx: STContext): void {
     const entry = history.length ? history[history.length - 1] : null;
     const staleEntry = entry ? null : latestStaleEntry(store, swipeId, hash, seq);
     const content = parseImageTagContent(tags[seq]);
+    // 卡片渲进锚点的 shadow root，与 ST 样式双向隔离；主题跟随设置（默认 st = 融入宿主配色）
+    const shadow = ensureShadow(anchor);
+    anchor.setAttribute('data-theme', settings.ui.cardTheme || 'st');
     const vnode = h(Card, {
       prompt: content.tag,
       nl: content.nl,
+      size: content.size,
       tag: tags[seq],
       messageId,
       seq,
       swipeId,
       history,
       staleEntry,
+      // key 的一部分:与 registry.key 的占位口径一致(chatId 缺失时用 '-')
+      chatId: chatId ?? '-',
     });
-    render(vnode, anchor);
-    slotRegistry.set(key, { container: anchor, vnode });
+    render(vnode, shadow);
+    slotRegistry.set(key, { container: shadow, vnode });
   }
 }
 
@@ -123,6 +188,9 @@ export function bindFloorHydration(): boolean {
     if (current) hydrateMessage(id, current);
   };
   const onFullReload = () => {
+    clearAutoGenerateFlags();
+    // 切聊天/删楼:在途生成任务已无归属,一并中止清空(否则结果会写回错的楼层)
+    clearAllGen();
     const current = getContext();
     if (current) hydrateAll(current);
   };
@@ -136,5 +204,22 @@ export function bindFloorHydration(): boolean {
 
   // 刷新页面恢复：现有楼层已渲染完，直接全量水合
   hydrateAll(ctx);
+
+  // 卡片主题改了 → 就地改各卡片 host 的 data-theme(不必重水合,令牌是 CSS 变量,自动生效)
+  watch(
+    () => settings.ui.cardTheme,
+    theme => {
+      for (const record of slotRegistry.all()) {
+        const host = record.container.host;
+        if (host instanceof HTMLElement) host.setAttribute('data-theme', theme || 'st');
+      }
+    },
+  );
+  // NAI 并发上限 → 闸门(ComfyUI 不限并发,靠服务端队列)
+  watch(
+    () => settings.nai.concurrency,
+    value => setNaiConcurrency(value),
+    { immediate: true },
+  );
   return true;
 }

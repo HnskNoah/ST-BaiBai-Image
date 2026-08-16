@@ -20,6 +20,7 @@
     "vue-tsc": "^3.3.3"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "vue": "^3.5.35"
   }
 }

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  generateComfyImage,
+  ComfyUIError,
   parseWorkflowTemplate,
   randomSeed,
   renderWorkflowTemplate,
@@ -115,5 +117,157 @@ describe('renderWorkflowTemplate with %nl%', () => {
     });
     const workflow = renderWorkflowTemplate(template, { prompt: '1girl' });
     expect((workflow['5'] as { inputs: { text: unknown } }).inputs.text).toBe('caption: ');
+  });
+});
+
+describe('renderWorkflowTemplate with %width% / %height%', () => {
+  const SIZED = JSON.stringify({
+    '3': { class_type: 'CLIPTextEncode', inputs: { text: '%prompt%' } },
+    '5': { class_type: 'EmptyLatentImage', inputs: { width: '%width%', height: '%height%' } },
+  });
+
+  it('renders width/height as numbers (EmptyLatentImage rejects strings)', () => {
+    const workflow = renderWorkflowTemplate(SIZED, { prompt: '2girls', width: 1216, height: 832 });
+    const inputs = (workflow['5'] as { inputs: { width: unknown; height: unknown } }).inputs;
+    expect(inputs.width).toBe(1216);
+    expect(inputs.height).toBe(832);
+    expect(inputs.width).toBeTypeOf('number');
+  });
+
+  it('throws when the workflow uses the placeholders but no size was resolved', () => {
+    expect(() => renderWorkflowTemplate(SIZED, { prompt: '1girl' })).toThrow(ComfyUIError);
+    expect(() => renderWorkflowTemplate(SIZED, { prompt: '1girl' })).toThrow('%width%');
+  });
+
+  it('ignores a missing size entirely when the workflow hardcodes its own dimensions', () => {
+    // 存量工作流(尺寸写死)必须零影响——画幅是 opt-in 特性
+    const legacy = JSON.stringify({
+      '3': { class_type: 'CLIPTextEncode', inputs: { text: '%prompt%' } },
+      '5': { class_type: 'EmptyLatentImage', inputs: { width: 512, height: 512 } },
+    });
+    const workflow = renderWorkflowTemplate(legacy, { prompt: '1girl' });
+    const inputs = (workflow['5'] as { inputs: { width: unknown; height: unknown } }).inputs;
+    expect(inputs.width).toBe(512);
+    expect(inputs.height).toBe(512);
+  });
+});
+
+/**
+ * 取消路径:必须按任务在队列里的位置分流。
+ * 旧实现无脑 POST /interrupt——并发出图时取消排在后面的任务会打断**正在跑的别的任务**。
+ */
+describe('generateComfyImage 取消', () => {
+  const CONN = {
+    url: 'http://127.0.0.1:8188',
+    workflow: TEMPLATE,
+    qualityTags: '',
+    negativePrompt: '',
+    resolution: '',
+    portraitSize: '',
+    landscapeSize: '',
+  } as unknown as Parameters<typeof generateComfyImage>[0];
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** 记录取消阶段打到哪些端点、带什么 body。 */
+  function stubFetch(queueBody: unknown) {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const json = (data: unknown) => ({ ok: true, json: async () => data, text: async () => '' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: { body?: string }) => {
+        const url = String(input);
+        const body = init?.body ? JSON.parse(init.body) : undefined;
+        calls.push({ url, body });
+        if (url.endsWith('/prompt')) return json({ prompt_id: 'pid-1' });
+        if (url.includes('/queue')) return json(queueBody);
+        // history 永远返回空:任务「未完成」,轮询会一直等,直到 abort
+        if (url.includes('/history/')) return json({});
+        return json({});
+      }),
+    );
+    return calls;
+  }
+
+  /**
+   * 等到轮询真正开始(出现 /history 请求)再取消。
+   * 不能只等 /prompt:那时 queueDirect 可能还没返回,取消监听尚未注册。
+   */
+  async function waitForPolling(calls: Array<{ url: string }>): Promise<void> {
+    await vi.waitFor(() => expect(calls.some(c => c.url.includes('/history/'))).toBe(true));
+  }
+
+  it('任务仍在排队 → 用 /queue delete 摘除,不 interrupt', async () => {
+    const calls = stubFetch({
+      queue_running: [[0, 'other-running-task']],
+      queue_pending: [[1, 'pid-1']],
+    });
+    const controller = new AbortController();
+    const promise = generateComfyImage(CONN, { prompt: '1girl' }, controller.signal);
+    await waitForPolling(calls);
+    controller.abort();
+    await expect(promise).rejects.toThrow();
+
+    await vi.waitFor(() => {
+      const cancelCall = calls.find(c => c.url.includes('/queue') && c.body);
+      expect(cancelCall?.body).toEqual({ delete: ['pid-1'] });
+    });
+    // 关键:没有打断正在跑的那个任务
+    expect(calls.some(c => c.url.includes('/interrupt'))).toBe(false);
+  });
+
+  it('任务正在执行 → interrupt 且带自己的 prompt_id', async () => {
+    const calls = stubFetch({ queue_running: [[0, 'pid-1']], queue_pending: [] });
+    const controller = new AbortController();
+    const promise = generateComfyImage(CONN, { prompt: '1girl' }, controller.signal);
+    await waitForPolling(calls);
+    controller.abort();
+    await expect(promise).rejects.toThrow();
+
+    await vi.waitFor(() => {
+      const interrupt = calls.find(c => c.url.includes('/interrupt'));
+      // 带 prompt_id:新版 ComfyUI 据此校验,旧版无视 body 但我们已确认在跑的就是自己
+      expect(interrupt?.body).toEqual({ prompt_id: 'pid-1' });
+    });
+    // 排队中的任务才用 delete,这里不该发
+    expect(calls.some(c => c.url.includes('/queue') && c.body)).toBe(false);
+  });
+
+  it('onQueue 上报排队位置(正在跑的也算在前面)', async () => {
+    stubFetch({
+      queue_running: [[0, 'other']],
+      queue_pending: [
+        [1, 'ahead-1'],
+        [2, 'pid-1'],
+      ],
+    });
+    const reported: Array<number | null> = [];
+    const controller = new AbortController();
+    const promise = generateComfyImage(CONN, { prompt: '1girl' }, controller.signal, {
+      onQueue: ahead => reported.push(ahead),
+    });
+    // 前面 1 个 pending(ahead-1)+ 1 个 running = 2
+    await vi.waitFor(() => expect(reported).toContain(2));
+    controller.abort();
+    await expect(promise).rejects.toThrow();
+  });
+
+  it('队列位置查不到时两条都发(否则「在跑但查不到」会漏中断、白烧 GPU)', async () => {
+    // 队列返回不可解析的形状 → fetchQueuePosition 得到 null(位置未知)
+    const calls = stubFetch({ nonsense: true });
+    const controller = new AbortController();
+    const promise = generateComfyImage(CONN, { prompt: '1girl' }, controller.signal);
+    await waitForPolling(calls);
+    controller.abort();
+    await expect(promise).rejects.toThrow();
+
+    await vi.waitFor(() => {
+      expect(calls.find(c => c.url.includes('/queue') && c.body)?.body).toEqual({
+        delete: ['pid-1'],
+      });
+      expect(calls.find(c => c.url.includes('/interrupt'))?.body).toEqual({ prompt_id: 'pid-1' });
+    });
   });
 });

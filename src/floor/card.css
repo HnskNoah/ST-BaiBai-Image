@@ -1,61 +1,138 @@
 /*
- * 楼层卡片样式（light DOM）。
- * 卡片活在楼层 DOM 里，shadow root 样式够不着（DESIGN-FLOOR-UI.md §6.3），
- * 故以命名前缀 .bbi- 注入 document.head；颜色优先用 ST 主题变量，
- * 兜底值取中性灰，明暗主题都能看。
+ * 楼层卡片样式。
+ *
+ * 注入方式(floor/cardStyles.ts):与 theme.css 一起构造成 CSSStyleSheet,
+ * 经 adoptedStyleSheets 共享给每个卡片的 shadow root——N 张卡零重复。
+ *
+ * 卡片自 v0.2 起活在**每个锚点各自的 shadow root** 里(floor/hydrate.ts),
+ * 故:
+ * - 不再需要靠 .bbi- 前缀防冲突(shadow 天然隔离),前缀只为可读性保留;
+ * - ST 全局样式与美化主题进不来了;
+ * - 但**可继承属性**(font/color/line-height…)仍会穿透 shadow 边界,由 hydrate.ts
+ *   在 host 上钉 INHERITED_RESET 切断;
+ * - 自定义属性同样穿透,故 theme.css 的 data-theme='st' 仍能取到宿主 --SmartTheme*。
+ *
+ * 颜色/圆角/间距一律取 theme.css 的 --bbi-* 令牌,与设置窗口同一套设计语言,不写死字面量。
  */
-.bbi-card {
-  border: 1px solid var(--SmartThemeBorderColor, #cfd5dc);
-  border-radius: 10px;
-  padding: 10px 12px;
-  margin: 8px 0;
-  background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.03));
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--SmartThemeBodyColor, #1c242c);
-  max-width: 560px;
+
+:host {
+  display: block;
+  margin: 10px 0;
 }
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+.bbi-card {
+  --bbi-card-pad: 12px;
+  position: relative;
+  border: 1px solid var(--bbi-line);
+  border-radius: var(--bbi-radius);
+  background: var(--bbi-surface);
+  color: var(--bbi-ink);
+  font-family: var(--bbi-font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow: hidden;
+  max-width: 560px;
+  transition: border-color var(--bbi-dur) var(--bbi-ease);
+}
+
+.bbi-card:hover {
+  border-color: var(--bbi-line-strong);
+}
+
+/* ——— 头部:品牌标 + 状态 + 操作 ———
+   卡片是**聊天内嵌**元素,不是独立面板:头部越高,正文被推得越散。
+   高度 = 上下 padding + 按钮高,两者都按 26px 按钮这条基线定,合计 34px。 */
 
 .bbi-card__head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  padding: 4px var(--bbi-card-pad);
 }
 
-.bbi-card__title {
+.bbi-card__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--bbi-accent);
+  flex: 0 0 auto;
+}
+
+.bbi-card__brand-text {
+  font-size: 11.5px;
   font-weight: 600;
-  font-size: 13px;
-  opacity: 0.75;
+  letter-spacing: 0.02em;
+  color: var(--bbi-ink-soft);
 }
 
-.bbi-card__stale-tag {
-  font-size: 11px;
-  padding: 0 6px;
-  border-radius: 4px;
-  background: #e8a33d22;
-  color: #c07f1d;
-  border: 1px solid #c07f1d55;
+.bbi-card__chip {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border-radius: var(--bbi-radius-pill);
+  font-size: 10.5px;
+  line-height: 17px;
+  background: var(--bbi-warning-soft);
+  color: var(--bbi-warning);
+  border: 1px solid color-mix(in srgb, var(--bbi-warning) 40%, transparent);
 }
 
 .bbi-card__spacer {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
 }
+
+.bbi-card__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* ——— 按钮 ———
+   注:旧版这里把 --SmartThemeBodyColor(ST 的**正文文字色**)同时当背景和文字色,
+   导致按钮字底同色、整颗隐形。现在一律走 --bbi-* 令牌,前景背景各有其色。
+
+   【尺寸基线】所有按钮 26×(26|auto),图标一律 15px。
+   图标按钮必须 width == height,且与文字按钮同高——三者只要有一个漏了,
+   同一行里就会出现「复制比删除大一圈」这种参差。 */
 
 .bbi-btn {
-  border: 1px solid var(--SmartThemeBorderColor, #cfd5dc);
-  background: var(--SmartThemeBodyColor, #f4f6f8);
-  color: var(--SmartThemeBodyColor, #1c242c);
-  border-radius: 6px;
-  padding: 3px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--bbi-line-strong);
+  border-radius: var(--bbi-radius-pill);
+  background: var(--bbi-surface);
+  color: var(--bbi-ink-soft);
+  font-family: inherit;
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
+  transition:
+    background var(--bbi-dur) var(--bbi-ease),
+    border-color var(--bbi-dur) var(--bbi-ease),
+    color var(--bbi-dur) var(--bbi-ease);
 }
 
-.bbi-btn--primary {
-  background: var(--SmartThemeFastUIBGColor, #4a7bd6);
-  border-color: transparent;
-  color: #fff;
+.bbi-btn:hover:not(:disabled) {
+  border-color: var(--bbi-accent);
+  color: var(--bbi-accent);
+  background: var(--bbi-accent-soft);
+}
+
+.bbi-btn:focus-visible {
+  outline: 2px solid var(--bbi-accent);
+  outline-offset: 1px;
 }
 
 .bbi-btn:disabled {
@@ -63,66 +140,306 @@
   cursor: not-allowed;
 }
 
-.bbi-btn--mini {
-  padding: 1px 8px;
-  font-size: 11px;
+.bbi-btn--primary {
+  background: var(--bbi-accent);
+  border-color: var(--bbi-accent);
+  color: var(--bbi-accent-ink);
 }
 
+.bbi-btn--primary:hover:not(:disabled) {
+  background: var(--bbi-accent);
+  border-color: var(--bbi-accent);
+  color: var(--bbi-accent-ink);
+  opacity: 0.88;
+}
+
+/* 图标按钮:正方形无文字。width/height 都显式写死,别只写 width——
+   高度靠 .bbi-btn 继承看似够用,但一旦谁改了 padding 就会两种按钮各长各的。 */
+.bbi-btn--icon {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--bbi-ink-muted);
+}
+
+.bbi-btn--icon:hover:not(:disabled) {
+  background: var(--bbi-accent-soft);
+  border-color: transparent;
+  color: var(--bbi-accent);
+}
+
+.bbi-btn--danger:hover:not(:disabled) {
+  background: var(--bbi-danger-soft);
+  border-color: transparent;
+  color: var(--bbi-danger);
+}
+
+/* ——— 图片 ———
+   frame 承担「有多高」这件事:无图时按画幅方向用 aspect-ratio 预留位,
+   避免出图瞬间楼层跳版;有图时交给图片自己的比例(实际比例可能与配置尺寸略有差异,
+   故不强加 aspect-ratio,免得 contain letterbox 或 cover 裁切)。 */
+
+.bbi-card__frame {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bbi-surface-2);
+  overflow: hidden;
+}
+
+.bbi-card__frame[data-placeholder='1'][data-size='portrait'] {
+  aspect-ratio: 2 / 3;
+}
+
+.bbi-card__frame[data-placeholder='1'][data-size='landscape'] {
+  aspect-ratio: 3 / 2;
+}
+
+.bbi-card__img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(70vh, 560px);
+  object-fit: contain;
+  cursor: zoom-in;
+  /* 长按保存:抵消 ST 的 body{touch-action:none}(css/mobile-styles.css:251)。
+     另注意——图片上绝不可 preventDefault touch 事件、不可加 user-select:none,
+     否则移动端长按菜单不会出现。详见 floor/Lightbox.vue 顶部注释。 */
+  touch-action: auto;
+}
+
+/* 过时的图片压暗,提示「这不是当前提示词的结果」 */
+.bbi-card__img[data-stale='1'] {
+  opacity: 0.55;
+  filter: saturate(0.7);
+}
+
+/* 翻页器:叠在图片右下角的胶囊 */
 .bbi-card__pager {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  margin-left: 8px;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--bbi-radius-pill);
+  background: oklch(0 0 0 / 0.55);
+  backdrop-filter: blur(4px);
 }
 
-.bbi-card__pager-count {
+.bbi-pager-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--bbi-radius-pill);
+  background: transparent;
+  color: oklch(1 0 0 / 0.9);
   font-size: 11px;
-  opacity: 0.7;
-  min-width: 32px;
-  text-align: center;
-}
-
-.bbi-card__prompt-toggle {
-  margin-top: 8px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--SmartThemeEmColor, #4a7bd6);
-  font-size: 12px;
   cursor: pointer;
 }
 
-.bbi-card__prompt {
-  margin: 6px 0 0;
-  padding: 8px;
-  border-radius: 6px;
-  background: var(--SmartThemeChatTintColor, rgba(0, 0, 0, 0.05));
-  white-space: pre-wrap;
-  word-break: break-word;
+.bbi-pager-btn:hover:not(:disabled) {
+  background: oklch(1 0 0 / 0.18);
+}
+
+.bbi-pager-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.bbi-card__pager-count {
+  padding: 0 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: oklch(1 0 0 / 0.9);
+}
+
+/* ——— 骨架屏(生成中) ———
+   塌成一条细状态栏最难看,尤其自动生成时满楼都是。这里按画幅撑出真实占位,
+   微光扫过表示「在动」。 */
+
+.bbi-card__skeleton {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in srgb, var(--bbi-accent) 12%, transparent) 50%,
+    transparent 80%
+  );
+  background-size: 220% 100%;
+  animation: bbi-shimmer 1.6s var(--bbi-ease) infinite;
+}
+
+@keyframes bbi-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+/* 骨架上居中的状态文案 */
+.bbi-card__frame-label {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--bbi-ink-muted);
   font-size: 12px;
+}
+
+.bbi-card__spin {
+  width: 20px;
+  height: 20px;
+  border: 2px solid color-mix(in srgb, var(--bbi-accent) 28%, transparent);
+  border-top-color: var(--bbi-accent);
+  border-radius: 50%;
+  animation: bbi-spin 0.8s linear infinite;
+}
+
+@keyframes bbi-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bbi-card__skeleton,
+  .bbi-card__spin {
+    animation: none;
+  }
+}
+
+/* ——— 底部信息区 ———
+   常态下这里只有一行「提示词」折叠入口,却曾占掉近 40px:
+   padding 8/10 + 行高 + toggle 自己的块级布局层层相加。
+   现在按「一行 22px 的脚注」压,有提示信息(error/stale)时才靠 gap 长出来。 */
+
+.bbi-card__foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px var(--bbi-card-pad) 6px;
+}
+
+/* 折叠入口是弱操作,不该有按钮的视觉分量;-4px 负边距把它的点击区还原成
+   视觉上贴着卡片边,同时保留 22px 的可点高度(移动端够用)。 */
+.bbi-card__prompt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  margin: 0 -4px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--bbi-radius-sm);
+  background: none;
+  color: var(--bbi-ink-muted);
   font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color var(--bbi-dur) var(--bbi-ease),
+    background var(--bbi-dur) var(--bbi-ease);
 }
 
-.bbi-card__status {
-  margin-top: 8px;
+.bbi-card__prompt-toggle:hover {
+  color: var(--bbi-accent);
+  background: var(--bbi-accent-soft);
+}
+
+.bbi-card__prompt-caret {
+  transition: transform var(--bbi-dur) var(--bbi-ease);
+}
+
+.bbi-card__prompt-caret[data-open='1'] {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bbi-card__prompt-caret {
+    transition: none;
+  }
+}
+
+/* 展开区:提示词 + 右上角复制。复制按钮**绝对定位**而非并排 flex——
+   提示词是可换行长文本,并排会让按钮跟着文本高度居中飘到中间去。 */
+.bbi-card__prompt-box {
+  position: relative;
+  width: 100%;
+}
+
+.bbi-card__prompt-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  /* 压在提示词之上,底色要盖住下面的文字 */
+  background: var(--bbi-surface-2);
+}
+
+.bbi-card__note {
+  margin: 0;
   font-size: 12px;
-  opacity: 0.7;
+  line-height: 1.6;
+  color: var(--bbi-ink-muted);
 }
 
-.bbi-card__status--error {
-  color: #d64545;
-  opacity: 1;
+.bbi-card__note--error {
+  color: var(--bbi-danger);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.bbi-card__image {
-  margin-top: 8px;
+.bbi-card__note--warn {
+  color: var(--bbi-warning);
 }
 
-.bbi-card__image img {
-  display: block;
-  max-width: 100%;
-  max-height: 420px;
-  border-radius: 6px;
+.bbi-card__prompt {
+  margin: 0;
+  /* 右侧留出复制按钮的位置(26 + 4×2),否则长 tag 会钻到按钮底下 */
+  padding: 9px 40px 9px 10px;
+  border-radius: var(--bbi-radius-sm);
+  background: var(--bbi-surface-2);
+  color: var(--bbi-ink-soft);
+  font-family: var(--bbi-font-mono);
+  font-size: 11.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* 提示词要能选中复制 */
+  user-select: text;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.bbi-card__prompt-nl {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--bbi-line);
+  color: var(--bbi-ink-muted);
+  font-family: var(--bbi-font-sans);
+}
+
+/* 窄屏:内边距收一号 */
+@media (max-width: 640px) {
+  .bbi-card {
+    --bbi-card-pad: 10px;
+  }
 }

@@ -9,6 +9,9 @@ import {
   BACKENDS,
   DEFAULT_COMFY_SPEC,
   DEFAULT_JAILBREAK_PROMPT,
+  DEFAULT_NAI_SPEC,
+  DEFAULT_PREFILL_PROMPT,
+  DEFAULT_THINKING_PROMPT,
   newChannel,
   settings,
   type ApiChannel,
@@ -44,6 +47,11 @@ const navSel = computed<string>({
   get: () => ui.navPosition,
   set: v => (ui.navPosition = v as NavPosition),
 });
+// 楼层卡片主题直接读写 settings(不进 ui:它只在聊天侧生效,窗口不用它)
+const cardThemeSel = computed<string>({
+  get: () => settings.ui.cardTheme || 'st',
+  set: v => (settings.ui.cardTheme = v),
+});
 const orbShapeSel = computed<string>({
   get: () => ui.orbShape,
   set: v => (ui.orbShape = v as OrbShape),
@@ -70,6 +78,7 @@ const showKey = ref(false);
 function normalizeAutoTagNumbers() {
   settings.autoTag.contextMessages = Math.max(1, Math.floor(Number(settings.autoTag.contextMessages) || 1));
   settings.autoTag.maxImages = Math.max(1, Math.floor(Number(settings.autoTag.maxImages) || 1));
+  settings.autoTag.retryCount = Math.min(5, Math.max(0, Math.floor(Number(settings.autoTag.retryCount) || 0)));
 }
 
 /* —— 自定义提示词(UI 照搬柏宝书):列表只读展示,编辑在弹窗里进行。
@@ -93,8 +102,8 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
   {
     key: 'naiSpec',
     label: 'NAI 规范',
-    hint: '发给 NAI 后端时使用的 tag 书写规范，拼在任务提示词里。内置内容待定，留空暂不附加。',
-    builtin: '',
+    hint: '默认后端为 NAI 时拼进自动 tag 请求，约束 tag 的书写规范。留空用内置默认。',
+    builtin: DEFAULT_NAI_SPEC,
     macros: [],
   },
   {
@@ -112,15 +121,15 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
   {
     key: 'thinking',
     label: '思维链',
-    hint: '输出前思考检查清单，作为 system 消息压在任务消息之后，要求模型先在 <thinking> 内过检查点再输出 JSON。内置内容待定，留空暂不附加。',
-    builtin: '',
+    hint: '输出前思考检查清单，作为 system 消息压在任务消息之后，要求模型先在 <thinking> 内过检查点再输出 JSON（解析时会自动剥掉思考块）。留空用内置默认。',
+    builtin: DEFAULT_THINKING_PROMPT,
     macros: [],
   },
   {
     key: 'prefill',
     label: '预填充',
-    hint: 'assistant 预填充，以 <thinking> 开头引导模型从思维链续写；随渠道「发送预填充」开关生效。内置内容待定，留空暂不附加。',
-    builtin: '',
+    hint: 'assistant 预填充，以 <thinking> 开头引导模型从思维链续写；随渠道「发送预填充」开关生效。留空用内置默认。',
+    builtin: DEFAULT_PREFILL_PROMPT,
     macros: [],
   },
 ];
@@ -339,6 +348,15 @@ function closeModelMenuSoon() {
         </div>
 
         <div class="bbi-select-row">
+          <span class="bbi-field-label">楼层卡片主题</span>
+          <BbiSelect v-model="cardThemeSel" :options="THEMES" aria-label="楼层卡片主题" />
+        </div>
+        <p class="bbi-field-hint">
+          聊天里生图卡片的配色,与上面的窗口主题分开设置。默认「跟随ST」——卡片会取当前
+          SillyTavern 主题的配色,融进聊天流;想让卡片走柏宝绘自己的观感就另选一个。
+        </p>
+
+        <div class="bbi-select-row">
           <span class="bbi-field-label">导航位置</span>
           <BbiSelect v-model="navSel" :options="NAV_OPTIONS" aria-label="导航位置" />
         </div>
@@ -405,7 +423,7 @@ function closeModelMenuSoon() {
           <span class="bbi-field-label">新 AI 正文完成后自动分析</span>
           <input v-model="settings.autoTag.enabled" type="checkbox" class="bbi-checkbox" />
         </label>
-        <p class="bbi-field-hint">使用独立请求判断最新 AI 楼层是否需要插图；这一阶段只写入 tag，暂不自动调用生图后端。</p>
+        <p class="bbi-field-hint">使用独立请求判断最新 AI 楼层是否需要插图；写入 tag 后是否自动出图由下方开关决定。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">携带最近楼层数</span>
@@ -432,6 +450,26 @@ function closeModelMenuSoon() {
           />
         </label>
         <p class="bbi-field-hint">单楼允许模型选择的最大画面数;模型不会为了凑满上限而硬选。</p>
+
+        <label class="bbi-num-row">
+          <span class="bbi-field-label">失败自动重试次数</span>
+          <input
+            v-model.number="settings.autoTag.retryCount"
+            class="bbi-input bbi-num"
+            type="number"
+            min="0"
+            max="5"
+            step="1"
+            @change="normalizeAutoTagNumbers"
+          />
+        </label>
+        <p class="bbi-field-hint">副 API 请求失败或返回无法解析时自动重试；0 = 不重试，最多 5 次。</p>
+
+        <label class="bbi-switch-row">
+          <span class="bbi-field-label">写入 tag 后自动生成图片</span>
+          <input v-model="settings.autoTag.autoGenerate" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p class="bbi-field-hint">tag 写入楼层后立即按当前出图渠道自动生图（含手动「生成 tag」按钮）；关闭则只写 tag，图片在卡片上手动点「生成」。</p>
 
         <label class="bbi-switch-row">
           <span class="bbi-field-label">读取柏宝书状态</span>
@@ -465,7 +503,7 @@ function closeModelMenuSoon() {
             </button>
           </li>
         </ul>
-        <p class="bbi-field-hint">留空 = 回落内置默认。破限词内置与柏宝书同款；NAI / ComfyUI 规范、思维链与预填充的内置内容待定，当前为空。</p>
+        <p class="bbi-field-hint">留空 = 回落内置默认。破限词内置与柏宝书同款；思维链要求模型先过检查清单再输出 JSON，预填充以 &lt;thinking&gt; 开头引导续写，两者配套提升出图 tag 质量。</p>
       </Collapsible>
 
       <!-- 副 API:生成画图 tag 用的模型渠道(与柏宝书共享渠道列表) -->

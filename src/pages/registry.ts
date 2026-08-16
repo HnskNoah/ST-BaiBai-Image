@@ -1,5 +1,6 @@
 import type { Component } from 'vue';
 import Backend from './backend/index.vue';
+import Characters from './characters/index.vue';
 import Settings from './settings/index.vue';
 
 export interface PageDef {
@@ -16,6 +17,7 @@ export interface PageDef {
  */
 export const PAGES: PageDef[] = [
   { id: 'backend', label: '渠道', component: Backend },
+  { id: 'characters', label: '角色管理', component: Characters },
   { id: 'settings', label: '设置', component: Settings },
 ];
 

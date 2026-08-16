@@ -39,6 +39,8 @@ describe('auto tag prompt', () => {
       enabled: true,
       contextMessages: 2,
       maxImages: 3,
+      retryCount: 1,
+      autoGenerate: true,
       useBaiBaiBook: false,
       renderWorldInfoTemplates: true,
       prompts: { jailbreak: '附加规则', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
@@ -48,10 +50,50 @@ describe('auto tag prompt', () => {
     expect(messages[0].content).toContain('附加规则');
     expect(messages.some(m => m.content.includes('最多返回 3 个成员'))).toBe(true);
     expect(messages.some(m => m.content.includes('不得包含质量词'))).toBe(true);
-    expect(messages[messages.length - 1].content).toContain('上一层');
-    expect(messages[messages.length - 1].content).toContain('[L0001] 目标第一行');
-    expect(messages[messages.length - 1].content).toContain('[L0002] ');
-    expect(messages[messages.length - 1].content).toContain('[L0003] 目标第三行');
-    expect(messages[messages.length - 1].content).not.toContain('[L0001] 上一层');
+    const user = messages[messages.length - 2];
+    expect(user.role).toBe('user');
+    expect(user.content).toContain('上一层');
+    expect(user.content).toContain('[L0001] 目标第一行');
+    expect(user.content).toContain('[L0002] ');
+    expect(user.content).toContain('[L0003] 目标第三行');
+    expect(user.content).not.toContain('[L0001] 上一层');
+  });
+
+  it('attaches the built-in thinking checklist and <thinking> prefill by default', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      useBaiBaiBook: false,
+      renderWorldInfoTemplates: true,
+      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+    };
+    const messages = await buildAutoTagMessages(context(), 1, options, null);
+
+    const thinkingMsg = messages.find(m => m.content.includes('输出前思考清单'));
+    expect(thinkingMsg?.role).toBe('system');
+    const last = messages[messages.length - 1];
+    expect(last.role).toBe('assistant');
+    expect(last.content).toBe('<thinking>');
+  });
+
+  it('uses custom thinking/prefill when provided', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      useBaiBaiBook: false,
+      renderWorldInfoTemplates: true,
+      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '自定义清单', prefill: 'custom>' },
+    };
+    const messages = await buildAutoTagMessages(context(), 1, options, null);
+
+    expect(messages.some(m => m.content.includes('自定义清单'))).toBe(true);
+    expect(messages.some(m => m.content.includes('输出前思考清单'))).toBe(false);
+    expect(messages[messages.length - 1].content).toBe('custom>');
   });
 });

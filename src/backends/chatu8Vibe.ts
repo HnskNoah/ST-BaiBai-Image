@@ -1,0 +1,240 @@
+import { parseNaiv4vibe } from '@/backends/nai';
+import { getContext } from '@/st/context';
+import type { NaiVibe } from '@/state/settings';
+
+/**
+ * 智绘姬(st-chatu8)vibe 兼容导入(只读,绝不写智绘姬的任何数据)。
+ *
+ * chatu8 的 vibe 存储模型:
+ * - extension_settings['st-chatu8'] 里:
+ *   - vibePresets: { [预设名]: { vibeDataId, strength, model, ... } }(Vibe 生成器预设)
+ *   - vibeGroups: { [组名]: { vibes: [{ vibeDataId, strength }] } }(NAI4/4.5 vibe 组)
+ *   - configImageStorage: { [id]: { path } } —— 存到酒馆服务器时的路径映射
+ * - vibe 数据本体是 .naiv4vibe 格式的 JSON 字符串,两处可能:
+ *   a) 酒馆服务器文件(configImageStorage[id].path 可直接 fetch);
+ *   b) IndexedDB「chatu8_config_images」库的 config_images 表(记录 {id, data})。
+ * 格式与我们的一致(同为官方 novelai-vibe-transfer),解析直接复用 parseNaiv4vibe。
+ */
+
+/** 智绘姬在 extension_settings 里的命名空间键。 */
+export const CHATU8_SETTINGS_KEY = 'st-chatu8';
+const CHATU8_DB_NAME = 'chatu8_config_images';
+const CHATU8_STORE_NAME = 'config_images';
+
+export interface Chatu8VibeRef {
+  vibeDataId: string;
+  strength: number;
+  /** 来源名:预设名或组名(用于命名导入条目)。 */
+  source: string;
+  kind: 'preset' | 'group';
+}
+
+function validStrength(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.6;
+}
+
+/** 从 chatu8 设置里收集全部 vibe 引用(预设 + 组),按 vibeDataId 去重(预设优先,命名更好看)。 */
+export function collectChatu8VibeRefs(chatu8: unknown): Chatu8VibeRef[] {
+  if (!chatu8 || typeof chatu8 !== 'object') return [];
+  const root = chatu8 as Record<string, unknown>;
+  const refs: Chatu8VibeRef[] = [];
+  const seen = new Set<string>();
+  const push = (vibeDataId: unknown, strength: unknown, source: string, kind: Chatu8VibeRef['kind']) => {
+    if (typeof vibeDataId !== 'string' || !vibeDataId || seen.has(vibeDataId)) return;
+    seen.add(vibeDataId);
+    refs.push({ vibeDataId, strength: validStrength(strength), source, kind });
+  };
+
+  const presets = root.vibePresets;
+  if (presets && typeof presets === 'object') {
+    for (const [name, preset] of Object.entries(presets)) {
+      const p = preset as Record<string, unknown> | null;
+      if (p && typeof p === 'object') push(p.vibeDataId, p.strength, name, 'preset');
+    }
+  }
+  const groups = root.vibeGroups;
+  if (groups && typeof groups === 'object') {
+    for (const [groupName, group] of Object.entries(groups)) {
+      const g = group as { vibes?: unknown } | null;
+      if (!g || !Array.isArray(g.vibes)) continue;
+      for (const vibe of g.vibes) {
+        const v = vibe as Record<string, unknown> | null;
+        if (v && typeof v === 'object') push(v.vibeDataId, v.strength, groupName, 'group');
+      }
+    }
+  }
+  return refs;
+}
+
+/** vibe 内容指纹:排序后的模型 key + 编码前缀,导入去重(库内重复/与已有重复)用。 */
+export function vibeFingerprint(encodings: NaiVibe['encodings']): string {
+  return Object.keys(encodings)
+    .sort()
+    .map(k => `${k}:${encodings[k].encoding.slice(0, 64)}`)
+    .join('|');
+}
+
+function base64ToUtf8(b64: string): string {
+  const bin = atob(b64);
+  const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function decodeDataUrlText(dataUrl: string): string {
+  const comma = dataUrl.indexOf(',');
+  if (comma === -1) return '';
+  const header = dataUrl.slice(0, comma);
+  const data = dataUrl.slice(comma + 1);
+  return header.includes(';base64') ? base64ToUtf8(data) : decodeURIComponent(data);
+}
+
+/** 与 chatu8 getConfigText 的服务器分支同口径:fetch 路径后按 data:/JSON/base64 尝试解码。 */
+async function fetchServerText(path: string): Promise<string | null> {
+  try {
+    const resp = await fetch(path);
+    if (!resp.ok) return null;
+    const text = await resp.text();
+    if (text.startsWith('data:')) return decodeDataUrlText(text);
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return text;
+    try {
+      return base64ToUtf8(trimmed);
+    } catch {
+      return text;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 读 chatu8 的 IndexedDB(不带版本号打开,避免触发 upgrade;只读单条记录)。
+ * data 可能是字符串(text)或 ArrayBuffer(图片,不会是 vibe 文本,忽略)。
+ */
+function readChatu8Store(id: string): Promise<string | null> {
+  return new Promise(resolve => {
+    let req: IDBOpenDBRequest;
+    try {
+      req = indexedDB.open(CHATU8_DB_NAME);
+    } catch {
+      resolve(null);
+      return;
+    }
+    req.onerror = () => resolve(null);
+    req.onblocked = () => resolve(null);
+    req.onsuccess = () => {
+      const db = req.result;
+      const done = (value: string | null) => {
+        db.close();
+        resolve(value);
+      };
+      try {
+        if (!db.objectStoreNames.contains(CHATU8_STORE_NAME)) {
+          done(null);
+          return;
+        }
+        const get = db.transaction([CHATU8_STORE_NAME], 'readonly').objectStore(CHATU8_STORE_NAME).get(id);
+        get.onsuccess = () => {
+          const data = (get.result as { data?: unknown } | undefined)?.data;
+          if (typeof data === 'string') done(data);
+          else done(null);
+        };
+        get.onerror = () => done(null);
+      } catch {
+        done(null);
+      }
+    };
+  });
+}
+
+export interface Chatu8DetectInfo {
+  /** 是否检测到智绘姬设置。 */
+  found: boolean;
+  /** vibe 引用总数(预设+组内,已按 id 去重)。 */
+  total: number;
+  presets: number;
+  groups: number;
+}
+
+/** 智绘姬 vibe 检测:只读 settings 里的引用列表(同步、廉价),供迁移面板实时展示。 */
+export function detectChatu8Vibes(chatu8: unknown): Chatu8DetectInfo {
+  if (!chatu8 || typeof chatu8 !== 'object') return { found: false, total: 0, presets: 0, groups: 0 };
+  const refs = collectChatu8VibeRefs(chatu8);
+  return {
+    found: true,
+    total: refs.length,
+    presets: refs.filter(r => r.kind === 'preset').length,
+    groups: refs.filter(r => r.kind === 'group').length,
+  };
+}
+
+export interface Chatu8ImportResult {
+  /** 是否检测到 chatu8 设置。 */
+  found: boolean;
+  imported: number;
+  /** 内容与本库已有(或本次已导入)重复而跳过。 */
+  duplicates: number;
+  /** 引用存在但数据取不到/解析失败。 */
+  failed: number;
+  /** 待入库的新条目(调用方 push 进 settings.nai.vibes)。 */
+  vibes: NaiVibe[];
+}
+
+let importSeq = 0;
+
+/**
+ * 从 st-chatu8 导入全部 vibe。existing 传当前库(内容去重用)。
+ * 单个失败不阻塞整体;结果为 null 表示未检测到 chatu8。
+ */
+export async function importVibesFromChatu8(existing: NaiVibe[]): Promise<Chatu8ImportResult> {
+  const chatu8 = getContext()?.extensionSettings?.[CHATU8_SETTINGS_KEY];
+  if (!chatu8 || typeof chatu8 !== 'object') {
+    return { found: false, imported: 0, duplicates: 0, failed: 0, vibes: [] };
+  }
+  const refs = collectChatu8VibeRefs(chatu8);
+  const serverMap =
+    (chatu8 as Record<string, unknown>).configImageStorage &&
+    typeof (chatu8 as Record<string, unknown>).configImageStorage === 'object'
+      ? ((chatu8 as Record<string, unknown>).configImageStorage as Record<string, { path?: unknown }>)
+      : {};
+
+  const fingerprints = new Set(existing.map(v => vibeFingerprint(v.encodings)));
+  const result: Chatu8ImportResult = { found: true, imported: 0, duplicates: 0, failed: 0, vibes: [] };
+
+  for (const ref of refs) {
+    // 服务器优先(chatu8 同口径),取不到再试 IndexedDB
+    const path = serverMap[ref.vibeDataId]?.path;
+    let text = typeof path === 'string' && path ? await fetchServerText(path) : null;
+    if (!text) text = await readChatu8Store(ref.vibeDataId);
+    if (!text) {
+      result.failed++;
+      continue;
+    }
+    // IndexedDB 里可能存的是 dataURL 字符串,先剥壳
+    if (text.startsWith('data:')) text = decodeDataUrlText(text);
+    try {
+      const parsed = parseNaiv4vibe(text);
+      const fingerprint = vibeFingerprint(parsed.encodings);
+      if (fingerprints.has(fingerprint)) {
+        result.duplicates++;
+        continue;
+      }
+      fingerprints.add(fingerprint);
+      result.vibes.push({
+        id: `vibe_${Date.now()}_${++importSeq}`,
+        // 预设用预设名(用户起的);组内条目无名,用「组名 · vibe文件原名」
+        name: ref.kind === 'preset' ? ref.source : `${ref.source} · ${parsed.name}`,
+        image: parsed.image,
+        thumbnail: parsed.thumbnail,
+        encodings: parsed.encodings,
+        strength: ref.strength,
+        enabled: true,
+      });
+      result.imported++;
+    } catch {
+      result.failed++;
+    }
+  }
+  return result;
+}

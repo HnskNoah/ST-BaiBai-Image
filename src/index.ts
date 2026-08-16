@@ -4,6 +4,7 @@ import { bindTagActionButtons } from '@/floor/actionButton';
 import { bindFloorHydration } from '@/floor/hydrate';
 import { vAutosize } from '@/directives/autosize';
 import { injectMenuButton } from '@/menu';
+import { bindCharTagSync } from '@/state/charTags';
 import { hydrateSettings } from '@/state/settings';
 import { ui } from '@/state/ui';
 import { guardEditableArrowKeys } from '@/st/keyboard';
@@ -94,6 +95,7 @@ function hydrateWhenReady(attempt = 0) {
   if ((window as unknown as { SillyTavern?: { getContext?: unknown } }).SillyTavern?.getContext) {
     try {
       hydrateSettings();
+      bindCharTagSync();
       ensureImageTagRegexRegistered();
       bindAutoTagging();
       bindFloorHydration();

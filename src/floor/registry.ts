@@ -9,8 +9,11 @@ import type { VNode } from 'vue';
  * - 重水合前必须 render(null, container) 显式卸载旧 vnode，再挂新树。
  */
 export interface SlotRecord {
-  /** 锚点 div（light DOM），vnode 渲染进它内部。 */
-  container: HTMLElement;
+  /**
+   * vnode 的渲染容器：锚点 div 的 shadow root（hydrate.ts 给每个锚点 attachShadow，
+   * 让卡片与 ST 全局样式双向隔离）。render(null, container) 卸载。
+   */
+  container: ShadowRoot;
   vnode: VNode;
 }
 

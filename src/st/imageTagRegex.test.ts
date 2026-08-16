@@ -84,9 +84,11 @@ describe('stripImageTags', () => {
     expect(stripImageTags('第一行\n<bbi_image>1girl</bbi_image>\n第二行')).toBe('第一行\n第二行');
   });
 
-  it('removes multiple tags after the same line and tags with nl sub-tags', () => {
+  it('removes multiple tags after the same line and tags with nl/size sub-tags', () => {
     expect(
-      stripImageTags('场景\n<bbi_image>1girl<nl>A girl.</nl></bbi_image>\n<bbi_image>2boy</bbi_image>\n结尾'),
+      stripImageTags(
+        '场景\n<bbi_image>1girl<nl>A girl.</nl><size>portrait</size></bbi_image>\n<bbi_image>2boy<size>landscape</size></bbi_image>\n结尾',
+      ),
     ).toBe('场景\n结尾');
   });
 
@@ -104,6 +106,7 @@ describe('parseImageTagContent', () => {
     expect(parseImageTagContent('<bbi_image>1girl, moonlight</bbi_image>')).toEqual({
       tag: '1girl, moonlight',
       nl: '',
+      size: 'portrait',
     });
   });
 
@@ -111,20 +114,41 @@ describe('parseImageTagContent', () => {
     expect(parseImageTagContent('<bbi_image>1girl<nl>A girl.</nl></bbi_image>')).toEqual({
       tag: '1girl',
       nl: 'A girl.',
+      size: 'portrait',
     });
   });
 
   it('accepts explicit <tag> and <nl> sub-tags in any order', () => {
     expect(
       parseImageTagContent('<bbi_image><nl>A girl.\nShe smiles.</nl><tag>1girl</tag></bbi_image>'),
-    ).toEqual({ tag: '1girl', nl: 'A girl. She smiles.' });
+    ).toEqual({ tag: '1girl', nl: 'A girl. She smiles.', size: 'portrait' });
   });
 
   it('merges bare text with explicit <tag> content instead of dropping it', () => {
     expect(parseImageTagContent('<bbi_image>bare_tags<tag>explicit_tags</tag></bbi_image>')).toEqual({
       tag: 'bare_tags, explicit_tags',
       nl: '',
+      size: 'portrait',
     });
+  });
+
+  it('strips <size> out of the tag part instead of leaking it into the prompt', () => {
+    // 漏剥的话 landscape 这个词会直接混进正向提示词
+    expect(parseImageTagContent('<bbi_image>2girls, wide shot<size>landscape</size></bbi_image>')).toEqual(
+      { tag: '2girls, wide shot', nl: '', size: 'landscape' },
+    );
+  });
+
+  it('handles all three sub-tags together (full plugin form)', () => {
+    expect(
+      parseImageTagContent('<bbi_image>2girls<nl>Two girls.</nl><size>landscape</size></bbi_image>'),
+    ).toEqual({ tag: '2girls', nl: 'Two girls.', size: 'landscape' });
+  });
+
+  it('falls back to portrait for legacy tags without <size>', () => {
+    // 存量正文里的 tag 没有 size,必须维持改动前的竖屏行为
+    expect(parseImageTagContent('<bbi_image>1girl</bbi_image>').size).toBe('portrait');
+    expect(parseImageTagContent('<bbi_image>1girl<size>乱写</size></bbi_image>').size).toBe('portrait');
   });
 });
 

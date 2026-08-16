@@ -1,3 +1,4 @@
+import { normalizeOrientation, type Orientation } from '@/backends/size';
 import { getContext } from '@/st/context';
 
 /**
@@ -97,6 +98,8 @@ export interface ImageTagContent {
   tag: string;
   /** 自然语言部分：<nl> 子标签内容，无则空串。 */
   nl: string;
+  /** 画幅方向：<size> 子标签内容，无/不可识别则竖屏（存量 tag 即走这条，行为与改动前一致）。 */
+  size: Orientation;
 }
 
 /**
@@ -105,6 +108,7 @@ export interface ImageTagContent {
  * - <bbi_image>xxxx<nl>yyyy</nl></bbi_image>       裸文本 = tag，<nl> = nl（插件写回的标准形态）
  * - <bbi_image><tag>x</tag><nl>y</nl></bbi_image>  显式子标签（手写容忍）
  * 裸文本与显式 <tag> 同时存在时按「裸文本在前」以 ", " 合并进 tag 部分，不丢内容。
+ * <size> 与 <nl> 一样必须先剥掉：漏剥会让 landscape 这类词直接混进正向提示词。
  */
 export function parseImageTagContent(raw: string): ImageTagContent {
   // 内容统一折叠成单行:手写 tag 可能跨行,而提示词里换行没有意义
@@ -112,13 +116,17 @@ export function parseImageTagContent(raw: string): ImageTagContent {
   const inner = raw.replace(/^<bbi_image[^>]*>/i, '').replace(/<\/bbi_image>$/i, '');
   const nlMatch = inner.match(/<nl>([\s\S]*?)<\/nl>/i);
   const nl = nlMatch ? oneLine(nlMatch[1]) : '';
-  const withoutNl = inner.replace(/<nl>[\s\S]*?<\/nl>/gi, '');
-  const explicit = [...withoutNl.matchAll(/<tag>([\s\S]*?)<\/tag>/gi)]
+  const sizeMatch = inner.match(/<size>([\s\S]*?)<\/size>/i);
+  const size = normalizeOrientation(sizeMatch ? oneLine(sizeMatch[1]) : '');
+  const withoutSubTags = inner
+    .replace(/<nl>[\s\S]*?<\/nl>/gi, '')
+    .replace(/<size>[\s\S]*?<\/size>/gi, '');
+  const explicit = [...withoutSubTags.matchAll(/<tag>([\s\S]*?)<\/tag>/gi)]
     .map(match => oneLine(match[1]))
     .filter(Boolean);
-  const bare = oneLine(withoutNl.replace(/<tag>[\s\S]*?<\/tag>/gi, ''));
+  const bare = oneLine(withoutSubTags.replace(/<tag>[\s\S]*?<\/tag>/gi, ''));
   const tag = [...(bare ? [bare] : []), ...explicit].join(', ');
-  return { tag, nl };
+  return { tag, nl, size };
 }
 
 const MANAGED_SCRIPTS: Array<() => ManagedRegexScript> = [

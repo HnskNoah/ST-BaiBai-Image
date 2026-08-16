@@ -1,0 +1,550 @@
+import { unzipSync } from 'fflate';
+
+import type { ComfyImageResult } from '@/backends/comfyui';
+import { parseSize, pickSize, type Orientation } from '@/backends/size';
+import type { NaiSettings, NaiVibe } from '@/state/settings';
+
+/**
+ * NovelAI 生图后端(浏览器直连,协议与官方 image.novelai.net 一致)。
+ * url 可指向任意兼容站:官方/镜像/第三方转发,端点自动补 /ai 前缀。
+ *
+ * 参考 st-chatu8 的实现口径:
+ * - 生图 POST {base}/ai/generate-image,body {input, model, action:'generate', parameters}。
+ * - 响应是 zip(stream: 'msgpack'),解出第一张图。
+ * - NAI3 的 vibe 直接发参考原图;NAI4/4.5 必须先经 /ai/encode-vibe 编码,
+ *   生成时以 reference_image_multiple_cached(uuid + 编码数据) 形式叠加。
+ * - .naiv4vibe 文件格式与官方互通(encodings 按模型 key 分组)。
+ */
+
+export class NaiError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(message);
+    this.name = 'NaiError';
+  }
+}
+
+/* ============ 常量表(与 st-chatu8 / NAI 官方前端同口径) ============ */
+
+export const NAI_SAMPLERS: { value: string; label: string }[] = [
+  { value: 'k_euler', label: 'Euler(推荐)' },
+  { value: 'k_euler_ancestral', label: 'Euler Ancestral' },
+  { value: 'k_dpmpp_2s_ancestral', label: 'DPM++ 2S Ancestral' },
+  { value: 'k_dpmpp_2m', label: 'DPM++ 2M' },
+  { value: 'k_dpmpp_sde', label: 'DPM++ SDE' },
+  { value: 'ddim_v3', label: 'DDIM V3' },
+];
+
+export const NAI_NOISE_SCHEDULES: { value: string; label: string }[] = [
+  { value: 'karras', label: 'Karras(推荐)' },
+  { value: 'native', label: 'Native' },
+  { value: 'exponential', label: 'Exponential' },
+  { value: 'polyexponential', label: 'Polyexponential' },
+];
+
+/** 各模型内置质量词(qualityToggle 开启且未自定义质量词时拼到正向最前)。 */
+const QUALITY_TAGS: Record<string, string> = {
+  'nai-diffusion-4-5-full': 'very aesthetic, masterpiece, no text',
+  'nai-diffusion-4-5-curated': 'very aesthetic, masterpiece, no text, -0.8::feet::, rating:general',
+  'nai-diffusion-4-full': 'no text, best quality, very aesthetic, absurdres',
+  'nai-diffusion-4-curated-preview': 'rating:general, best quality, very aesthetic, absurdres',
+  'nai-diffusion-3': 'best quality, amazing quality, very aesthetic, absurdres',
+};
+
+/** 负面预设表:[模型][预设名] → 负面词。与 st-chatu8 逐字一致。 */
+const UC_PRESETS: Record<string, Record<string, string>> = {
+  'nai-diffusion-3': {
+    Heavy:
+      'lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract]',
+    Light: 'lowres, jpeg artifacts, worst quality, watermark, blurry, very displeasing',
+    'Human Focus':
+      'lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract], bad anatomy, bad hands, @_@, mismatched pupils, heart-shaped pupils, glowing eyes',
+  },
+  'nai-diffusion-4-full': {
+    Heavy:
+      'blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, multiple views, logo, too many watermarks, white blank page, blank page',
+    Light:
+      'blurry, lowres, error, worst quality, bad quality, jpeg artifacts, very displeasing, white blank page, blank page',
+  },
+  'nai-diffusion-4-curated-preview': {
+    Heavy:
+      'blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, logo, dated, signature, multiple views, gigantic breasts, white blank page, blank page',
+    Light:
+      'blurry, lowres, error, worst quality, bad quality, jpeg artifacts, very displeasing, logo, dated, signature, white blank page, blank page',
+  },
+  'nai-diffusion-4-5-curated': {
+    Heavy:
+      'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, negative space, blank page',
+    Light:
+      'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, negative space, blank page',
+    'Human Focus':
+      'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, bad anatomy, bad hands, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, @_@, mismatched pupils, glowing eyes, negative space, blank page',
+  },
+  'nai-diffusion-4-5-full': {
+    Heavy:
+      'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page',
+    Light:
+      'blurry, lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, blank page',
+    'Human Focus':
+      'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, @_@, mismatched pupils, glowing eyes, bad anatomy',
+    'Furry Focus':
+      '{worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic',
+  },
+};
+
+/** 某模型可选的负面预设名(「无」固定在最前)。 */
+export function ucPresetNames(model: string): string[] {
+  return ['无', ...Object.keys(UC_PRESETS[model] ?? {})];
+}
+
+/** variety boost 的 magic 常数(st-chatu8 同口径):按像素量相对参考分辨率缩放。 */
+const REFERENCE_PIXEL_COUNT = 1011712;
+const SIGMA_MAGIC_NUMBER = 19;
+const SIGMA_MAGIC_NUMBER_V4_5 = 58;
+
+export function isNai45(model: string): boolean {
+  return model.includes('nai-diffusion-4-5');
+}
+
+export function isNai4Family(model: string): boolean {
+  return model.includes('nai-diffusion-4');
+}
+
+function isNai3(model: string): boolean {
+  return model === 'nai-diffusion-3';
+}
+
+/** skip_cfg_above_sigma:开 variety boost 时按尺寸与模型算;关 → null。 */
+export function skipCfgAboveSigma(width: number, height: number, model: string, varietyBoost: boolean): number | null {
+  if (!varietyBoost) return null;
+  const magic = isNai45(model) ? SIGMA_MAGIC_NUMBER_V4_5 : SIGMA_MAGIC_NUMBER;
+  return Math.pow((width * height) / REFERENCE_PIXEL_COUNT, 0.5) * magic;
+}
+
+/* ============ 地址与基础工具 ============ */
+
+/**
+ * 拼端点:base 去掉尾斜杠后补 /ai/<path>;base 本身已是完整端点
+ * (以 /ai/<path> 或 /<path> 结尾)时原样使用,方便第三方站给整段 URL。
+ */
+export function naiEndpoint(url: string, path: string): string {
+  const base = url.trim().replace(/\/+$/, '');
+  if (!base) throw new NaiError('请先填写 NAI 接口地址');
+  const seg = path.replace(/^\/+/, '');
+  if (base.endsWith(`/ai/${seg}`) || base.endsWith(`/${seg}`)) return base;
+  return `${base}/ai/${seg}`;
+}
+
+export interface NaiSize {
+  width: number;
+  height: number;
+}
+
+/** 解析「832×1216 / 832x1216」;宽高须为 64 的倍数、256–2048。 */
+export function parseResolution(text: string): NaiSize {
+  const size = parseSize(text);
+  if (!size) throw new NaiError(`分辨率格式无效:${text || '(空)'};应如 832×1216`);
+  const { width, height } = size;
+  if (width % 64 !== 0 || height % 64 !== 0) {
+    throw new NaiError(`分辨率 ${width}×${height} 不是 64 的倍数,NAI 要求宽高均为 64 的倍数`);
+  }
+  if (width < 256 || height < 256 || width > 2048 || height > 2048) {
+    throw new NaiError(`分辨率 ${width}×${height} 超出 NAI 允许范围(256–2048)`);
+  }
+  return { width, height };
+}
+
+/** NAI 种子是 32 位无符号整数(与 ComfyUI 的 2^53 不同,不能复用 randomSeed)。 */
+export function naiRandomSeed(): number {
+  return Math.floor(Math.random() * 2 ** 32);
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+function base64ToUint8(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* ============ payload 构造(纯函数,可测) ============ */
+
+export interface NaiGenerateValues {
+  /** 正向 tag(不含质量词)。 */
+  prompt: string;
+  /** 种子;缺省随机。 */
+  seed?: number;
+  /** 画幅方向;缺省竖屏(与改动前的固定默认一致)。 */
+  size?: Orientation;
+}
+
+type JsonObject = Record<string, unknown>;
+
+/** 正向完整 prompt:质量词(自定义优先,否则按模型内置)拼到 tag 前。 */
+export function fullPositivePrompt(nai: NaiSettings, prompt: string): string {
+  const quality = nai.qualityTags.trim() || (nai.qualityToggle ? (QUALITY_TAGS[nai.model] ?? '') : '');
+  return [quality, prompt.trim()].filter(Boolean).join(', ');
+}
+
+/** 负面完整 prompt:用户负面 + 负面预设(按模型取表)。 */
+export function fullNegativePrompt(nai: NaiSettings): string {
+  const preset = UC_PRESETS[nai.model]?.[nai.ucPreset] ?? '';
+  return [nai.negativePrompt.trim(), preset].filter(Boolean).join(', ');
+}
+
+/**
+ * 构造 parameters。v4 系模型带 v4_prompt/v4_negative_prompt 结构;NAI3 不带。
+ * vibe 不在此叠加(见 applyVibes),保持「一次生成 = build + applyVibes」两步。
+ */
+export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues): JsonObject {
+  // 画幅按方向取用户配的那一格;没填回落竖屏默认
+  const orientation = values.size ?? 'portrait';
+  const { width, height } = parseResolution(pickSize(nai, orientation) || '832×1216');
+  // 显式传入 > 面板固定种子 > 随机
+  const seed = values.seed ?? (nai.seed > 0 ? nai.seed : naiRandomSeed());
+  const prompt = fullPositivePrompt(nai, values.prompt);
+  const negative = fullNegativePrompt(nai);
+  const skipCfg = skipCfgAboveSigma(width, height, nai.model, nai.varietyBoost);
+
+  const params: JsonObject = {
+    params_version: 3,
+    width,
+    height,
+    scale: nai.scale,
+    sampler: nai.sampler,
+    steps: nai.steps,
+    n_samples: 1,
+    // 预设位置恒为 3(自定义):负面词已由 fullNegativePrompt 拼好,不再用官方预设档
+    ucPreset: 3,
+    qualityToggle: nai.qualityToggle,
+    dynamic_thresholding: false,
+    controlnet_strength: 1,
+    legacy: false,
+    legacy_uc: false,
+    add_original_image: true,
+    cfg_rescale: nai.cfgRescale,
+    noise_schedule: nai.noiseSchedule,
+    skip_cfg_above_sigma: skipCfg,
+    legacy_v3_extend: false,
+    stream: 'msgpack',
+    seed,
+    negative_prompt: negative,
+    reference_strength_multiple: [],
+    normalize_reference_strength_multiple: nai.normalizeRefStrength,
+    use_coords: false,
+  };
+
+  if (isNai3(nai.model)) {
+    // NAI3:vibe 直接发参考原图;SME/SMEA 暂不开放(固定关)
+    params.sm = false;
+    params.sm_dyn = false;
+    params.reference_image_multiple = [];
+    params.reference_information_extracted_multiple = [];
+  } else {
+    // NAI4/4.5:v4 caption 结构 + vibe 走编码缓存
+    params.reference_image_multiple_cached = [];
+    params.characterPrompts = [];
+    params.v4_prompt = {
+      caption: { base_caption: prompt, char_captions: [] },
+      use_coords: false,
+      use_order: true,
+    };
+    params.v4_negative_prompt = {
+      caption: { base_caption: negative, char_captions: [] },
+      legacy_uc: false,
+    };
+  }
+
+  if (nai.sampler === 'k_euler_ancestral') {
+    params.deliberate_euler_ancestral_bug = false;
+    params.prefer_brownian = true;
+  }
+  return params;
+}
+
+/** vibe 模型 key:encodings 分组的键(与官方 .naiv4vibe 一致)。 */
+export function vibeModelKey(model: string): string {
+  if (model.includes('4-5-curated')) return 'v4-5curated';
+  if (model.includes('4-5-full')) return 'v4-5full';
+  if (model.includes('4-curated')) return 'v4curated';
+  if (model.includes('4-full')) return 'v4full';
+  if (model.includes('diffusion-3')) return 'v3';
+  return 'v4-5full';
+}
+
+/**
+ * 把启用的 vibe 叠加进 parameters。
+ * - NAI3:参考原图进 reference_image_multiple(配信息提取度 1 + 强度);
+ * - NAI4/4.5:编码数据进 reference_image_multiple_cached(随机 cache key),强度并进
+ *   reference_strength_multiple;强度总和超过 1 且开启归一化时按比例压回 1。
+ * 返回被跳过的 vibe 名(缺当前模型编码/缺原图),调用方据以提示。
+ */
+export function applyVibes(params: JsonObject, nai: NaiSettings): string[] {
+  const active = nai.vibes.filter(v => v.enabled);
+  if (!active.length) return [];
+  const skipped: string[] = [];
+  const strengths = params.reference_strength_multiple as number[];
+
+  if (isNai3(nai.model)) {
+    const images = params.reference_image_multiple as string[];
+    const infos = params.reference_information_extracted_multiple as number[];
+    for (const vibe of active) {
+      if (!vibe.image) {
+        skipped.push(vibe.name);
+        continue;
+      }
+      images.push(vibe.image);
+      infos.push(1);
+      strengths.push(vibe.strength);
+    }
+    return skipped;
+  }
+
+  const cached = params.reference_image_multiple_cached as { cache_secret_key: string; data: string }[];
+  const modelKey = vibeModelKey(nai.model);
+  const picked: number[] = [];
+  for (const vibe of active) {
+    const enc = vibe.encodings[modelKey];
+    if (!enc?.encoding) {
+      skipped.push(vibe.name);
+      continue;
+    }
+    cached.push({ cache_secret_key: crypto.randomUUID(), data: enc.encoding });
+    picked.push(vibe.strength);
+  }
+  // 归一化:总强度 > 1 时按比例压回 1(st-chatu8 同口径;4.5 开归一化时官方端也会自动处理)
+  const total = picked.reduce((s, x) => s + x, 0);
+  const scale = nai.normalizeRefStrength && total > 1 ? 1 / total : 1;
+  for (const s of picked) strengths.push(s * scale);
+  return skipped;
+}
+
+/* ============ 网络请求 ============ */
+
+async function naiHttpError(resp: Response, label: string): Promise<NaiError> {
+  const text = (await resp.text().catch(() => '')).trim();
+  let detail = text;
+  try {
+    const json = JSON.parse(text);
+    if (typeof json?.message === 'string') detail = json.message;
+  } catch {
+    /* 非 JSON 错误体直接用原文 */
+  }
+  switch (resp.status) {
+    case 400:
+      return new NaiError(`${label}:请求校验失败:${detail.slice(0, 300)}`, resp.status);
+    case 401:
+      return new NaiError(`${label}:API Key 错误或无效`, resp.status);
+    case 402:
+      return new NaiError(`${label}:需要有效订阅(402)`, resp.status);
+    case 429:
+      return new NaiError(`${label}:请求过于频繁(429),请稍候再试`, resp.status);
+    default:
+      return new NaiError(`${label} (${resp.status}):${detail.slice(0, 300)}`, resp.status);
+  }
+}
+
+/** 测试连接:优先 /user/subscription 验 key;第三方站无此接口(404)时只验证地址可达。 */
+export async function testNaiConnection(
+  nai: Pick<NaiSettings, 'url' | 'key'>,
+  signal?: AbortSignal,
+): Promise<{ message: string }> {
+  if (!nai.key.trim()) throw new NaiError('请先填写 API Key');
+  const resp = await fetch(naiEndpoint(nai.url, 'user/subscription'), {
+    headers: { Authorization: `Bearer ${nai.key.trim()}` },
+    signal,
+  });
+  if (resp.status === 404) {
+    return { message: '地址可达,但无订阅接口(第三方站);请以实际生图验证' };
+  }
+  if (!resp.ok) throw await naiHttpError(resp, '连接 NAI 失败');
+  const data = (await resp.json().catch(() => null)) as {
+    tier?: number;
+    active?: boolean;
+    subscription?: { tier?: number; active?: boolean; expiresAt?: number };
+  } | null;
+  const tier = data?.subscription?.tier ?? data?.tier;
+  const active = data?.subscription?.active ?? data?.active;
+  const tierName = ['Free', 'Tablet', 'Scroll', 'Opus'][Number(tier)] ?? `Tier ${tier}`;
+  return {
+    message: `连接正常:${tierName}${active === false ? '(订阅未激活)' : ''}`,
+  };
+}
+
+/** 解 NAI 返回的 zip,取第一张图转 base64。 */
+export function unzipNaiImage(buffer: ArrayBuffer): { base64: string; filename: string } {
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(new Uint8Array(buffer));
+  } catch {
+    throw new NaiError('响应不是有效的 zip 包(第三方站可能返回了其他格式)');
+  }
+  const name = Object.keys(files).find(n => /\.(png|jpe?g|webp)$/i.test(n)) ?? Object.keys(files)[0];
+  if (!name) throw new NaiError('zip 包内没有图片文件');
+  return { base64: uint8ToBase64(files[name]), filename: name };
+}
+
+/**
+ * 生图。返回与 ComfyImageResult 同构的结果(dataURL 形式),楼层卡片/落盘层可直接复用。
+ */
+export async function generateNaiImage(
+  nai: NaiSettings,
+  values: NaiGenerateValues,
+  signal?: AbortSignal,
+): Promise<ComfyImageResult> {
+  if (!nai.key.trim()) throw new NaiError('请先填写 NAI API Key');
+  if (!values.prompt.trim()) throw new NaiError('正向提示词不能为空');
+
+  const params = buildNaiParameters(nai, values);
+  const skipped = applyVibes(params, nai);
+  if (skipped.length) {
+    console.warn('[柏宝绘] 以下 vibe 因缺当前模型编码被跳过:', skipped);
+    toastr.warning(`vibe「${skipped.join('、')}」缺当前模型编码,已跳过`, '柏宝绘');
+  }
+
+  const body = {
+    input: fullPositivePrompt(nai, values.prompt),
+    model: nai.model,
+    action: 'generate',
+    parameters: params,
+    use_new_shared_trial: true,
+  };
+  const resp = await fetch(naiEndpoint(nai.url, 'generate-image'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${nai.key.trim()}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!resp.ok) throw await naiHttpError(resp, 'NAI 生图失败');
+
+  const { base64, filename } = unzipNaiImage(await resp.arrayBuffer());
+  const format = filename.split('.').pop()?.toLowerCase() || 'png';
+  return {
+    url: `data:image/${format === 'jpg' ? 'jpeg' : format};base64,${base64}`,
+    filename: `nai-${Date.now()}.${format}`,
+    format,
+    revoke() {},
+  };
+}
+
+/* ============ vibe 编码与 .naiv4vibe 互通 ============ */
+
+/** 官方 .naiv4vibe 里 encoding 的固定内层 key(与 st-chatu8 同)。 */
+export const VIBE_ENCODING_KEY = 'b36a8472fe418d9f80d6bb1c54e3a6e62c62936aa7bf31dae2bcf7e929f6430f';
+
+/**
+ * 调 /ai/encode-vibe 把参考图编码成 vibe 数据(base64)。
+ * NAI4/4.5 的 vibe 必须经此编码;NAI3 不需要(直接发原图)。
+ */
+export async function encodeVibeImage(
+  nai: Pick<NaiSettings, 'url' | 'key'>,
+  imageBase64: string,
+  model: string,
+  infoExtracted = 1,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (!nai.key.trim()) throw new NaiError('请先填写 NAI API Key');
+  const resp = await fetch(naiEndpoint(nai.url, 'encode-vibe'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${nai.key.trim()}`,
+    },
+    body: JSON.stringify({ image: imageBase64, information_extracted: infoExtracted, model }),
+    signal,
+  });
+  if (!resp.ok) throw await naiHttpError(resp, 'vibe 编码失败');
+  const bytes = new Uint8Array(await resp.arrayBuffer());
+  if (bytes.length < 100) {
+    throw new NaiError(`vibe 编码数据异常(仅 ${bytes.length} 字节),接口可能返回了错误响应`);
+  }
+  return uint8ToBase64(bytes);
+}
+
+export interface ImportedVibe {
+  name: string;
+  image: string;
+  thumbnail: string;
+  encodings: NaiVibe['encodings'];
+  strength: number;
+}
+
+/** 解析 .naiv4vibe 文件文本(JSON)为 vibe 条目(不含 id,由调用方补)。 */
+export function parseNaiv4vibe(text: string): ImportedVibe {
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new NaiError('不是有效的 .naiv4vibe 文件(JSON 解析失败)');
+  }
+  if (json?.identifier !== 'novelai-vibe-transfer') {
+    throw new NaiError('不是 NovelAI vibe 文件(缺少 novelai-vibe-transfer 标识)');
+  }
+  const encodings: NaiVibe['encodings'] = {};
+  for (const [modelKey, group] of Object.entries(json.encodings ?? {})) {
+    const first = Object.values(group as Record<string, any>)[0];
+    if (typeof first?.encoding === 'string' && first.encoding) {
+      encodings[modelKey] = {
+        encoding: first.encoding,
+        infoExtracted:
+          typeof first.params?.information_extracted === 'number'
+            ? first.params.information_extracted
+            : 1,
+      };
+    }
+  }
+  if (!Object.keys(encodings).length) throw new NaiError('vibe 文件里没有可用的编码数据');
+  const strength = Number(json.importInfo?.strength);
+  return {
+    name: typeof json.name === 'string' && json.name ? json.name : '导入的 Vibe',
+    image: typeof json.image === 'string' ? json.image : '',
+    thumbnail: typeof json.thumbnail === 'string' ? json.thumbnail : '',
+    encodings,
+    strength: Number.isFinite(strength) ? Math.min(1, Math.max(0, strength)) : 0.6,
+  };
+}
+
+/** 导出为官方兼容的 .naiv4vibe JSON(全部已编码模型一并带上)。 */
+export async function buildNaiv4vibe(vibe: NaiVibe): Promise<string> {
+  const encodings: Record<string, unknown> = {};
+  for (const [modelKey, enc] of Object.entries(vibe.encodings)) {
+    encodings[modelKey] = {
+      [VIBE_ENCODING_KEY]: {
+        encoding: enc.encoding,
+        params: { information_extracted: enc.infoExtracted },
+      },
+    };
+  }
+  const id = vibe.image ? await sha256Hex(vibe.image) : crypto.randomUUID();
+  return JSON.stringify({
+    identifier: 'novelai-vibe-transfer',
+    version: 1,
+    type: 'image',
+    image: vibe.image,
+    id,
+    encodings,
+    name: vibe.name,
+    thumbnail: vibe.thumbnail,
+    createdAt: Date.now(),
+    importInfo: {
+      model: Object.keys(vibe.encodings)[0] ?? '',
+      information_extracted: 1,
+      strength: vibe.strength,
+    },
+  });
+}

@@ -1,7 +1,9 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { readBookMemory } from '@/autoTag/bookMemory';
+import { resolveCharAnchors } from '@/autoTag/charAnchors';
 import { buildAutoTagMessages } from '@/autoTag/prompt';
-import { injectImageTags, parseImagePlan, sourceLineCount } from '@/autoTag/protocol';
+import { injectImageTags, parseImagePlan, sourceLineCount, type ImagePlan } from '@/autoTag/protocol';
+import { clearAutoGenerateForFloor, markForAutoGenerate } from '@/floor/autoGenerate';
 import { applyMessageText } from '@/st/messageEdit';
 import { getContext, type STMessage } from '@/st/context';
 import { stripImageTags } from '@/st/imageTagRegex';
@@ -70,25 +72,57 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
 
   try {
     const memory = settings.autoTag.useBaiBaiBook
-      ? readBookMemory(floor, context.chat[floor]?.mes ?? '')
+      ? readBookMemory(floor, context.chat[floor]?.mes ?? '', context.name1)
       : null;
+    // 角色固定外貌锚定:库里有/柏宝书有外貌的都会锚定;柏宝书不可用时仅靠库+正文名字匹配
+    const anchors = await resolveCharAnchors(memory?.roles ?? [], source, controller.signal);
     const messages = await buildAutoTagMessages(
       context,
       floor,
       settings.autoTag,
       memory,
       opts.replace ? source : undefined,
+      anchors,
     );
     const channel = getTagGenChannel();
-    const raw = channel
-      ? await requestCompletion(channel, messages, { signal: controller.signal })
-      : await requestViaMainApi(messages, { signal: controller.signal });
-    if (controller.signal.aborted) {
+    // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
+    // 中止信号立即收手,不消耗重试。parseImagePlan 对坏输出抛错,「无画面」则是正常返回空数组。
+    const retries = Math.max(0, Math.floor(Number(settings.autoTag.retryCount) || 0));
+    let plan: ImagePlan | null = null;
+    let lastError = '';
+    for (let attempt = 0; attempt <= retries && !plan; attempt++) {
+      if (controller.signal.aborted) {
+        processed.delete(identity);
+        return;
+      }
+      try {
+        const raw = channel
+          ? await requestCompletion(channel, messages, { signal: controller.signal })
+          : await requestViaMainApi(messages, { signal: controller.signal });
+        if (controller.signal.aborted) {
+          processed.delete(identity);
+          return;
+        }
+        plan = parseImagePlan(raw, sourceLineCount(source), settings.autoTag.maxImages);
+      } catch (error) {
+        if (controller.signal.aborted) {
+          processed.delete(identity);
+          return;
+        }
+        lastError = error instanceof Error ? error.message : String(error);
+        console.warn(`[柏宝绘] 第 ${floor} 楼第 ${attempt + 1}/${retries + 1} 次生成 tag 失败`, error);
+      }
+    }
+    if (!plan) {
+      // 重试耗尽:允许同一正文在后续重新渲染后再试
       processed.delete(identity);
+      toastr.error(
+        `${lastError}${retries > 0 ? `(已自动重试 ${retries} 次)` : ''}`,
+        '柏宝绘自动 tag 失败',
+      );
       return;
     }
 
-    const plan = parseImagePlan(raw, sourceLineCount(source), settings.autoTag.maxImages);
     if (!plan.images.length) {
       if (opts.manual) toastr.info('模型认为本楼没有值得插图的画面', '柏宝绘');
       else console.debug(`[柏宝绘] 第 ${floor} 楼无需插图`);
@@ -96,17 +130,30 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     }
 
     const nextText = injectImageTags(source, plan.images);
+    // 「写入 tag 后自动生成图片」:写回前先给每个新槽位挂标记——applyMessageText 内部会
+    // 触发 MESSAGE_EDITED / MESSAGE_UPDATED,卡片水合挂载时消费标记并自动开始生成
+    // (见 floor/autoGenerate.ts);写回失败则撤销标记。
+    const marked = settings.autoTag.autoGenerate;
+    if (marked) {
+      const markSwipeId = message.swipe_id ?? 0;
+      for (let seq = 0; seq < plan.images.length; seq++) {
+        markForAutoGenerate(chatId, floor, markSwipeId, seq);
+      }
+    }
     // CAS 的比对基准是楼层当前真实正文(含旧 tag);nextText 从剔除旧 tag 的 source 推出
     const result = await applyMessageText(floor, rawSource, nextText, chatId, swipeId);
     if (result === 'saved') {
       toastr.success(`已在第 ${floor} 楼插入 ${plan.images.length} 个生图 tag`, '柏宝绘');
       return;
     }
+    if (marked) clearAutoGenerateForFloor(chatId, floor);
     console.info(`[柏宝绘] 第 ${floor} 楼在分析期间发生变化，放弃写入：${result}`);
     toastr.warning('正文、聊天或 swipe 已发生变化，本次没有写入生图 tag', '柏宝绘');
   } catch (error) {
     // 请求失败或被切换聊天取消时允许同一正文在后续重新渲染后重试。
     processed.delete(identity);
+    // 异常发生在挂标记之后时(如保存失败回滚),撤销本楼标记,不留残留
+    clearAutoGenerateForFloor(chatId, floor);
     if (controller.signal.aborted) return;
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[柏宝绘] 第 ${floor} 楼自动生成 tag 失败`, error);

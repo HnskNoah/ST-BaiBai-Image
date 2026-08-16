@@ -16,7 +16,7 @@ describe('SlotRegistry', () => {
 
   it('stores and retrieves records', () => {
     const registry = new SlotRegistry();
-    const record = { container: {} as HTMLElement, vnode: {} as never };
+    const record = { container: {} as ShadowRoot, vnode: {} as never };
     const key = registry.key('c', 1, 0, 0);
     expect(registry.has(key)).toBe(false);
     registry.set(key, record);
@@ -29,10 +29,10 @@ describe('SlotRegistry', () => {
   it('lists all keys of a message across swipes', () => {
     const registry = new SlotRegistry();
     const chat = 'c';
-    registry.set(registry.key(chat, 1, 0, 0), { container: {} as HTMLElement, vnode: {} as never });
-    registry.set(registry.key(chat, 1, 1, 0), { container: {} as HTMLElement, vnode: {} as never });
-    registry.set(registry.key(chat, 2, 0, 0), { container: {} as HTMLElement, vnode: {} as never });
-    registry.set(registry.key('other', 1, 0, 0), { container: {} as HTMLElement, vnode: {} as never });
+    registry.set(registry.key(chat, 1, 0, 0), { container: {} as ShadowRoot, vnode: {} as never });
+    registry.set(registry.key(chat, 1, 1, 0), { container: {} as ShadowRoot, vnode: {} as never });
+    registry.set(registry.key(chat, 2, 0, 0), { container: {} as ShadowRoot, vnode: {} as never });
+    registry.set(registry.key('other', 1, 0, 0), { container: {} as ShadowRoot, vnode: {} as never });
 
     const keys = registry.keysByMessage(chat, 1).sort();
     expect(keys).toEqual(['c|1|0|0', 'c|1|1|0']);

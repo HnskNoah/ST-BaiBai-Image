@@ -17,7 +17,9 @@ const workflowState = computed(() => {
     if (!placeholders.includes('prompt')) {
       return { tone: 'error', text: 'JSON 有效，但缺少必需的 %prompt% 占位符。' };
     }
-    const unknown = placeholders.filter(name => !['prompt', 'negative_prompt', 'seed', 'nl'].includes(name));
+    const unknown = placeholders.filter(
+      name => !['prompt', 'negative_prompt', 'seed', 'nl', 'width', 'height'].includes(name),
+    );
     if (unknown.length) {
       return { tone: 'error', text: `暂不支持：${unknown.map(name => `%${name}%`).join('、')}` };
     }
@@ -69,6 +71,37 @@ async function onTestConnection() {
           <input v-model="settings.comfyui.naturalLanguage" type="checkbox" class="bbi-checkbox" />
         </label>
 
+        <div class="size-grid">
+          <div class="bbi-field">
+            <div class="bbi-field-head">
+              <span class="bbi-field-label">竖屏尺寸(宽×高)</span>
+            </div>
+            <input
+              class="bbi-input"
+              type="text"
+              v-model="settings.comfyui.portraitSize"
+              placeholder="832×1216"
+              spellcheck="false"
+            />
+          </div>
+          <div class="bbi-field">
+            <div class="bbi-field-head">
+              <span class="bbi-field-label">横屏尺寸(宽×高)</span>
+            </div>
+            <input
+              class="bbi-input"
+              type="text"
+              v-model="settings.comfyui.landscapeSize"
+              placeholder="1216×832"
+              spellcheck="false"
+            />
+          </div>
+        </div>
+        <p class="bbi-field-hint">
+          自动 tag 会为每个画面判定横屏还是竖屏(群像/远景→横，单人/特写→竖)，出图时取对应尺寸。
+          仅在工作流用了 %width% / %height% 时生效；不改工作流则沿用工作流里写死的尺寸。
+        </p>
+
         <div class="conn-actions">
           <span v-if="inUse" class="conn-inuse"><Icon name="check" :size="13" /> 当前出图渠道</span>
           <button
@@ -97,7 +130,8 @@ async function onTestConnection() {
           ></textarea>
           <p class="bbi-field-hint">
             在 ComfyUI 中使用「Save (API Format)」导出。将正向提示词改为 %prompt%，可选使用
-            %negative_prompt%、%seed% 和 %nl%(自然语言部分,不会自动拼进 %prompt%)。
+            %negative_prompt%、%seed%、%nl%(自然语言部分,不会自动拼进 %prompt%)，
+            以及 %width% / %height%(填进 EmptyLatentImage，按上方竖/横屏尺寸自动切换)。
           </p>
           <p class="workflow-state" :class="`is-${workflowState.tone}`">{{ workflowState.text }}</p>
       </Collapsible>
@@ -128,6 +162,13 @@ async function onTestConnection() {
 }
 .workflow-state.is-error {
   color: #c44747;
+}
+/* 竖屏/横屏尺寸并排;窄屏自动落成一列 */
+.size-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
 }
 /* URL 标签与输入框同行:标签靠左不压缩,输入框吃满剩余宽度 */
 .api-row {

@@ -32,10 +32,21 @@ interface BookApi {
   getContextAtFloor?(options: { floor: number }): BookFloorContext;
 }
 
+/** 参考块中涉及的单个角色(结构化),供角色固定外貌 tag 库做锚定匹配。 */
+export interface BookRole {
+  /** 角色名:NPC 为柏宝书 name;主角为调用方给的名字(缺省「主角」)。 */
+  name: string;
+  /** 柏宝书记录的固定外貌原文(主角 appearance / NPC desc);未记录为空串。 */
+  desc: string;
+  isProtagonist: boolean;
+}
+
 export interface BookMemoryContext {
   timing: 'before_latest' | 'after_latest';
   /** 解析后的角色参考文本块,可直接拼进提示词。 */
   text: string;
+  /** 本次参考块涉及的角色(与 text 同一批过滤口径)。 */
+  roles: BookRole[];
 }
 
 function getBookApi(): BookApi | null {
@@ -92,7 +103,7 @@ function fmtNpc(n: Record<string, unknown>): string {
   return tail.length ? `${line} 〔${tail.join(';')}〕` : line;
 }
 
-function fmtNpcs(npcs: unknown, bodyText: string): string {
+function fmtNpcs(npcs: unknown, bodyText: string, roles: BookRole[]): string {
   if (!Array.isArray(npcs)) return '';
   const lines: string[] = [];
   for (const raw of npcs) {
@@ -102,19 +113,29 @@ function fmtNpcs(npcs: unknown, bodyText: string): string {
     // 重要角色常驻;随行角色永远在场;其余用名字去目标正文里查,出现才算参与本楼
     if (n.important === true || n.follow === true || bodyText.includes(name)) {
       lines.push(`- ${fmtNpc(n)}`);
+      roles.push({ name, desc: oneLine(n.desc), isProtagonist: false });
     }
   }
   return lines.length ? `重要角色:\n${lines.join('\n')}` : '';
 }
 
-/** 把快照解析成角色参考文本(空角色信息 → 空串,调用方视为未提供)。 */
-function formatSnapshotRoles(snapshot: BookSnapshot, bodyText: string): string {
+/** 把快照解析成角色参考文本 + 结构化角色列表(空角色信息 → 空串,调用方视为未提供)。 */
+function formatSnapshotRoles(
+  snapshot: BookSnapshot,
+  bodyText: string,
+  protagonistName: string,
+): { text: string; roles: BookRole[] } {
   const lines: string[] = [];
+  const roles: BookRole[] = [];
   const protagonist = fmtProtagonist(snapshot.protagonist);
-  if (protagonist) lines.push(`主角:${protagonist}`);
-  const npcs = fmtNpcs(snapshot.npcs, bodyText);
+  if (protagonist) {
+    lines.push(`主角:${protagonist}`);
+    const p = (snapshot.protagonist ?? {}) as Record<string, unknown>;
+    roles.push({ name: protagonistName, desc: oneLine(p.appearance), isProtagonist: true });
+  }
+  const npcs = fmtNpcs(snapshot.npcs, bodyText, roles);
   if (npcs) lines.push(npcs);
-  return lines.join('\n');
+  return { text: lines.join('\n'), roles };
 }
 
 /* ============ 文本包装 ============ */
@@ -131,9 +152,14 @@ function buildMemoryText(roles: string): string {
  * 读取柏宝书角色状态并解析成角色参考文本。
  * @param floor 目标楼
  * @param bodyText 目标楼正文原文(用于判定不在场角色是否实际参与本楼)
+ * @param protagonistName 主角显示名(一般传 user 名;缺省「主角」,仅作角色 tag 库的匹配键)
  * 柏宝书不可用 / 无角色信息 / 读取失败 → 返回 null(调用方降级为仅发送正文)。
  */
-export function readBookMemory(floor: number, bodyText: string): BookMemoryContext | null {
+export function readBookMemory(
+  floor: number,
+  bodyText: string,
+  protagonistName = '主角',
+): BookMemoryContext | null {
   const api = getBookApi();
   if (!api) return null;
   try {
@@ -167,9 +193,9 @@ export function readBookMemory(floor: number, bodyText: string): BookMemoryConte
     }
     if (!snapshot) return null;
 
-    const roles = formatSnapshotRoles(snapshot, bodyText);
-    if (!roles) return null;
-    return { timing, text: buildMemoryText(roles) };
+    const { text, roles } = formatSnapshotRoles(snapshot, bodyText, protagonistName);
+    if (!text) return null;
+    return { timing, text: buildMemoryText(text), roles };
   } catch (error) {
     console.warn('[柏宝绘] 读取柏宝书角色状态失败，本次仅使用最近正文', error);
     return null;
