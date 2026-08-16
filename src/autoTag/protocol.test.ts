@@ -20,12 +20,14 @@ describe('auto tag line protocol', () => {
 \`\`\``;
     expect(parseImagePlan(raw, 3, 1)).toEqual({
       images: [{ line: 1, tag: 'first scene', nl: '', size: 'portrait' }],
+      changes: [],
     });
   });
 
   it('accepts the legacy prompt key as an alias of tag', () => {
     expect(parseImagePlan('{"images":[{"line":1,"prompt":"scene"}]}', 1, 1)).toEqual({
       images: [{ line: 1, tag: 'scene', nl: '', size: 'portrait' }],
+      changes: [],
     });
   });
 
@@ -33,6 +35,7 @@ describe('auto tag line protocol', () => {
     const raw = '{"images":[{"line":1,"tag":"1girl","nl":"A girl.\\nShe smiles."}]}';
     expect(parseImagePlan(raw, 1, 1)).toEqual({
       images: [{ line: 1, tag: '1girl', nl: 'A girl. She smiles.', size: 'portrait' }],
+      changes: [],
     });
   });
 
@@ -40,6 +43,7 @@ describe('auto tag line protocol', () => {
     const raw = '{"images":[{"line":1,"tag":"2girls","size":"landscape"}]}';
     expect(parseImagePlan(raw, 1, 1)).toEqual({
       images: [{ line: 1, tag: '2girls', nl: '', size: 'landscape' }],
+      changes: [],
     });
   });
 
@@ -130,5 +134,43 @@ describe('auto tag line protocol', () => {
     ).toBe(
       '第一行\r\n<bbi_image>prompt a<size>portrait</size></bbi_image>\r\n\r\n第三行\r\n<bbi_image>prompt c<size>portrait</size></bbi_image>',
     );
+  });
+});
+
+describe('changes parsing', () => {
+  it('parses valid character changes alongside images', () => {
+    const raw =
+      '{"images":[{"line":1,"tag":"@小雪"}],"changes":[{"name":"小雪","field":"hair","value":"short black hair","reason":"剪了短发"}]}';
+    expect(parseImagePlan(raw, 1, 1).changes).toEqual([
+      { name: '小雪', field: 'hair', value: 'short black hair', nl: undefined, reason: '剪了短发' },
+    ]);
+  });
+
+  it('accepts new-entry changes with value or structured fields', () => {
+    const raw =
+      '{"images":[],"changes":[{"name":"新角色","field":"new","value":"1girl, red eyes","reason":"建档"},{"name":"结构角色","field":"new","fields":{"sex":"1girl","hair":"blonde"},"reason":"建档"}]}';
+    expect(parseImagePlan(raw, 1, 1).changes).toEqual([
+      { name: '新角色', field: 'new', value: '1girl, red eyes', nl: undefined, reason: '建档' },
+      {
+        name: '结构角色',
+        field: 'new',
+        value: '{"sex":"1girl","hair":"blonde"}',
+        nl: undefined,
+        reason: '建档',
+      },
+    ]);
+  });
+
+  it('drops invalid change records but keeps the rest', () => {
+    const raw =
+      '{"images":[],"changes":[{"name":"","field":"hair","value":"x"},{"name":"A","field":"bogus","value":"x"},{"name":"B","field":"hair","value":"ok","reason":"r"},"junk",{"name":"C","field":"nl","nl":"a girl with long hair"}]}';
+    expect(parseImagePlan(raw, 1, 1).changes).toEqual([
+      { name: 'B', field: 'hair', value: 'ok', nl: undefined, reason: 'r' },
+      { name: 'C', field: 'nl', value: '', nl: 'a girl with long hair', reason: '' },
+    ]);
+  });
+
+  it('missing changes key yields an empty array', () => {
+    expect(parseImagePlan('{"images":[{"line":1,"tag":"a"}]}', 1, 1).changes).toEqual([]);
   });
 });

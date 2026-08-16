@@ -16,6 +16,7 @@ import {
   vibeModelKey,
 } from '@/backends/nai';
 import Collapsible from '@/components/Collapsible.vue';
+import BbiTextarea from '@/components/BbiTextarea.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { getContext } from '@/st/context';
@@ -289,12 +290,12 @@ function removeVibe(vibe: NaiVibe) {
           <div class="bbi-field-head">
             <span class="bbi-field-label">正面质量词</span>
           </div>
-          <input
-            class="bbi-input"
-            type="text"
+          <BbiTextarea
             v-model="settings.nai.qualityTags"
+            :rows="1"
+            :max-rows="4"
+            mono
             placeholder="留空则按模型用内置质量词"
-            spellcheck="false"
           />
           <p class="bbi-field-hint">生成时拼到正向提示词最前;留空 + 质量词开关开启时按模型自动附加</p>
         </div>
@@ -303,12 +304,12 @@ function removeVibe(vibe: NaiVibe) {
           <div class="bbi-field-head">
             <span class="bbi-field-label">负面提示词</span>
           </div>
-          <input
-            class="bbi-input"
-            type="text"
+          <BbiTextarea
             v-model="settings.nai.negativePrompt"
+            :rows="1"
+            :max-rows="6"
+            mono
             placeholder="bad anatomy, bad hands, ..."
-            spellcheck="false"
           />
           <p class="bbi-field-hint">与下方负面预设一起拼进负面</p>
         </div>

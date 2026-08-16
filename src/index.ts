@@ -2,7 +2,6 @@ import App from '@/App.vue';
 import { bindAutoTagging } from '@/autoTag/runner';
 import { bindTagActionButtons } from '@/floor/actionButton';
 import { bindFloorHydration } from '@/floor/hydrate';
-import { vAutosize } from '@/directives/autosize';
 import { injectMenuButton } from '@/menu';
 import { bindCharTagSync } from '@/state/charTags';
 import { hydrateSettings } from '@/state/settings';
@@ -72,7 +71,6 @@ function mount() {
   shadow.appendChild(container);
 
   const app = createApp(App);
-  app.directive('autosize', vAutosize);
   app.mount(container);
 
   $(window).on('pagehide', () => app.unmount());

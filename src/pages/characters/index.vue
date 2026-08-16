@@ -1,47 +1,90 @@
 <script setup lang="ts">
+import BbiTextarea from '@/components/BbiTextarea.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { generateCharTags } from '@/autoTag/charAnchors';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
+  CHAR_TAG_FIELDS,
+  CHAR_TAG_FIELD_LABELS,
+  buildEntryTag,
   charTagLib,
+  emptyCharFields,
   removeCharTag,
+  rollbackCharTag,
   upsertCharTag,
+  type CharTagChangeRecord,
   type CharTagEntry,
+  type CharTagField,
 } from '@/state/charTags';
 import { getContext } from '@/st/context';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 
 /**
- * 角色管理 —— 当前聊天的固定外貌 tag 库(仅本聊天生效,存 chatMetadata)。
- * 生成 tag 时,库中角色的 tag 串会作为「必须原样复制」的锚注入提示词,避免每次重写外貌产生偏移。
- * 只记录固定基础特征(发色/瞳色/体型等);服装、状态等变动内容不入库,仍按剧情现场生成。
+ * 角色管理 —— 当前聊天的固定外貌库(仅本聊天生效,存 chatMetadata)。
+ * 外貌按字段记录(sex/hair/eyes/...),拼接结果即最终 tag;生成 tag 时 AI 用 @角色名 引用,
+ * 插件替换成库中最新 tag —— 外貌稳定不漂移。
+ * 库由 AI 通过 changes 协议自动维护(剪发/长大等永久变化直接落库并记历史);
+ * 柏宝书只负责首次建档。这里主要用来查看/手改/回滚。
  */
 
 interface Draft {
   name: string;
-  tags: string;
+  fields: Record<CharTagField, string>;
+  raw: string;
+  nl: string;
 }
 
 // editingName:正在编辑的已有条目名;null = 新建。弹窗开关以 draft 是否存在为准。
 const editingName = ref<string | null>(null);
 const draft = ref<Draft | null>(null);
-// 草稿来源:手改内容即转 manual(防止自动重转覆盖用户修改);「从柏宝书重新生成」后转 book。
+// 草稿来源:手改内容即转 manual;「从柏宝书重新生成」后转 book。
 const draftSource = ref<CharTagEntry['source']>('manual');
 const draftDesc = ref('');
 const regenerating = ref(false);
+// 历史面板:展开显示的条目名
+const expandedHistory = ref<string | null>(null);
+// 回滚确认
+const confirmRollbackOpen = ref(false);
+const pendingRollback = ref<{ name: string; record: CharTagChangeRecord } | null>(null);
+
+const FIELD_PLACEHOLDERS: Record<CharTagField, string> = {
+  sex: '如 1girl / 1boy',
+  hair: '如 long black hair',
+  eyes: '如 red eyes',
+  skin: '如 pale skin(可不填)',
+  body: '如 petite, small breasts',
+  extra: '如 heterochromia(可不填)',
+  outfit: '固定着装,可不填',
+};
+
+/** 是否整串模式:有 raw 且没有字段。 */
+const draftIsRaw = computed(
+  () => !!draft.value && !!draft.value.raw.trim() && CHAR_TAG_FIELDS.every(f => !draft.value!.fields[f].trim()),
+);
+
+const previewTag = computed(() => {
+  const d = draft.value;
+  if (!d) return '';
+  return buildEntryTag({ fields: d.fields, raw: d.raw });
+});
 
 function openEntry(entry: CharTagEntry) {
   editingName.value = entry.name;
-  draft.value = { name: entry.name, tags: entry.tags };
+  draft.value = {
+    name: entry.name,
+    fields: { ...emptyCharFields(), ...entry.fields },
+    raw: entry.raw,
+    nl: entry.nl,
+  };
   draftSource.value = entry.source;
   draftDesc.value = entry.desc;
 }
 
 function addEntry() {
   editingName.value = null;
-  draft.value = { name: '', tags: '' };
+  draft.value = { name: '', fields: emptyCharFields(), raw: '', nl: '' };
   draftSource.value = 'manual';
   draftDesc.value = '';
 }
@@ -52,7 +95,7 @@ function closeEntry() {
   regenerating.value = false;
 }
 
-/** 文本框被手动编辑 → 视为手动来源(自动重转只认「从柏宝书重新生成」按钮的结果) */
+/** 手动编辑过的字段 → 条目归手动(但仍可被 AI 变更接管) */
 function markManual() {
   draftSource.value = 'manual';
   draftDesc.value = '';
@@ -62,14 +105,26 @@ function confirmEntry() {
   const d = draft.value;
   if (!d) return;
   const name = d.name.trim();
-  const tags = d.tags.trim();
-  if (!name || !tags) {
-    toastr.warning('角色名和固定外貌 tag 都不能为空', '柏宝绘');
+  if (!name) {
+    toastr.warning('角色名不能为空', '柏宝绘');
+    return;
+  }
+  if (!previewTag.value) {
+    toastr.warning('至少填一个外貌字段(或整串 tag)', '柏宝绘');
     return;
   }
   const ok = upsertCharTag(
-    { name, tags, source: draftSource.value, desc: draftDesc.value },
+    {
+      name,
+      fields: d.fields,
+      raw: d.raw,
+      nl: d.nl,
+      source: draftSource.value,
+      desc: draftDesc.value,
+      history: [],
+    },
     editingName.value ?? undefined,
+    { recordChanges: true },
   );
   if (ok) closeEntry();
 }
@@ -85,7 +140,7 @@ function confirmRemove() {
   closeEntry();
 }
 
-/* —— 从柏宝书最新状态重新生成:取最新楼的角色参考,找到同名角色的外貌记录,批量转换接口转 tag —— */
+/* —— 从柏宝书最新状态建档:取最新楼的角色参考,找到同名角色的外貌记录,批量转换接口转字段 —— */
 async function regenerateFromBook() {
   const d = draft.value;
   if (!d) return;
@@ -105,7 +160,7 @@ async function regenerateFromBook() {
     const memory = readBookMemory(floor, ctx.chat[floor]?.mes ?? '', ctx.name1);
     const role = memory?.roles.find(r => r.name === name);
     if (!role?.desc) {
-      toastr.info('柏宝书最新状态里没有该角色的外貌记录,可手动填写 tag', '柏宝绘');
+      toastr.info('柏宝书最新状态里没有该角色的外貌记录,可手动填写', '柏宝绘');
       return;
     }
     const [result] = await generateCharTags([{ name, desc: role.desc }]);
@@ -113,7 +168,9 @@ async function regenerateFromBook() {
       toastr.warning('模型没有返回该角色的 tag,请重试或手动填写', '柏宝绘');
       return;
     }
-    d.tags = result.tags;
+    const fields = { ...emptyCharFields(), ...result.fields };
+    d.fields = fields;
+    d.raw = '';
     draftSource.value = 'book';
     draftDesc.value = role.desc;
     toastr.success('已按柏宝书最新外貌生成,点「完成」保存', '柏宝绘');
@@ -124,8 +181,50 @@ async function regenerateFromBook() {
   }
 }
 
+/* —— 历史展示与回滚 —— */
+function toggleHistory(name: string) {
+  expandedHistory.value = expandedHistory.value === name ? null : name;
+}
+
+function fieldLabel(field: CharTagChangeRecord['field']): string {
+  if (field === 'new') return '建档';
+  if (field === 'raw') return '整串';
+  if (field === 'nl') return '自然语言';
+  return CHAR_TAG_FIELD_LABELS[field];
+}
+
+function historySummary(entry: CharTagEntry): string {
+  if (!entry.history.length) return '';
+  const last = entry.history[entry.history.length - 1];
+  return last.field === 'new'
+    ? `${last.floor >= 0 ? `第${last.floor}楼` : ''}建档`
+    : `${fieldLabel(last.field)} → ${last.to}`;
+}
+
+function askRollback(record: CharTagChangeRecord) {
+  if (!expandedHistory.value) return;
+  pendingRollback.value = { name: expandedHistory.value, record };
+  confirmRollbackOpen.value = true;
+}
+
+function confirmRollback() {
+  confirmRollbackOpen.value = false;
+  const p = pendingRollback.value;
+  pendingRollback.value = null;
+  if (!p) return;
+  if (rollbackCharTag(p.name, p.record)) {
+    toastr.success(`已回滚「${p.name}」的${fieldLabel(p.record.field)}变更`, '柏宝绘');
+  } else {
+    toastr.warning('回滚失败:条目可能已删除', '柏宝绘');
+  }
+}
+
 function sourceLabel(entry: CharTagEntry): string {
-  return entry.source === 'book' ? '柏宝书' : '手动';
+  return entry.source === 'book' ? '柏宝书' : entry.source === 'ai' ? 'AI 维护' : '手动';
+}
+
+function entryTagPreview(entry: CharTagEntry): string {
+  return buildEntryTag(entry);
 }
 </script>
 
@@ -138,8 +237,9 @@ function sourceLabel(entry: CharTagEntry): string {
     <hr class="bbi-rule" />
 
     <p class="bbi-field-hint">
-      这里记录每个角色的<strong>固定外貌 tag</strong>(发色、瞳色、体型等基础特征,不含服装)。
-      生成图片 tag 时会原样注入,保证同一角色外貌稳定不偏移;柏宝书没记录外貌的角色可在此手动补一条。
+      角色固定外貌库:外貌按字段记录(性别/头发/眼睛/体型等),生成图片 tag 时 AI 用 <code>@角色名</code> 引用,
+      插件自动替换成库中最新 tag —— 同一角色外貌稳定不漂移。
+      剧情造成的永久变化(剪发、长大等)由 AI 自动更新并记录历史;柏宝书只负责首次建档。
       仅当前聊天生效,不跨聊天。
     </p>
 
@@ -154,15 +254,41 @@ function sourceLabel(entry: CharTagEntry): string {
       <li v-for="entry in charTagLib.entries" :key="entry.name" class="bbi-char-item">
         <button class="bbi-char-open" type="button" @click="openEntry(entry)">
           <span class="bbi-char-name">{{ entry.name }}</span>
-          <span class="bbi-char-tags">{{ entry.tags }}</span>
-          <span class="bbi-char-src" :class="{ 'is-book': entry.source === 'book' }">
+          <span class="bbi-char-tags">{{ entryTagPreview(entry) }}</span>
+          <span class="bbi-char-src" :class="{ 'is-book': entry.source === 'book', 'is-ai': entry.source === 'ai' }">
             {{ sourceLabel(entry) }}
           </span>
         </button>
+        <div v-if="entry.history.length" class="bbi-char-history-row">
+          <button
+            class="bbi-char-history-toggle"
+            type="button"
+            @click="toggleHistory(entry.name)"
+          >
+            <Icon name="refresh" /> {{ historySummary(entry) }}{{ entry.history.length > 1 ? ` 等 ${entry.history.length} 条记录` : '' }}
+          </button>
+          <ul v-if="expandedHistory === entry.name" class="bbi-char-history-list">
+            <li v-for="(record, i) in [...entry.history].reverse()" :key="i" class="bbi-char-history-item">
+              <div class="bbi-char-history-main">
+                <span class="bbi-char-history-field">{{ fieldLabel(record.field) }}</span>
+                <span class="bbi-char-history-change">
+                  <template v-if="record.from">{{ record.from }} → {{ record.to }}</template>
+                  <template v-else>{{ record.to }}</template>
+                </span>
+                <span v-if="record.reason" class="bbi-char-history-reason">{{ record.reason }}</span>
+                <span class="bbi-char-history-meta">{{ record.floor >= 0 ? `第${record.floor}楼` : '手动' }}·{{ new Date(record.at).toLocaleString() }}</span>
+              </div>
+              <button class="bbi-btn bbi-btn-sm" type="button" title="把该字段回滚到变更前的值" @click="askRollback(record)">
+                回滚
+              </button>
+            </li>
+          </ul>
+        </div>
       </li>
     </ul>
     <p v-else class="bbi-field-hint">
-      还没有记录。生成 tag 时,柏宝书里有外貌的角色会自动转换入库;也可以点「添加角色」手动补。
+      还没有记录。生成 tag 时,柏宝书里有外貌的角色会自动转换入库;没有柏宝书时 AI 也会为反复出场的角色建档;
+      也可以点「添加角色」手动补。
     </p>
 
     <!-- ===== 角色编辑弹窗 ===== -->
@@ -177,23 +303,53 @@ function sourceLabel(entry: CharTagEntry): string {
           <span class="bbi-modal-label">角色名</span>
           <input v-model="draft.name" class="bbi-input" placeholder="与正文/柏宝书中的名字一致" @input="markManual" />
         </label>
-        <span class="bbi-field-hint">按这个名字去正文和柏宝书角色参考里匹配;改名不会自动跟随。</span>
+        <span class="bbi-field-hint">按这个名字去正文和柏宝书角色参考里匹配;AI 引用时也用它(@角色名)。改名不会自动跟随。</span>
+
+        <div class="bbi-modal-field">
+          <span class="bbi-modal-label">外貌字段</span>
+          <div class="bbi-char-form">
+            <label v-for="f in CHAR_TAG_FIELDS" :key="f" class="bbi-char-form-row">
+              <span class="bbi-char-form-label">{{ CHAR_TAG_FIELD_LABELS[f] }}</span>
+              <input
+                v-model="draft.fields[f]"
+                class="bbi-input"
+                :placeholder="FIELD_PLACEHOLDERS[f]"
+                @input="markManual"
+              />
+            </label>
+          </div>
+        </div>
+        <span class="bbi-field-hint">只写固定基础特征;服装、表情、动作不入库,每次按剧情生成。</span>
 
         <label class="bbi-modal-field">
-          <span class="bbi-modal-label">固定外貌 tag</span>
-          <textarea
-            v-model="draft.tags"
-            class="bbi-input bbi-char-tags-area"
-            placeholder="如 1girl, long black hair, red eyes, small breasts"
-            spellcheck="false"
-            rows="4"
+          <span class="bbi-modal-label">整串模式(可选)</span>
+          <BbiTextarea
+            v-model="draft.raw"
+            :rows="2"
+            :max-rows="6"
+            mono
+            placeholder="留空则用上面的字段拼接;填了整串且字段全空时,以整串为准(旧数据格式)"
             @input="markManual"
-          ></textarea>
+          />
         </label>
-        <span class="bbi-field-hint">
-          只写固定基础特征(性别/发色发型/瞳色/体型等),不要写服装、表情、动作——那些每次按剧情生成。
-          当前来源:{{ draftSource === 'book' ? '柏宝书自动转换' : '手动填写' }};手动编辑内容后按手动保存。
-        </span>
+
+        <label class="bbi-modal-field">
+          <span class="bbi-modal-label">自然语言外貌(可选)</span>
+          <BbiTextarea
+            v-model="draft.nl"
+            :rows="2"
+            :max-rows="4"
+            mono
+            placeholder="一句连贯英文外貌描述,自然语言模式下替换 nl 里的 @角色名 用;留空则用 tag 串替换"
+            @input="markManual"
+          />
+        </label>
+
+        <div class="bbi-char-preview">
+          <span class="bbi-field-label">最终 tag 预览</span>
+          <code class="bbi-char-preview-tag">{{ previewTag || '(空)' }}</code>
+          <span v-if="draftIsRaw" class="bbi-char-preview-mode">整串模式</span>
+        </div>
 
         <footer class="bbi-modal-foot">
           <button v-if="editingName" class="bbi-btn bbi-btn-danger" type="button" @click="askRemove">
@@ -203,7 +359,7 @@ function sourceLabel(entry: CharTagEntry): string {
           <button
             class="bbi-btn"
             type="button"
-            title="读取柏宝书最新状态里该角色的外貌,重新转换成 tag"
+            title="读取柏宝书最新状态里该角色的外貌,重新转换成字段"
             :disabled="regenerating"
             @click="regenerateFromBook"
           >
@@ -225,6 +381,23 @@ function sourceLabel(entry: CharTagEntry): string {
         </ConfirmDialog>
       </div>
     </ModalMask>
+
+    <!-- ===== 回滚确认 ===== -->
+    <ConfirmDialog
+      v-model:open="confirmRollbackOpen"
+      title="回滚变更"
+      confirm-text="回滚"
+      tone="danger"
+      top-layer
+      @confirm="confirmRollback"
+    >
+      <template v-if="pendingRollback">
+        把「{{ pendingRollback.name }}」的「{{ fieldLabel(pendingRollback.record.field) }}」从
+        <code>{{ pendingRollback.record.to }}</code> 回滚到
+        <code>{{ pendingRollback.record.from || '(空)' }}</code> ?
+        建档记录的回滚会删除整个条目。
+      </template>
+    </ConfirmDialog>
   </section>
 </template>
 
@@ -258,6 +431,11 @@ function sourceLabel(entry: CharTagEntry): string {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.bbi-char-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .bbi-char-open {
   width: 100%;
@@ -298,7 +476,7 @@ function sourceLabel(entry: CharTagEntry): string {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 来源药丸:手动 muted,柏宝书转强调 */
+/* 来源药丸:手动 muted,柏宝书/AI 转强调 */
 .bbi-char-src {
   flex: 0 0 auto;
   font-size: 11px;
@@ -309,10 +487,123 @@ function sourceLabel(entry: CharTagEntry): string {
   background: var(--bbi-surface);
   border: 1px solid var(--bbi-line);
 }
-.bbi-char-src.is-book {
+.bbi-char-src.is-book,
+.bbi-char-src.is-ai {
   color: var(--bbi-accent);
   background: var(--bbi-accent-soft);
   border-color: transparent;
+}
+
+/* —— 历史行 —— */
+.bbi-char-history-row {
+  padding: 0 4px;
+}
+.bbi-char-history-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  padding: 2px 6px;
+  color: var(--bbi-ink-muted);
+  font-size: 12px;
+  font-family: var(--bbi-font-sans);
+  cursor: pointer;
+  border-radius: var(--bbi-radius-sm);
+}
+.bbi-char-history-toggle:hover {
+  color: var(--bbi-accent);
+  background: var(--bbi-surface-2);
+}
+.bbi-char-history-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--bbi-line);
+  border-radius: var(--bbi-radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.bbi-char-history-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.bbi-char-history-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.bbi-char-history-field {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bbi-accent);
+}
+.bbi-char-history-change {
+  font-family: var(--bbi-font-mono);
+  font-size: 12px;
+  color: var(--bbi-ink);
+  word-break: break-word;
+}
+.bbi-char-history-reason {
+  font-size: 12px;
+  color: var(--bbi-ink-muted);
+}
+.bbi-char-history-meta {
+  font-size: 11px;
+  color: var(--bbi-ink-muted);
+}
+
+/* —— 表单 —— */
+.bbi-char-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bbi-char-form-row {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.bbi-char-form-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--bbi-ink-soft);
+}
+
+/* —— 最终 tag 预览 —— */
+.bbi-char-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--bbi-line);
+  border-radius: var(--bbi-radius-sm);
+  background: var(--bbi-surface-2);
+}
+.bbi-char-preview-tag {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--bbi-font-mono);
+  font-size: 12px;
+  color: var(--bbi-ink);
+  word-break: break-word;
+}
+.bbi-char-preview-mode {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--bbi-radius-pill);
+  color: var(--bbi-ink-muted);
+  background: var(--bbi-surface);
+  border: 1px solid var(--bbi-line);
 }
 
 .bbi-icon-mini {
@@ -334,14 +625,6 @@ function sourceLabel(entry: CharTagEntry): string {
   border-color: var(--bbi-accent);
 }
 
-.bbi-char-tags-area {
-  resize: vertical;
-  min-height: 72px;
-  line-height: 1.6;
-  font-family: var(--bbi-font-mono);
-  font-size: 12.5px;
-}
-
 .bbi-modal-foot-spacer {
   flex: 1 1 auto;
 }
@@ -361,6 +644,9 @@ function sourceLabel(entry: CharTagEntry): string {
   }
   .bbi-char-tags {
     font-size: 11px;
+  }
+  .bbi-char-form-row {
+    grid-template-columns: 64px 1fr;
   }
 }
 </style>

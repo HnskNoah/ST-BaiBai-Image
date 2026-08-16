@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import BbiSelect from '@/components/BbiSelect.vue';
+import BbiTextarea from '@/components/BbiTextarea.vue';
 import Collapsible from '@/components/Collapsible.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import Icon from '@/components/Icon.vue';
@@ -137,7 +138,7 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
 // 正在编辑的提示词;draft 是草稿,点「完成」才写回 settings(取消则丢弃)。
 const editingTagPrompt = ref<TagPromptMeta | null>(null);
 const tagPromptDraft = ref('');
-const tagPromptArea = ref<HTMLTextAreaElement | null>(null);
+const tagPromptArea = ref<InstanceType<typeof BbiTextarea> | null>(null);
 
 // 该条是否已自定义(非空即视为已覆盖内置)
 function isTagPromptCustom(key: keyof AutoTagPrompts): boolean {
@@ -165,22 +166,9 @@ function saveTagPrompt() {
 function resetTagPromptDraft() {
   if (editingTagPrompt.value) tagPromptDraft.value = editingTagPrompt.value.builtin;
 }
-// 点宏标签 → 插入到文本框光标处(无焦点则追加到末尾)
+// 点宏标签 → 插入到文本框光标处(无焦点则追加到末尾);光标定位由组件内部处理
 function insertTagMacro(token: string) {
-  const el = tagPromptArea.value;
-  if (!el) {
-    tagPromptDraft.value += token;
-    return;
-  }
-  const start = el.selectionStart ?? tagPromptDraft.value.length;
-  const end = el.selectionEnd ?? start;
-  tagPromptDraft.value = tagPromptDraft.value.slice(0, start) + token + tagPromptDraft.value.slice(end);
-  // 等 v-model 回填后把光标移到插入内容之后
-  void nextTick(() => {
-    el.focus();
-    const pos = start + token.length;
-    el.setSelectionRange(pos, pos);
-  });
+  tagPromptArea.value?.insertAtCursor(token);
 }
 
 // 排除参数:内部存 string[],编辑时用逗号分隔的单行文本承载,读/写两向转换。
@@ -713,13 +701,14 @@ function closeModelMenuSoon() {
           </button>
         </div>
 
-        <textarea
+        <BbiTextarea
           ref="tagPromptArea"
           v-model="tagPromptDraft"
-          class="bbi-input bbi-prompt-area"
-          spellcheck="false"
-          rows="16"
-        ></textarea>
+          class="bbi-prompt-area"
+          :rows="12"
+          :max-rows="28"
+          mono
+        />
 
         <footer class="bbi-modal-foot">
           <button class="bbi-btn bbi-btn-danger" type="button" @click="resetTagPromptDraft">
@@ -1145,10 +1134,7 @@ function closeModelMenuSoon() {
   background: var(--bbi-accent-soft);
 }
 .bbi-prompt-area {
-  resize: vertical;
-  min-height: 240px;
   line-height: 1.6;
-  font-family: var(--bbi-font-mono);
   font-size: 12.5px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

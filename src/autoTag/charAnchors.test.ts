@@ -1,94 +1,114 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAnchorText, parseConvertedTags, planCharAnchors } from '@/autoTag/charAnchors';
+import {
+  applyCharRefs,
+  buildLibraryText,
+  formatEntryForPrompt,
+  parseConvertedTags,
+} from '@/autoTag/charAnchors';
 import type { BookRole } from '@/autoTag/bookMemory';
-import type { CharTagEntry } from '@/state/charTags';
+import { emptyCharFields, type CharTagEntry } from '@/state/charTags';
 
-function entry(name: string, tags: string, source: CharTagEntry['source'] = 'book', desc = ''): CharTagEntry {
-  return { name, tags, source, desc };
+function entry(name: string, fields: Partial<Record<string, string>>, source: CharTagEntry['source'] = 'ai'): CharTagEntry {
+  return {
+    name,
+    fields: { ...emptyCharFields(), ...fields },
+    raw: '',
+    nl: '',
+    source,
+    desc: '',
+    history: [],
+  };
 }
 
-describe('planCharAnchors', () => {
-  it('anchors existing entries; generates for book roles missing from the library', () => {
-    const roles: BookRole[] = [
-      { name: '阿黛尔', desc: '银色短发', isProtagonist: false },
-      { name: '铁匠老周', desc: '络腮胡', isProtagonist: false },
-      { name: '路人甲', desc: '', isProtagonist: false },
-    ];
-    const entries = [entry('阿黛尔', 'short silver hair', 'book', '银色短发')];
-    const plan = planCharAnchors(roles, entries, '正文');
-    expect(plan.anchorNames).toEqual(['阿黛尔']);
-    expect(plan.toGenerate).toEqual([{ name: '铁匠老周', desc: '络腮胡' }]);
-    // 柏宝书没记录外貌、库里也没有 → 既不锚定也不生成
-    expect(plan.anchorNames).not.toContain('路人甲');
+describe('formatEntryForPrompt / buildLibraryText', () => {
+  it('renders non-empty fields with labels in fixed order', () => {
+    const text = formatEntryForPrompt(entry('小雪', { sex: '1girl', hair: 'long black hair', eyes: 'red eyes' }));
+    expect(text).toBe('- 小雪: 性别=1girl, 头发=long black hair, 眼睛=red eyes');
   });
 
-  it('regenerates book entries whose recorded desc changed; keeps manual entries untouched', () => {
-    const roles: BookRole[] = [
-      { name: '阿黛尔', desc: '金色长直发', isProtagonist: false },
-      { name: '老周', desc: '新外貌', isProtagonist: false },
-    ];
-    const entries = [
-      entry('阿黛尔', 'short silver hair', 'book', '银色短发'),
-      entry('老周', 'beard', 'manual', ''),
-    ];
-    const plan = planCharAnchors(roles, entries, '');
-    expect(plan.toGenerate).toEqual([{ name: '阿黛尔', desc: '金色长直发' }]);
-    expect(plan.anchorNames).toContain('老周');
+  it('falls back to raw tag when no structured fields', () => {
+    const e = entry('旧角色', {});
+    e.raw = '1girl, red eyes';
+    expect(formatEntryForPrompt(e)).toBe('- 旧角色: tag=1girl, red eyes');
   });
 
-  it('anchors library entries not in the role reference but mentioned in the body text', () => {
-    const roles: BookRole[] = [];
-    const entries = [entry('神秘商人', 'hooded figure', 'manual'), entry('路人乙', 'x', 'manual')];
-    const plan = planCharAnchors(roles, entries, '神秘商人掀开斗篷。');
-    expect(plan.anchorNames).toEqual(['神秘商人']);
-    expect(plan.toGenerate).toEqual([]);
+  it('builds the library block with a header', () => {
+    const text = buildLibraryText([entry('小雪', { sex: '1girl' })]);
+    expect(text).toContain('【角色固定外貌库');
+    expect(text).toContain('- 小雪: 性别=1girl');
   });
 
-  it('does not double-count a role both in reference and library', () => {
-    const roles: BookRole[] = [{ name: '阿黛尔', desc: '', isProtagonist: false }];
-    const entries = [entry('阿黛尔', 'short silver hair', 'book', '银色短发')];
-    const plan = planCharAnchors(roles, entries, '阿黛尔来了');
-    expect(plan.anchorNames).toEqual(['阿黛尔']);
-    // 柏宝书 desc 已被移除(空串)→ 不触发重转,沿用库条目
-    expect(plan.toGenerate).toEqual([]);
+  it('returns empty string for no entries', () => {
+    expect(buildLibraryText([])).toBe('');
   });
 });
 
-describe('buildAnchorText', () => {
-  it('builds the verbatim-copy instruction block', () => {
-    const text = buildAnchorText([entry('阿黛尔', 'short silver hair, blue eyes')]);
-    expect(text).toContain('必须原样复制');
-    expect(text).toContain('- 阿黛尔: short silver hair, blue eyes');
+describe('applyCharRefs', () => {
+  const entries = [
+    entry('小雪', { sex: '1girl', hair: 'long black hair', eyes: 'red eyes' }),
+    entry('张三', { sex: '1boy' }),
+  ];
+
+  it('replaces @name placeholders with the joined tag string', () => {
+    const { text, unknown } = applyCharRefs('@小雪, white dress, sitting', entries);
+    expect(text).toBe('1girl, long black hair, red eyes, white dress, sitting');
+    expect(unknown).toEqual([]);
   });
 
-  it('returns empty string for no anchors', () => {
-    expect(buildAnchorText([])).toBe('');
+  it('handles multiple placeholders and mixed content', () => {
+    const { text } = applyCharRefs('@张三 and @小雪, classroom', entries);
+    expect(text).toBe('1boy and 1girl, long black hair, red eyes, classroom');
+  });
+
+  it('strips unknown names and tidies separators', () => {
+    const { text, unknown } = applyCharRefs('@路人甲, @小雪, smile', entries);
+    expect(unknown).toEqual(['路人甲']);
+    expect(text).toBe('1girl, long black hair, red eyes, smile');
+  });
+
+  it('handles placeholder at both ends and collapses leftovers', () => {
+    const { text } = applyCharRefs('@路人甲, @小雪', entries);
+    expect(text).toBe('1girl, long black hair, red eyes');
+    const { text: t2 } = applyCharRefs('@小雪, @路人甲', entries);
+    expect(t2).toBe('1girl, long black hair, red eyes');
+  });
+
+  it('replaces nl placeholders with the tag string when no nl sentence exists', () => {
+    const { text } = applyCharRefs('@小雪 in a white dress', entries);
+    expect(text).toBe('1girl, long black hair, red eyes in a white dress');
+  });
+
+  it('prefers the nl sentence for nl replacement when present', () => {
+    const e = entry('小雪', { sex: '1girl' });
+    e.nl = 'a petite girl with long black hair';
+    const { text } = applyCharRefs('@小雪 sits by the window', [e], 'nl');
+    expect(text).toBe('a petite girl with long black hair sits by the window');
+  });
+
+  it('nl mode falls back to the tag string when no nl sentence', () => {
+    const { text } = applyCharRefs('@小雪 sits by the window', entries, 'nl');
+    expect(text).toBe('1girl, long black hair, red eyes sits by the window');
   });
 });
 
 describe('parseConvertedTags', () => {
-  it('parses a plain JSON object', () => {
-    expect(parseConvertedTags('{"阿黛尔":"short silver hair, blue eyes"}')).toEqual({
-      阿黛尔: 'short silver hair, blue eyes',
+  it('parses structured per-character fields', () => {
+    const raw = '{"阿黛尔":{"sex":"1girl","hair":"short silver hair","eyes":""}}';
+    expect(parseConvertedTags(raw)).toEqual({
+      阿黛尔: { sex: '1girl', hair: 'short silver hair' },
     });
   });
 
-  it('tolerates code fences and surrounding prose', () => {
-    const raw = '好的,转换结果如下:\n```json\n{"阿黛尔":"short silver hair"}\n```\n完毕。';
-    expect(parseConvertedTags(raw)).toEqual({ 阿黛尔: 'short silver hair' });
+  it('tolerates code fences and surrounding prose, drops empty records', () => {
+    const raw = '好的:\n```json\n{"阿黛尔":{"hair":"silver"},"空":{"":"  "}}\n```';
+    expect(parseConvertedTags(raw)).toEqual({ 阿黛尔: { hair: 'silver' } });
   });
 
-  it('strips thinking blocks and sanitizes values', () => {
-    const raw = '<think>考虑一下</think>{"阿黛尔":"short silver hair\\nblue eyes","坏":"x<bbi_image>y","空":"  "}';
-    const parsed = parseConvertedTags(raw);
-    expect(parsed['阿黛尔']).toBe('short silver hair blue eyes');
-    expect(parsed['坏']).toBeUndefined();
-    expect(parsed['空']).toBeUndefined();
-  });
-
-  it('returns empty object for unparseable output', () => {
-    expect(parseConvertedTags('没有 JSON')).toEqual({});
-    expect(parseConvertedTags('[1,2,3]')).toEqual({});
+  it('sanitizes values with newlines or bbi tags, rejects non-object shapes', () => {
+    const raw = '{"阿黛尔":{"hair":"long\\nblack"},"坏":{"eyes":"x<bbi_image>y"},"串":{"hair":"ok"}}';
+    expect(parseConvertedTags(raw)).toEqual({ 串: { hair: 'ok' }, 阿黛尔: { hair: 'long black' } });
+    expect(parseConvertedTags('{"阿黛尔":"plain string"}')).toEqual({});
+    expect(parseConvertedTags('no json')).toEqual({});
   });
 });

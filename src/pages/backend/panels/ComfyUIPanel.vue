@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { getWorkflowPlaceholders, testComfyConnection } from '@/backends/comfyui';
+import BbiTextarea from '@/components/BbiTextarea.vue';
 import Collapsible from '@/components/Collapsible.vue';
 import Icon from '@/components/Icon.vue';
 import { settings } from '@/state/settings';
@@ -120,14 +121,13 @@ async function onTestConnection() {
       </Collapsible>
 
       <Collapsible title="工作流" :open="false">
-        <textarea
+        <BbiTextarea
             v-model="settings.comfyui.workflow"
-            v-autosize
-            class="bbi-input be-mono workflow-input"
-            rows="10"
+            :rows="8"
+            :max-rows="24"
+            mono
             placeholder='{"3": {"class_type": "KSampler", ...}, ...}'
-            spellcheck="false"
-          ></textarea>
+          />
           <p class="bbi-field-hint">
             在 ComfyUI 中使用「Save (API Format)」导出。将正向提示词改为 %prompt%，可选使用
             %negative_prompt%、%seed%、%nl%(自然语言部分,不会自动拼进 %prompt%)，
@@ -143,11 +143,6 @@ async function onTestConnection() {
 .be-mono {
   font-family: var(--bbi-font-mono);
   font-size: 12.5px;
-}
-.workflow-input {
-  min-height: 180px;
-  max-height: 420px;
-  resize: vertical;
 }
 .workflow-state {
   margin: 10px 0 0;

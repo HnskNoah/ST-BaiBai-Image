@@ -1,7 +1,13 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { readBookMemory } from '@/autoTag/bookMemory';
-import { resolveCharAnchors } from '@/autoTag/charAnchors';
+import { applyCharRefs, resolveCharAnchors } from '@/autoTag/charAnchors';
 import { buildAutoTagMessages } from '@/autoTag/prompt';
+import {
+  applyAiChange,
+  charTagLib,
+  createAiEntry,
+  type CharTagField,
+} from '@/state/charTags';
 import { injectImageTags, parseImagePlan, sourceLineCount, type ImagePlan } from '@/autoTag/protocol';
 import { clearAutoGenerateForFloor, markForAutoGenerate } from '@/floor/autoGenerate';
 import { applyMessageText } from '@/st/messageEdit';
@@ -40,6 +46,39 @@ interface RunOptions {
   replace?: boolean;
 }
 
+/** 把 AI 报告的 changes 落库:new = 建档;其余 = 单字段/raw/nl 变更(全部记历史)。 */
+function applyPlanChanges(plan: ImagePlan, floor: number): void {
+  for (const change of plan.changes) {
+    if (change.field === 'new') {
+      // value 可能是结构化字段的 JSON 串(protocol.ts 拼),也可能是整串 tag 文本
+      let fields: Partial<Record<CharTagField, string>> | null = null;
+      let value = '';
+      if (change.value.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(change.value) as Record<string, unknown>;
+          const picked: Partial<Record<CharTagField, string>> = {};
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === 'string' && v.trim()) picked[k as CharTagField] = v.trim();
+          }
+          if (Object.keys(picked).length) fields = picked;
+        } catch {
+          /* 非 JSON → 当整串处理 */
+        }
+      }
+      if (!fields && change.value) value = change.value;
+      const ok = createAiEntry(
+        { name: change.name, fields: fields ?? undefined, value, nl: change.nl, reason: change.reason },
+        floor,
+      );
+      if (ok) console.info(`[柏宝绘] AI 建档角色「${change.name}」(第 ${floor} 楼)`);
+    } else if (change.field === 'nl') {
+      applyAiChange(change.name, 'nl', change.value || change.nl || '', change.reason, floor);
+    } else {
+      applyAiChange(change.name, change.field, change.value, change.reason, floor);
+    }
+  }
+}
+
 async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> {
   const context = getContext();
   if (!context || !settings.enabled) return;
@@ -74,15 +113,15 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const memory = settings.autoTag.useBaiBaiBook
       ? readBookMemory(floor, context.chat[floor]?.mes ?? '', context.name1)
       : null;
-    // 角色固定外貌锚定:库里有/柏宝书有外貌的都会锚定;柏宝书不可用时仅靠库+正文名字匹配
-    const anchors = await resolveCharAnchors(memory?.roles ?? [], source, controller.signal);
+    // 角色固定外貌库:柏宝书新面孔先入库,然后返回库文本供 AI 判断变更/引用
+    const library = await resolveCharAnchors(memory?.roles ?? [], source, controller.signal);
     const messages = await buildAutoTagMessages(
       context,
       floor,
       settings.autoTag,
       memory,
       opts.replace ? source : undefined,
-      anchors,
+      library,
     );
     const channel = getTagGenChannel();
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
@@ -123,10 +162,30 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       return;
     }
 
+    // 角色库变更先落库(本楼发生的变化当楼生效),再用最新库替换 @占位符。
+    // 解析成功即落库:外貌变化是剧情事实,与后续图片是否成功无关。
+    applyPlanChanges(plan, floor);
+
     if (!plan.images.length) {
       if (opts.manual) toastr.info('模型认为本楼没有值得插图的画面', '柏宝绘');
       else console.debug(`[柏宝绘] 第 ${floor} 楼无需插图`);
       return;
+    }
+
+    // @占位符 替换:库里有的换成最新 tag,库里没有的剥掉(nl 部分优先条目的自然语言句)
+    const unknownNames = new Set<string>();
+    for (const image of plan.images) {
+      const tagRes = applyCharRefs(image.tag, charTagLib.entries, 'tag');
+      if (tagRes.text) image.tag = tagRes.text;
+      if (image.nl) {
+        const nlRes = applyCharRefs(image.nl, charTagLib.entries, 'nl');
+        image.nl = nlRes.text;
+        for (const n of nlRes.unknown) unknownNames.add(n);
+      }
+      for (const n of tagRes.unknown) unknownNames.add(n);
+    }
+    if (unknownNames.size) {
+      console.warn('[柏宝绘] AI 引用了库里没有的角色占位符,已剥除:', [...unknownNames].join('、'));
     }
 
     const nextText = injectImageTags(source, plan.images);

@@ -31,7 +31,7 @@ src/
 ├── state/             # 全局状态与持久化
 │   ├── settings.ts    # ★ 设置模型 + hydrate/persist/迁移 + 跨插件共享渠道存储
 │   ├── ui.ts          # 窗口开关/主题/导航/悬浮球;activePage 存 localStorage
-│   └── charTags.ts    # 角色固定外貌 tag 库(仅当前聊天,存 chatMetadata)
+│   └── charTags.ts    # 角色固定外貌库(字段式,仅当前聊天,存 chatMetadata;含变更历史)
 ├── api/
 │   └── client.ts      # LLM 请求:副 API 走 ST 服务端代理 / 跟随主 API 走 generateRaw
 ├── autoTag/           # ★ 链路 A:自动生 tag(独立 LLM 请求 → 协议校验 → 注入正文)
@@ -40,7 +40,7 @@ src/
 │   ├── protocol.ts    # 行号编号 [Lxxxx]、JSON 严格解析校验、tag 注入格式
 │   ├── context.ts     # 世界书激活(条目级渲染:展宏+EJS)、角色卡、user 人设
 │   ├── bookMemory.ts  # 读「柏宝书」全局 API,解析成角色参考块
-│   └── charAnchors.ts # 角色固定外貌 tag 锚定:批量转换入库 → 原样复制进请求
+│   └── charAnchors.ts # 角色库:柏宝书建档/库文本注入 → @占位符替换(AI 报名不抄外貌)
 ├── backends/          # 出图后端(链路 B 的生成端)+ 共享尺寸工具
 │   ├── comfyui.ts     # ComfyUI:工作流模板 %占位符% 渲染、浏览器直连/ST 转发自动回退
 │   ├── nai.ts         # NovelAI:参数构造、vibe 编码/叠加、.naiv4vibe 导入导出
@@ -66,8 +66,7 @@ src/
 │   │   └── panels/            # ComfyUIPanel / NaiPanel / WebUIPanel(隐藏,代码保留)
 │   ├── characters/index.vue   # 「角色管理」页:固定外貌 tag 库 CRUD
 │   └── settings/index.vue     # 「设置」页:渠道管理/自动 tag/提示词编辑/界面偏好(最大页)
-├── components/       # 通用组件:BbiSelect/Collapsible/ConfirmDialog/FloatingOrb/Icon/ModalMask/NavBar
-├── directives/autosize.ts  # textarea 自动高度
+├── components/       # 通用组件:BbiSelect/BbiTextarea/Collapsible/ConfirmDialog/FloatingOrb/Icon/ModalMask/NavBar
 ├── styles/           # base.css(全局基础样式)、theme.css(主题变量,data-theme 切换)
 ├── menu.ts           # 魔杖菜单入口注入(轮询等懒加载)
 ├── topbar.ts         # ST 顶栏快速打开按钮(受 ui.showTopBar 开关控制)
@@ -122,20 +121,22 @@ runForFloor(floor, opts)
   3. 每楼一个 AbortController:同楼新任务 abort 旧任务;CHAT_CHANGED 全量取消
   4. 装配上下文(并行):
      - bookMemory.readBookMemory  → 柏宝书角色参考块(可 null)
-     - charAnchors.resolveCharAnchors → 固定外貌锚定文本(批量转换入库,失败降级 null)
+     - charAnchors.resolveCharAnchors → 柏宝书新角色入库 → 库文本(给 AI 判断变更/引用;失败降级 null)
      - prompt.buildAutoTagMessages → 消息数组(见下)
   5. 请求:getTagGenChannel() 有指派渠道 → requestCompletion(服务端代理);
      否则 requestViaMainApi(generateRaw)
   6. 重试循环:retryCount 次(请求异常 / 解析抛错都重试;abort 不消耗;「无画面」不算失败)
   7. protocol.parseImagePlan 严格校验(JSON 结构/行号范围/禁含子标签/size 宽容降级竖屏)
-  8. protocol.injectImageTags 按行号插入 <bbi_image>tag<nl>…</nl><size>…</size></bbi_image>
-  9. 若 autoGenerate 开:先 markForAutoGenerate 每个新槽位(见链路 B 握手)
- 10. messageEdit.applyMessageText CAS 写回(正文/swipe/聊天任一变化即放弃,并撤销标记)
+  8. changes 落库(先于引用:本楼变化当楼生效;建档/字段变更记历史,不询问用户)
+  9. @占位符替换:applyCharRefs 把 tag/nl 里的 @角色名 换成最新库 tag(nl 优先条目自然语言句),未知占位符剥除并告警
+ 10. protocol.injectImageTags 按行号插入 <bbi_image>tag<nl>…</nl><size>…</size></bbi_image>
+ 11. 若 autoGenerate 开:先 markForAutoGenerate 每个新槽位(见链路 B 握手)
+ 12. messageEdit.applyMessageText CAS 写回(正文/swipe/聊天任一变化即放弃,并撤销标记)
 ```
 
 消息顺序(prompt.ts 固定):破限 system → 角色卡 system → persona system → 世界书 system →
 后端规范 system(ComfyUI/NAI 内置 spec,`{{nl}}` 宏按「生成自然语言」开关展开)→ 固定协议
-(输出 JSON 契约)→ 思维链 system → user(角色参考 + 锚定 + 前 N 层上下文 + `[Lxxxx]` 编号正文)
+(输出 JSON 契约:images + changes)→ 思维链 system → user(角色参考 + 角色库 + 前 N 层上下文 + `[Lxxxx]` 编号正文)
 → assistant 预填充(`<thinking>`,渠道关闭 prefill 时由 client 丢弃)。
 
 全部可编辑提示词(破限/规范/思维链/预填充)在 `state/settings.ts` 有内置默认常量
@@ -235,8 +236,13 @@ runForFloor(floor, opts)
   与柏宝书共用,任一端增删改实时同步。
 - **ui(本机 + 同步)**:窗口开关/当前页(activePage 存 localStorage)是纯本机态;
   主题/导航/悬浮球属真设置,写入 `settings.ui` 走跨设备同步。
-- **charTags(仅当前聊天)**:存 `chatMetadata['baibai_image_char_tags']`,
-  `CHAT_CHANGED` 时重载;`source` 区分 book(可被外貌变化重转)/manual(用户为准)。
+- **charTags(仅当前聊天)**:存 `chatMetadata['baibai_image_char_tags']`(version 2),
+  `CHAT_CHANGED` 时重载。外貌按字段(sex/hair/eyes/skin/body/extra/outfit)记录,
+  拼接顺序即最终 tag;旧版整串数据以 raw 模式兼容。
+  维护权归 AI:输出协议 changes 直接落库并记历史(reason + 楼层),不询问用户;
+  柏宝书只负责首次建档(book 来源),此后条目归 AI 维护,柏宝书外貌再变不自动覆盖;
+  手动改动同样可被 AI 继续更新。页面提供历史查看与逐条回滚(建档记录回滚 = 删条目)。
+  AI 引用走 @角色名 占位符,由 applyCharRefs 在注入前机械替换,杜绝复述漂移。
 
 ## 8. 贯穿全项目的约定
 
@@ -261,7 +267,7 @@ runForFloor(floor, opts)
 | LLM 输出协议(JSON 形状/行号/tag 格式) | src/autoTag/protocol.ts |
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
 | 柏宝书状态读取 | src/autoTag/bookMemory.ts |
-| 角色固定外貌锚定 / 转换 | src/autoTag/charAnchors.ts + src/state/charTags.ts |
+| 角色库(建档/@占位符/changes 落库/历史回滚) | src/autoTag/charAnchors.ts + src/state/charTags.ts + src/autoTag/runner.ts |
 | 副 API 请求(代理/SSE/超时/测试) | src/api/client.ts |
 | 跟随主 API | src/api/client.ts 的 requestViaMainApi |
 | ComfyUI 工作流 / 出图 / 通道回退 | src/backends/comfyui.ts |

@@ -1,4 +1,5 @@
 import { normalizeOrientation, type Orientation } from '@/backends/size';
+import type { CharTagHistoryField } from '@/state/charTags';
 
 export interface ImageInsertion {
   line: number;
@@ -12,7 +13,33 @@ export interface ImageInsertion {
 
 export interface ImagePlan {
   images: ImageInsertion[];
+  /** AI 报告的角色库变更(建档/字段更新);调用方负责落库。 */
+  changes: CharChange[];
 }
+
+/** AI 输出的单条角色变更(宽松形状;解析后字段全部合法才保留)。 */
+export interface CharChange {
+  name: string;
+  /** 'new' = 建档;其余为字段名/整串/自然语言。 */
+  field: CharTagHistoryField;
+  value: string;
+  /** 自然语言外貌句(new 建档时可附带)。 */
+  nl?: string;
+  reason: string;
+}
+
+const HISTORY_FIELDS: ReadonlySet<string> = new Set([
+  'sex',
+  'hair',
+  'eyes',
+  'skin',
+  'body',
+  'extra',
+  'outfit',
+  'new',
+  'raw',
+  'nl',
+]);
 
 interface SourceLine {
   text: string;
@@ -100,6 +127,7 @@ function sanitizeContent(value: unknown, field: string, index: number): string {
 /**
  * 解析并严格校验模型给出的“源码行号 + 提示词”列表。tag 必填;nl 选填,漏给宽容降级为纯 tag。
  * size 一律容忍:归一不出就当竖屏——为它抛错会白白吃掉 runner 的重试次数。
+ * changes 宽容解析:单条坏就丢弃,不影响 images;整个键缺失 = 无变更。
  */
 export function parseImagePlan(raw: string, lineCount: number, maxImages: number): ImagePlan {
   const parsed = parseObject(raw);
@@ -126,7 +154,39 @@ export function parseImagePlan(raw: string, lineCount: number, maxImages: number
     images.push({ line, tag, nl, size });
   }
 
-  return { images: images.slice(0, Math.max(0, Math.floor(maxImages))) };
+  return {
+    images: images.slice(0, Math.max(0, Math.floor(maxImages))),
+    changes: parseChanges(parsed.changes),
+  };
+}
+
+function parseChanges(raw: unknown): CharChange[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CharChange[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const o = item as Record<string, unknown>;
+    const name = typeof o.name === 'string' ? o.name.trim() : '';
+    const fieldRaw = typeof o.field === 'string' ? o.field.trim() : '';
+    if (!name || !HISTORY_FIELDS.has(fieldRaw)) continue;
+    const field = fieldRaw as CharTagHistoryField;
+    // 'new' 建档:value 可与 fields 对象二选一(模型习惯给其一)
+    let value = typeof o.value === 'string' ? o.value.trim() : '';
+    const fields =
+      o.fields && typeof o.fields === 'object' && !Array.isArray(o.fields)
+        ? (o.fields as Record<string, unknown>)
+        : null;
+    if (field === 'new' && fields) {
+      // 结构化建档:拼回字段 map,由 state 层拆开
+      value = JSON.stringify(fields);
+    }
+    const nl = typeof o.nl === 'string' ? o.nl.trim() : '';
+    const reason = typeof o.reason === 'string' ? o.reason.trim() : '';
+    if (!value && !nl && field !== 'new') continue;
+    if (field === 'new' && !value && !nl) continue;
+    out.push({ name, field, value, nl: nl || undefined, reason });
+  }
+  return out;
 }
 
 /** 保持原文及原换行符不变，只在指定源码行之后插入 tag。 */

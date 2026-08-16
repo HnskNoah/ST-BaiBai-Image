@@ -1,102 +1,81 @@
 import { requestCompletion, requestViaMainApi, type ChatMsg } from '@/api/client';
 import type { BookRole } from '@/autoTag/bookMemory';
 import {
+  CHAR_TAG_FIELD_LABELS,
+  CHAR_TAG_FIELDS,
   charTagLib,
-  findCharTag,
+  emptyCharFields,
   upsertCharTag,
   type CharTagEntry,
+  type CharTagField,
 } from '@/state/charTags';
 import { getTagGenChannel } from '@/state/settings';
 
 /**
- * 角色固定外貌 tag 的锚定解析。
+ * 角色固定外貌库的「锚定」侧。
  *
- * 每次生成 tag 前:
- * 1. 角色参考里的角色 → 查库;有条目直接锚定,没条目但柏宝书有外貌 → 批量转换一次入库;
- *    库条目依据的外貌原文与柏宝书当前不一致(换发型等) → 重新转换覆盖。
- * 2. 库里有、角色参考里没有、但目标正文提到名字的角色(如用户手动补的 NPC)→ 一并锚定。
- * 锚定结果是一段「必须原样复制」的 tag 列表文本,拼进自动 tag 请求(见 prompt.ts)。
+ * 生成 tag 前:
+ * 1. 柏宝书角色参考里有外貌、库里还没有该角色 → 转换一次入库(柏宝书管「出生」);
+ *    条目落库后归 AI 维护(通过输出协议的 changes 报告持久变化),柏宝书变化不再自动覆盖。
+ * 2. 库文本(全部条目)拼进请求:AI 看得到每个角色当前的字段值,才能判断需不需要改;
+ *    但画面 tag 里它只写 @角色名 占位符,不抄外貌 —— 替换由插件机械完成,杜绝复述漂移。
  *
- * 生成失败/无可用条目 → 返回 null,主流程降级为无锚定(保持旧行为),不阻断出图。
+ * 主流程顺序:先落 changes(本楼发生的变化当楼生效) → 再用最新库替换 @占位符。
  */
 
-export interface AnchorPlan {
-  /** 需要(重新)转换的角色:新面孔 + 外貌已变化的 book 条目 */
-  toGenerate: Array<{ name: string; desc: string }>;
-  /** 本次可锚定的角色名(生成后需按最新库重新取 tags) */
-  anchorNames: string[];
+/** 把库条目渲染成给 AI 看的一行(字段式明细 + 占位符提示)。 */
+export function formatEntryForPrompt(entry: CharTagEntry): string {
+  const parts: string[] = [];
+  for (const f of CHAR_TAG_FIELDS) {
+    const v = entry.fields[f]?.trim();
+    if (v) parts.push(`${CHAR_TAG_FIELD_LABELS[f]}=${v}`);
+  }
+  if (!parts.length && entry.raw.trim()) parts.push(`tag=${entry.raw.trim()}`);
+  return `- ${entry.name}: ${parts.join(', ') || '(未记录字段)'}`;
 }
 
 /**
- * 纯函数:按「角色参考 + 当前库 + 目标正文」算出本轮锚定计划。
- * entries 传调用时的库快照;生成完成后应基于最新库重新调用本函数取最终锚定名单。
+ * 库文本:发给 AI 的角色库部分。AI 依据它决定 changes 与 @引用;
+ * 名单与字段值都由插件生成,AI 只读。
  */
-export function planCharAnchors(
-  roles: BookRole[],
-  entries: CharTagEntry[],
-  bodyText: string,
-): AnchorPlan {
-  const byName = new Map(entries.map(e => [e.name, e]));
-  const toGenerate: AnchorPlan['toGenerate'] = [];
-  const anchorNames: string[] = [];
-  const used = new Set<string>();
-
-  for (const role of roles) {
-    if (!role.name || used.has(role.name)) continue;
-    const entry = byName.get(role.name);
-    if (entry) {
-      used.add(role.name);
-      anchorNames.push(role.name);
-      // book 来源且柏宝书外貌变了 → 重新转换(本轮等生成完用新 tag);manual 条目以用户为准,不动
-      if (entry.source === 'book' && role.desc && entry.desc !== role.desc) {
-        toGenerate.push({ name: role.name, desc: role.desc });
-      }
-    } else if (role.desc) {
-      // 库里没有、柏宝书有外貌 → 转换一次入库,此后锁定
-      used.add(role.name);
-      toGenerate.push({ name: role.name, desc: role.desc });
-    }
-    // 库里没有、柏宝书也没记录外貌 → 本轮无锚定,模型自由发挥(用户可在角色管理页手动补)
-  }
-
-  // 库里有、角色参考没覆盖、但正文提到名字的(典型:用户手动补的次要 NPC)→ 也锚定
-  for (const entry of entries) {
-    if (used.has(entry.name)) continue;
-    if (bodyText.includes(entry.name)) {
-      used.add(entry.name);
-      anchorNames.push(entry.name);
-    }
-  }
-
-  return { toGenerate, anchorNames };
+export function buildLibraryText(entries: CharTagEntry[]): string {
+  if (!entries.length) return '';
+  const lines = entries.map(formatEntryForPrompt);
+  return `【角色固定外貌库(系统维护;画面 tag 中用 @角色名 引用,外貌由系统替换)】\n${lines.join('\n')}`;
 }
 
-/** 把锚定名单拼成提示词文本块(名单为空 → 空串,调用方视为无锚定)。 */
-export function buildAnchorText(anchors: CharTagEntry[]): string {
-  if (!anchors.length) return '';
-  const lines = anchors.map(a => `- ${a.name}: ${a.tags}`);
-  return `【角色固定外貌 tag(画面中出现该角色时,对应 tag 串必须原样复制进画面 tag,不得改写、翻译或增删;服装、动作、场景等其余内容仍按正文生成)】\n${lines.join('\n')}`;
+/** 旧接口兼容:runner 之外仍有调用方依赖锚定文本形态。 */
+export function buildAnchorText(entries: CharTagEntry[]): string {
+  return buildLibraryText(entries);
 }
 
-/* ============ 中文外貌 → 固定 tag 的批量转换 ============ */
+/* ============ 中文外貌 → 结构化字段 的批量转换 ============ */
 
-const CONVERT_SPEC = `你是外貌 tag 转换器。把给出的角色中文外貌描述转成 danbooru 短 tag:英文小写、逗号分隔、多词用空格连接（不要用下划线）,例如 "long black hair, red eyes, small breasts"。
+const CONVERT_SPEC = `你是外貌 tag 转换器。把给出的角色中文外貌描述拆成固定字段的 danbooru 短 tag:英文小写、逗号分隔、多词用空格连接(不要用下划线)。
+
+字段与示例:
+- sex(性别):1girl / 1boy / androgynous 等
+- hair(头发):long black hair / short silver hair 等
+- eyes(眼睛):red eyes / blue eyes 等
+- skin(肤色):pale skin / tan 等(没提就留空)
+- body(体型):petite / tall / slim / small breasts 等
+- extra(标志特征):heterochromia / scar on cheek / pointy ears 等(没提就留空)
 
 规则:
-1. 只保留固定基础特征:性别(1girl/1boy 等)、发色发型、瞳色、肤色、体型、年龄感、标志性特征(痣/疤/异色瞳/精灵耳等)。
-2. 绝不写服装、饰品、状态、表情、动作、场景——这些每次生成时按剧情现场决定。
-3. 描述里没提的细节不要脑补,宁可少写。
-4. 只返回一个 JSON 对象:{"角色名":"tag 串",...},键与输入的角色名完全一致;不要 Markdown 代码块、不要解释。`;
+1. 只提取固定基础特征;服装、饰品、状态、表情、动作、场景一律不写。
+2. 描述里没提的细节不要脑补,对应字段留空字符串。
+3. 只返回一个 JSON 对象:{"角色名":{"sex":"...","hair":"...","eyes":"...","skin":"...","body":"...","extra":"..."}},键与输入的角色名完全一致;不要 Markdown 代码块、不要解释。`;
 
-/** tag 串清洗:换行压成空格、剥 bbi_image 系子标签字面量(防止污染注入格式)。 */
-function sanitizeTags(value: unknown): string {
+/** 字段值清洗:换行压成空格、剥 bbi_image 系子标签字面量(防止污染注入格式)。 */
+function sanitizeTagValue(value: unknown): string {
   const text = typeof value === 'string' ? value.trim().replace(/[\r\n]+/g, ' ') : '';
-  if (/<\/?(?:bbi_image|tag|nl)\b/i.test(text)) return '';
+  if (!text) return '';
+  if (/<\/?(?:bbi_image|tag|nl|size)\b/i.test(text)) return '';
   return text;
 }
 
-/** 从模型回复中解析 {角色名: tag 串}(宽容:带代码块/前后杂质也能解)。 */
-export function parseConvertedTags(raw: string): Record<string, string> {
+/** 从模型回复中解析 {角色名: {字段: tag}}(宽容:带代码块/前后杂质也能解)。 */
+export function parseConvertedTags(raw: string): Record<string, Partial<Record<CharTagField, string>>> {
   const cleaned = raw.replace(/<think(?:ing)?\b[\s\S]*?<\/think(?:ing)?>/gi, '');
   const candidates: string[] = [cleaned.trim()];
   for (const match of cleaned.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
@@ -109,10 +88,16 @@ export function parseConvertedTags(raw: string): Record<string, string> {
     try {
       const value: unknown = JSON.parse(candidate.slice(start, end + 1));
       if (value && typeof value === 'object' && !Array.isArray(value)) {
-        const out: Record<string, string> = {};
+        const out: Record<string, Partial<Record<CharTagField, string>>> = {};
         for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-          const tags = sanitizeTags(v);
-          if (key.trim() && tags) out[key.trim()] = tags;
+          const name = key.trim();
+          if (!name || !v || typeof v !== 'object' || Array.isArray(v)) continue;
+          const fields: Partial<Record<CharTagField, string>> = {};
+          for (const f of CHAR_TAG_FIELDS) {
+            const tag = sanitizeTagValue((v as Record<string, unknown>)[f]);
+            if (tag) fields[f] = tag;
+          }
+          if (Object.keys(fields).length) out[name] = fields;
         }
         return out;
       }
@@ -123,15 +108,21 @@ export function parseConvertedTags(raw: string): Record<string, string> {
   return {};
 }
 
+export interface ConvertedChar {
+  name: string;
+  desc: string;
+  fields: Partial<Record<CharTagField, string>>;
+}
+
 /**
- * 批量把中文外貌转成固定 tag。一次请求转换所有待办角色。
+ * 批量把中文外貌转成结构化字段。一次请求转换所有待办角色。
  * 渠道与自动 tag 主流程同口径:指派渠道优先,未指派跟随主 API。
  * 返回成功转换的条目;整体失败(请求异常)向上抛,调用方 catch 后降级。
  */
 export async function generateCharTags(
   chars: Array<{ name: string; desc: string }>,
   signal?: AbortSignal,
-): Promise<Array<{ name: string; desc: string; tags: string }>> {
+): Promise<ConvertedChar[]> {
   if (!chars.length) return [];
   const messages: ChatMsg[] = [
     { role: 'system', content: CONVERT_SPEC },
@@ -145,10 +136,10 @@ export async function generateCharTags(
     ? await requestCompletion(channel, messages, { signal })
     : await requestViaMainApi(messages, { signal });
   const parsed = parseConvertedTags(raw);
-  const out: Array<{ name: string; desc: string; tags: string }> = [];
+  const out: ConvertedChar[] = [];
   for (const c of chars) {
-    const tags = parsed[c.name];
-    if (tags) out.push({ name: c.name, desc: c.desc, tags });
+    const fields = parsed[c.name];
+    if (fields) out.push({ name: c.name, desc: c.desc, fields });
   }
   return out;
 }
@@ -156,36 +147,95 @@ export async function generateCharTags(
 /* ============ 主流程入口 ============ */
 
 /**
- * 解析本楼的固定外貌锚定文本。
- * 需要转换的角色一次性批量转换并入库(book 来源,记录所依据的外貌原文);
- * 转换失败不阻断——本轮降级为无锚定/沿用旧条目。
+ * 生成前的库准备:柏宝书角色参考里有外貌、库里没有的角色 → 批量转换入库(book 来源)。
+ * 已有条目一律不动(AI 维护;手动条目更不动)。失败不阻断 —— 本轮该角色无锚定,模型自由发挥。
+ * 返回库文本(拼进请求);空库返回 ''。
  */
 export async function resolveCharAnchors(
   roles: BookRole[],
-  bodyText: string,
+  _bodyText: string,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  const plan = planCharAnchors(roles, charTagLib.entries, bodyText);
-  if (!plan.anchorNames.length && !plan.toGenerate.length) return null;
-
-  if (plan.toGenerate.length) {
+  // 只给「库中没有」的角色建档;已有条目(无论来源)都不被柏宝书覆盖
+  const known = new Set(charTagLib.entries.map(e => e.name));
+  const toGenerate = roles.filter(r => r.name && r.desc && !known.has(r.name));
+  if (toGenerate.length) {
     try {
-      const generated = await generateCharTags(plan.toGenerate, signal);
+      const generated = await generateCharTags(toGenerate, signal);
       for (const g of generated) {
-        upsertCharTag({ name: g.name, tags: g.tags, source: 'book', desc: g.desc });
+        const fields = emptyCharFields();
+        for (const f of CHAR_TAG_FIELDS) {
+          const v = g.fields[f];
+          if (v) fields[f] = v;
+        }
+        upsertCharTag({
+          name: g.name,
+          fields,
+          raw: '',
+          nl: '',
+          source: 'book',
+          desc: g.desc,
+          history: [],
+        });
       }
     } catch (error) {
       if (signal?.aborted) return null;
       console.warn('[柏宝绘] 角色固定外貌 tag 转换失败,本轮不做锚定', error);
     }
   }
-
-  // 基于最新库取最终锚定名单(刚生成的条目也在里面了)
-  const anchors: CharTagEntry[] = [];
-  for (const name of plan.anchorNames) {
-    const entry = findCharTag(name);
-    if (entry) anchors.push(entry);
-  }
-  const text = buildAnchorText(anchors);
+  const text = buildLibraryText(charTagLib.entries);
   return text || null;
+}
+
+/* ============ @占位符 替换 ============ */
+
+/** @名 占位符;名字允许中文/字母/数字/点/下划线/间隔号(常见角色名形态)。 */
+const REF_PATTERN = /@([\p{L}\p{N}_.·]+)/gu;
+
+function joinEntryTag(entry: CharTagEntry): string {
+  // 与 state/charTags.buildEntryTag 同构;重复这一小段以避开循环依赖
+  if (entry.raw.trim() && CHAR_TAG_FIELDS.every(f => !(entry.fields[f] ?? '').trim())) {
+    return entry.raw.trim();
+  }
+  return CHAR_TAG_FIELDS.map(f => (entry.fields[f] ?? '').trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+/** 压缩替换后残留的分隔符垃圾:连续逗号、行首行尾逗号。 */
+function tidySeparators(text: string): string {
+  let out = text;
+  for (let i = 0; i < 4; i += 1) {
+    const next = out.replace(/,\s*,/g, ',').replace(/\s+,/g, ',').replace(/,\s+/g, ', ');
+    if (next === out) break;
+    out = next;
+  }
+  return out.replace(/^[\s,]+/, '').replace(/[\s,]+$/, '').trim();
+}
+
+/**
+ * AI 输出文本里的 @占位符 处理:库里有的 → 替换成最新 tag 串(nl 模式优先条目的自然语言句);
+ * 没有的 → 剥掉(连带尾随分隔符)。返回处理后的文本与未知名字列表(调用方可用于告警)。
+ */
+export function applyCharRefs(
+  text: string,
+  entries: CharTagEntry[],
+  mode: 'tag' | 'nl' = 'tag',
+): { text: string; unknown: string[] } {
+  const byName = new Map(entries.map(e => [e.name, e]));
+  const unknown: string[] = [];
+  const seen = new Set<string>();
+  const replaced = text.replace(REF_PATTERN, (_full, name: string) => {
+    const entry = byName.get(name);
+    if (entry) {
+      if (mode === 'nl' && entry.nl.trim()) return entry.nl.trim();
+      return joinEntryTag(entry);
+    }
+    if (!seen.has(name)) {
+      seen.add(name);
+      unknown.push(name);
+    }
+    return '';
+  });
+  return { text: tidySeparators(replaced), unknown };
 }
