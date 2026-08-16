@@ -234,6 +234,13 @@ runForFloor(floor, opts)
 - **副 API 渠道(跨插件共享)**:真身存 `extensionSettings['baibai_api_channels']`(带 revision),
   本插件设置里只是镜像;写入后广播 `st-baibai-api-channels:changed`,他端监听重读。
   与柏宝书共用,任一端增删改实时同步。
+- **排除设置(跨插件共享)**:真身存 `extensionSettings['baibai_exclude_settings']`(带 revision),
+  镜像在 `settings.excludes`(四张名单:excludedChars / excludedWorldNames /
+  excludedWorldInfoPatterns / customStripTags);协议与渠道同构(指纹防回环 + revision 取 max),
+  事件 `st-baibai-exclude-settings:changed`。与柏宝书共用同一份名单、同一套匹配口径:
+  排除角色 → 自动 tag 全流程停用(含楼层按钮隐藏);整本/条目名排除 → 副 API 世界书过滤
+  (autoTag/excludes.ts);清洗标签 → 扫描/正文清洗整块删除(autoTag/clean.ts)。
+  共享存储创建时播种默认条目名规则 `\[mvu[\s\S]*?\]`(只发一次,删了不补回)。
 - **ui(本机 + 同步)**:窗口开关/当前页(activePage 存 localStorage)是纯本机态;
   主题/导航/悬浮球属真设置,写入 `settings.ui` 走跨设备同步。
 - **charTags(仅当前聊天)**:存 `chatMetadata['baibai_image_char_tags']`(version 2),

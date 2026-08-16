@@ -1,6 +1,6 @@
 import { requestFloorTags } from '@/autoTag/runner';
 import { confirmDialog } from '@/components/confirm';
-import { settings } from '@/state/settings';
+import { isCurrentChatExcluded, settings } from '@/state/settings';
 import { getContext } from '@/st/context';
 
 /**
@@ -85,6 +85,9 @@ function createButton(): HTMLDivElement {
 }
 
 function syncButtons(): void {
+  // 排除角色:该聊天整条自动 tag 链路停用(与柏宝书同名单),不再注入手动按钮;
+  // 名单在运行中变化时,下一次楼层重渲染(含聊天切换)会重新 sync,即时生效。
+  if (isCurrentChatExcluded()) return;
   for (const mesEl of document.querySelectorAll<HTMLElement>('#chat .mes')) {
     if (!isAiFloor(mesEl)) continue;
     const extra = mesEl.querySelector('.extraMesButtons');

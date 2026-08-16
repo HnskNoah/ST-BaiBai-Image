@@ -203,6 +203,34 @@ export interface AutoTagSettings {
 }
 
 /**
+ * 排除设置(镜像共享存储;真身在 extensionSettings['baibai_exclude_settings'])。
+ * 与柏宝书共用同一份名单、同一套匹配口径:任一端改动自动同步,双端行为一致。
+ */
+/** 落盘存储行为(影响新生成图片的保存格式)。 */
+export interface StoragePrefs {
+  /**
+   * 新图统一转存 JPG(固定质量 0.9)再落盘,不再保存 PNG。
+   * 体积约为 PNG 的 10–20%;代价是图内嵌的生成参数(NAI tEXt / ComfyUI 工作流块,
+   * 即「拖回官方站复现」依赖的信息)随转码丢失——提示词与种子仍保存在 extra 里,
+   * 但无法再从图片本身提取。仅影响新图,存量 PNG 不动;转码失败自动回退 PNG。
+   */
+  saveAsJpeg: boolean;
+}
+
+export interface ExcludesSettings {
+  /** 排除的角色名:这些名字(含重名卡)的聊天里,自动 tag 全流程停用(与柏宝书记忆停用同名单)。 */
+  excludedChars: string[];
+  /** 整本排除的世界书文件名:这些书的所有激活条目都不进 tag 生成的副 API 参考(仅影响副 API)。 */
+  excludedWorldNames: string[];
+  /** 按条目名(comment)过滤的规则:命中任一规则的条目不进副 API 参考。
+   *  每条当正则编译(普通名字天然=包含匹配),编译失败降级为字面子串包含。 */
+  excludedWorldInfoPatterns: string[];
+  /** 自定义清洗标签(只填标签名,不带尖括号,如 snow):清洗正文时
+   *  <snow>…</snow> 连同内部内容一并删掉。与柏宝书共用名单。 */
+  customStripTags: string[];
+}
+
+/**
  * ComfyUI 规范内置默认:tag 规范常驻;{{nl}} 宏按 ComfyUI 面板「生成自然语言」开关展开/置空。
  * 多人部分提炼自本地实践文档(comfyui docs/多人tag标准格式.md)的普适规则:
  * 编号无效、特征绑定、共有特征一次、场景别抢主体——本地模型多人图串味的主因就是这些。
@@ -213,6 +241,7 @@ export const DEFAULT_COMFY_SPEC = `【ComfyUI 提示词规范】
 tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的关键词串，多词用空格连接（不要用下划线），例如：
 1girl, long hair, school uniform, sitting by window, classroom, warm sunlight
 从重要到次要排列：人数/主体 → 镜头构图 → 外貌 → 服饰 → 动作姿态 → 场景 → 光线氛围；单个画面控制在 40 个 tag 以内。
+动作姿态内部再排：本画面核心动作（谁做了什么、身体部位接触了什么）必须是动作区第一条独立短 tag；辅助姿态（坐着、站着、跪着等）排后面。同一动作词不得重复写两遍。
 
 多人画面（两人及以上）额外规则：
 - 人数 tag 必须明确（2girls、1boy 1girl 等）；缺了模型会漏画或多画。
@@ -239,6 +268,7 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
    光线与时间（soft sunlight、candlelight、moonlight、backlighting、golden hour 等）、
    氛围色调（warm colors、cold colors、muted colors、high contrast 等）。
    这些由你按情绪与场景自行决定，正文没写不是不写的理由。
+   ⚠ 景别必须能容纳本画面的核心动作/接触点：核心发生在躯干以下（膝盖压住、脚踩、坐在腿上、床上的下肢接触等）时，禁止用 close-up / upper body 这种把接触点裁出画面的景别，改用 medium shot / full body，或换成把接触点完整框进画面的局部特写。
 
 2. 时代与世界观（服饰体系、建筑、器物、环境风格）——**必须推断后写出，不得留空**。
    先判定故事所处的时代/文明：古代东方仙侠、中世纪西幻、现代都市、赛博未来……
@@ -269,6 +299,7 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
 export const DEFAULT_COMFY_NL_SPEC = `nl（JSON 的 nl 键）：自然语言——连贯完整的英文句子描述同一画面（单人一到三句；多人按下面结构组织），例如：
 A girl with long black hair in a school uniform sits by the classroom window, warm sunlight falling across her desk.
 nl 与 tag 描述的是同一画面：tag 覆盖实体与属性关键词，nl 写连贯叙述，先主体动作、再环境氛围。
+核心动作要写到「谁的身体部位 + 接触点」的具体程度（如 her knee pressing against the tented blanket），姿态词（kneeling、sitting）只是辅助，不得拿姿态替代核心动作。
 多人画面按三段组织：先一句总起（人数 + as the main focus + 构图，把主体锁在角色上）→ 再每人一句分述，先主动方后被动方 → 最后一句环境氛围，以 blurred in the background 收尾。
 每句分述都要完整重复该角色的特征词（the green-haired girl with green eyes ...）——模型不跨句记忆，用 she/they 这类指代会丢失配对；tag 里的绑定写法（谁穿什么颜色、谁在做什么动作）在这里用完整句子再写一遍，即使 tag 被重排也能兜底。
 多人 nl 示例（与上面 tag 示例是同一画面）：
@@ -281,6 +312,7 @@ export const DEFAULT_NAI_SPEC = `【NovelAI 提示词规范】
 tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的关键词串，多词用空格连接（不要用下划线），例如：
 1girl, long hair, school uniform, sitting by window, classroom, warm sunlight
 从重要到次要排列：人数/主体 → 外貌 → 服饰 → 动作姿态 → 场景 → 光线氛围 → 镜头构图；单个画面控制在 40 个 tag 以内。
+动作姿态内部再排：本画面核心动作（谁做了什么、身体部位接触了什么）必须是动作区第一条独立短 tag；辅助姿态（坐着、站着、跪着等）排后面。同一动作词不得重复写两遍。
 NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag（1girl、2boys 等）；需要特定画风时可加艺术家/风格 tag。
 
 画面补全（重要）：
@@ -293,6 +325,7 @@ NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag�
    光线与时间（soft sunlight、candlelight、moonlight、backlighting、golden hour 等）、
    氛围色调（warm colors、cold colors、muted colors、high contrast 等）。
    这些由你按情绪与场景自行决定，正文没写不是不写的理由。
+   ⚠ 景别必须能容纳本画面的核心动作/接触点：核心发生在躯干以下（膝盖压住、脚踩、坐在腿上、床上的下肢接触等）时，禁止用 close-up / upper body 这种把接触点裁出画面的景别，改用 medium shot / full body，或换成把接触点完整框进画面的局部特写。
 
 2. 时代与世界观（服饰体系、建筑、器物、环境风格）——**必须推断后写出，不得留空**。
    先判定故事所处的时代/文明：古代东方仙侠、中世纪西幻、现代都市、赛博未来……
@@ -331,10 +364,11 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 服装、状态、位置：以目标正文该时刻为准，正文没提的变化不得沿用旧印象；服饰款式按第 2 步定的时代来写。
    - 多人画面：各人的服装/颜色/动作都绑定到对应角色的特征词（white dress on green hair girl、black hair girl waving 式），共有特征只写一次，共同互动（holding hands 等）直接写。
    - 镜头、光线、色调、氛围：**主动补全**，正文不会写这些，缺了画面就平庸。每个画面都要定下镜头距离、光线来源与氛围色调。
+   - 核心动作与景别匹配：先想清本画面核心动作/接触点是什么——景别必须能框住它（核心在躯干以下如膝压、脚踩、下肢接触时，不用 upper body / close-up）；核心动作写成动作区第一条独立短 tag，姿态词只是辅助。
    - 画幅方向（size）：跟着上一条的镜头与人数定——多人同框/远景全景/宽阔场景 → landscape；单人/近景特写/站立全身 → portrait。
 4. 查角色库：对照【角色固定外貌库】逐个检查本楼出场角色——外貌发生了**永久变化**（剪发、留疤、长大、换造型）的写进 changes（含 name/field/value/reason）；临时状态（湿身、当天盘发）不算。没有变化就跳过这步。
 5. 定行号：每个画面选「该画面完成时刻」的非空行，记下 [Lxxxx]；行号必须在目标正文范围内。
-6. 自查：时代服饰 tag 有没有写？镜头与光线有没有写？画幅方向是否与人数、景别相符？库角色的 @占位符 用了没有？人数与正文是否一致？tag 是英文 danbooru 短 tag、无质量词负面词；张数不超上限；要求 nl 时，nl 与 tag 是同一画面的连贯英文描述。`;
+6. 自查：时代服饰 tag 有没有写？镜头与光线有没有写？画幅方向是否与人数、景别相符？景别能容纳核心动作/接触点吗（躯干以下的核心动作没用 upper body 吧）？核心动作是独立短 tag 且排在动作区最前吗？库角色的 @占位符 用了没有？人数与正文是否一致？tag 是英文 danbooru 短 tag、无质量词负面词；张数不超上限；要求 nl 时，nl 与 tag 是同一画面的连贯英文描述。`;
 
 /** 预填充内置默认:以 <thinking> 开头,引导模型先过思考清单再输出 JSON。 */
 export const DEFAULT_PREFILL_PROMPT = '<thinking>';
@@ -375,10 +409,26 @@ export interface ImageSettings {
   assignments: { tagGen: string };
   /** 自动判断并向正文插入生图 tag。 */
   autoTag: AutoTagSettings;
+  /** 排除设置(镜像共享存储;真身在 extensionSettings['baibai_exclude_settings'])。 */
+  excludes: ExcludesSettings;
+  /** 落盘存储行为(新图格式)。 */
+  storage: StoragePrefs;
 }
 
 // extension_settings 里的命名空间键。
 const SETTINGS_KEY = 'baibai_image';
+
+/** 内置默认条目名规则:共享存储创建时播种(与柏宝书 DEFAULT_WI_PATTERNS 同值)。 */
+const DEFAULT_WI_PATTERNS = ['\\[mvu[\\s\\S]*?\\]'];
+
+function excludesDefaults(): ExcludesSettings {
+  return {
+    excludedChars: [],
+    excludedWorldNames: [],
+    excludedWorldInfoPatterns: [],
+    customStripTags: [],
+  };
+}
 
 function backendDefaults(url: string): BackendConn {
   return {
@@ -448,6 +498,8 @@ function defaults(): ImageSettings {
       renderWorldInfoTemplates: true,
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     },
+    excludes: excludesDefaults(),
+    storage: { saveAsJpeg: false },
   };
 }
 
@@ -599,6 +651,48 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   };
 }
 
+/**
+ * 把用户输入规整成可安全拼进正则的标签名(与柏宝书 settings.ts 的 sanitizeTagName 同口径)。
+ * 用黑名单(而非白名单)剔除会破坏标签语法/正则的危险字符:尖括号、斜杠、空白、正则元字符;
+ * 中文及其它 unicode 字母一律保留(用户可能写 <雪><状态栏> 这类中文标签)。
+ */
+export function sanitizeTagName(raw: string): string {
+  return String(raw ?? '')
+    .trim()
+    .replace(/^<\/?/, '') // 开头的 < 或 </
+    .replace(/>$/, '') // 结尾的 >
+    .trim()
+    .replace(/[<>/\\\s.*+?^${}()|[\]]/g, ''); // 剔除尖括号/斜杠/空白/正则元字符,中文等保留
+}
+
+/** 排除名单清洗(与柏宝书 normalize 同口径):去空、去重、标签名消毒;缺字段/类型不符回退空数组。 */
+function normalizeExcludes(raw: unknown): ExcludesSettings {
+  const d = excludesDefaults();
+  if (!raw || typeof raw !== 'object') return d;
+  const r = raw as Partial<ExcludesSettings>;
+  return {
+    excludedChars: Array.isArray(r.excludedChars)
+      ? r.excludedChars.filter((x): x is string => typeof x === 'string')
+      : d.excludedChars,
+    excludedWorldNames: Array.isArray(r.excludedWorldNames)
+      ? r.excludedWorldNames.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      : d.excludedWorldNames,
+    excludedWorldInfoPatterns: Array.isArray(r.excludedWorldInfoPatterns)
+      ? r.excludedWorldInfoPatterns.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      : d.excludedWorldInfoPatterns,
+    customStripTags: Array.isArray(r.customStripTags)
+      ? Array.from(
+        new Set(
+          r.customStripTags
+            .filter((x): x is string => typeof x === 'string')
+            .map(sanitizeTagName)
+            .filter(Boolean),
+        ),
+      )
+      : d.customStripTags,
+  };
+}
+
 /** 把任意来源的原始对象并入默认值,容错缺字段/类型不符。 */
 function normalize(raw: unknown): ImageSettings {
   if (!raw || typeof raw !== 'object') return defaults();
@@ -678,6 +772,12 @@ function normalize(raw: unknown): ImageSettings {
       };
     })(),
   };
+  merged.excludes = normalizeExcludes(r.excludes);
+  // 存储行为:嵌套对象逐字段兜底(老数据无 storage 键 → 默认关)
+  const rs = (r.storage ?? {}) as Partial<StoragePrefs>;
+  merged.storage = {
+    saveAsJpeg: typeof rs.saveAsJpeg === 'boolean' ? rs.saveAsJpeg : false,
+  };
   return merged;
 }
 
@@ -705,6 +805,8 @@ function applyInto(target: ImageSettings, src: ImageSettings): void {
   target.channels = src.channels;
   target.assignments = src.assignments;
   target.autoTag = src.autoTag;
+  target.excludes = src.excludes;
+  target.storage = src.storage;
 }
 
 /* —— 渠道共享存储:与柏宝书等「柏宝」插件共用同一份渠道列表 ——
@@ -787,20 +889,187 @@ function bindSharedChannelsListener(): void {
   });
 }
 
+/**
+ * 渠道共享存储接管(消费者模式,参照柏宝砚/ST-BaiBai-Pen 的共享渠道协议):
+ * - 共享存储存在 → 领养;
+ * - 不存在且本插件已有渠道(绘单装用户配过)→ 以自身为种子建仓;
+ * - 不存在且本插件也没有渠道 → **不建仓**,只同步内存指纹。
+ *   空渠道列表绝不创建共享存储,防止空 store 占位后被书领养、双方同步成空。
+ */
 function hydrateSharedChannels(legacyChannels: ApiChannel[]): void {
   const ctx = getContext();
   if (!ctx?.extensionSettings) return;
   const stored = readSharedChannels(ctx.extensionSettings[SHARED_CHANNELS_KEY]);
   if (stored) {
-    // 已有共享渠道(如柏宝书先写入过)→ 以共享为准,覆盖本插件镜像
     applySharedChannels(stored);
   } else {
-    // 还没有共享存储 → 用本插件自存的渠道当种子写进去
     settings.channels = legacyChannels.map(normalizeChannel);
     sharedChannelsFingerprint = channelFingerprint(settings.channels);
-    writeSharedChannels(false);
+    // 已有渠道才允许建仓;空列表不建仓(消费者模式,等书或用户改动时再建)
+    if (settings.channels.length > 0) writeSharedChannels(false);
   }
   bindSharedChannelsListener();
+}
+
+/* ============ 排除设置共享存储(与柏宝书共用,协议与渠道完全同构) ============ */
+
+const SHARED_EXCLUDES_KEY = 'baibai_exclude_settings';
+const SHARED_EXCLUDES_EVENT = 'st-baibai-exclude-settings:changed';
+const SHARED_EXCLUDES_SCHEMA_VERSION = 1;
+
+interface SharedExcludesStore {
+  schemaVersion: number;
+  revision: number;
+  excludedChars: string[];
+  excludedWorldNames: string[];
+  excludedWorldInfoPatterns: string[];
+  customStripTags: string[];
+}
+
+let sharedExcludesFingerprint = '';
+let sharedExcludesRevision = 0;
+let sharedExcludesListenerBound = false;
+
+function excludesFingerprint(ex: ExcludesSettings): string {
+  return JSON.stringify([
+    ex.excludedChars,
+    ex.excludedWorldNames,
+    ex.excludedWorldInfoPatterns,
+    ex.customStripTags,
+  ]);
+}
+
+/** 判断名单里除内置默认条目名规则(mvu)外,是否还有任何用户数据。 */
+function excludesHasUserData(ex: ExcludesSettings): boolean {
+  const patterns = ex.excludedWorldInfoPatterns.filter(p => !DEFAULT_WI_PATTERNS.includes(p));
+  return (
+    ex.excludedChars.length > 0 ||
+    ex.excludedWorldNames.length > 0 ||
+    patterns.length > 0 ||
+    ex.customStripTags.length > 0
+  );
+}
+
+/** 从共享存储原样读出四名单,逐名单按 normalizeExcludes 同口径清洗(缺字段/类型不符回退空数组)。 */
+function readSharedExcludes(raw: unknown): SharedExcludesStore | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const store = raw as Partial<SharedExcludesStore>;
+  if (!Array.isArray(store.excludedChars)) return null;
+  const normalized = normalizeExcludes({
+    excludedChars: store.excludedChars,
+    excludedWorldNames: store.excludedWorldNames,
+    excludedWorldInfoPatterns: store.excludedWorldInfoPatterns,
+    customStripTags: store.customStripTags,
+  });
+  return {
+    schemaVersion: SHARED_EXCLUDES_SCHEMA_VERSION,
+    revision:
+      typeof store.revision === 'number' && Number.isFinite(store.revision)
+        ? Math.max(0, Math.floor(store.revision))
+        : 0,
+    ...normalized,
+  };
+}
+
+function writeSharedExcludes(dispatch = true): void {
+  const ctx = getContext();
+  if (!ctx?.extensionSettings) return;
+  sharedExcludesRevision += 1;
+  const store: SharedExcludesStore = {
+    schemaVersion: SHARED_EXCLUDES_SCHEMA_VERSION,
+    revision: sharedExcludesRevision,
+    ...JSON.parse(JSON.stringify(settings.excludes)) as ExcludesSettings,
+  };
+  ctx.extensionSettings[SHARED_EXCLUDES_KEY] = store;
+  sharedExcludesFingerprint = excludesFingerprint(store);
+  ctx.saveSettingsDebounced?.();
+  if (dispatch) {
+    window.dispatchEvent(
+      new CustomEvent(SHARED_EXCLUDES_EVENT, {
+        detail: { revision: store.revision, source: 'ST-BaiBai-Image' },
+      }),
+    );
+  }
+}
+
+function applySharedExcludes(store: SharedExcludesStore): void {
+  const fingerprint = excludesFingerprint(store);
+  sharedExcludesRevision = Math.max(sharedExcludesRevision, store.revision);
+  if (fingerprint === sharedExcludesFingerprint) return;
+  settings.excludes = {
+    excludedChars: store.excludedChars,
+    excludedWorldNames: store.excludedWorldNames,
+    excludedWorldInfoPatterns: store.excludedWorldInfoPatterns,
+    customStripTags: store.customStripTags,
+  };
+  sharedExcludesFingerprint = fingerprint;
+}
+
+function bindSharedExcludesListener(): void {
+  if (sharedExcludesListenerBound) return;
+  sharedExcludesListenerBound = true;
+  window.addEventListener(SHARED_EXCLUDES_EVENT, () => {
+    const ctx = getContext();
+    const store = readSharedExcludes(ctx?.extensionSettings?.[SHARED_EXCLUDES_KEY]);
+    if (store) applySharedExcludes(store);
+  });
+}
+
+/**
+ * 排除设置共享存储接管(消费者模式,参照柏宝砚/ST-BaiBai-Pen 的共享渠道协议):
+ * - 共享存储存在 → 领养共享数据;
+ * - 共享存储不存在但本插件名单已有用户数据 → 以本插件名单为种子建仓(绘单装用户);
+ * - 共享存储不存在且本插件也没有用户数据 → **不建仓**,只在本地播种内置默认规则。
+ *   没有数据的一方绝不创建共享存储,防止空 store 占位后被书领养、双方互相同步成空。
+ * 播种只在「无存储」时发生,天然满足「只发一次、删了不补回」。
+ */
+function hydrateSharedExcludes(): void {
+  const ctx = getContext();
+  if (!ctx?.extensionSettings) return;
+  const stored = readSharedExcludes(ctx.extensionSettings[SHARED_EXCLUDES_KEY]);
+  if (stored) {
+    // 领同居中:共享存储存在但无用户数据(疑似早期版本空种子),本插件却有数据 → 以本插件为准回写,
+    // 修复历史遗留的空 store(回写广播后书会领养真实数据)。
+    if (!excludesHasUserData(stored) && excludesHasUserData(settings.excludes)) {
+      writeSharedExcludes(true);
+    } else {
+      applySharedExcludes(stored);
+    }
+  } else {
+    // 本地播种内置默认条目名规则(绘单装时开箱即用)
+    for (const pat of DEFAULT_WI_PATTERNS) {
+      if (!settings.excludes.excludedWorldInfoPatterns.includes(pat)) {
+        settings.excludes.excludedWorldInfoPatterns.push(pat);
+      }
+    }
+    sharedExcludesFingerprint = excludesFingerprint(settings.excludes);
+    // 名单里已有用户数据才允许建仓;空名单不建仓(消费者模式,等书或用户改动时再建)
+    if (excludesHasUserData(settings.excludes)) writeSharedExcludes(false);
+  }
+  bindSharedExcludesListener();
+}
+
+/* ============ 排除角色闸门(与柏宝书 isCurrentChatExcluded 同口径) ============ */
+
+/** 当前单角色聊天的角色名;群聊或未进入聊天时返回 null(群聊不参与排除)。 */
+function currentCharName(): string | null {
+  const ctx = getContext();
+  if (!ctx) return null;
+  if (ctx.groupId) return null; // 群聊:多角色,不按单名排除
+  const idx = ctx.characterId;
+  if (idx === undefined || idx === null || idx === '') return null;
+  const ch = ctx.characters?.[Number(idx)];
+  return ch?.name ?? null;
+}
+
+/**
+ * 当前聊天是否被排除(该角色名在排除名单里)。被排除则自动 tag 全流程停用。
+ * 按「名字」匹配:同名的重名卡会被一并排除——与柏宝书排除角色的口径完全一致。
+ */
+export function isCurrentChatExcluded(): boolean {
+  if (!settings.excludes.excludedChars.length) return false;
+  const name = currentCharName();
+  return name !== null && settings.excludes.excludedChars.includes(name);
 }
 
 /** 写回 extension_settings 并防抖落盘到服务器(跨设备同步的关键)。 */
@@ -811,6 +1080,9 @@ function persist(): void {
   // 渠道有改动 → 同步写共享存储并广播(指纹比对防回环)
   const fingerprint = channelFingerprint(settings.channels);
   if (fingerprint !== sharedChannelsFingerprint) writeSharedChannels();
+  // 排除名单有改动 → 同步写共享存储并广播(指纹比对防回环)
+  const exFingerprint = excludesFingerprint(settings.excludes);
+  if (exFingerprint !== sharedExcludesFingerprint) writeSharedExcludes();
   ctx.saveSettingsDebounced?.();
 }
 
@@ -834,6 +1106,9 @@ export function hydrateSettings(): void {
 
   // 渠道列表改由共享存储接管(存在则以共享为准,不存在则以自身为种子写入)
   hydrateSharedChannels(settings.channels);
+
+  // 排除名单同样改由共享存储接管(创建时播种内置默认条目名规则)
+  hydrateSharedExcludes();
 
   ready = true;
   for (const cb of readyCbs.splice(0)) {

@@ -1,5 +1,8 @@
 import type { STContext, STMessage, WorldInfoEntry } from '@/st/context';
 import { getCheckWorldInfo, getContext, getEjsTemplate } from '@/st/context';
+import { isWorldInfoEntryExcluded, sortWorldInfoEntriesLikeST } from '@/autoTag/excludes';
+import { stripCustomTags } from '@/autoTag/clean';
+import { settings } from '@/state/settings';
 
 /**
  * 独立请求的上下文装配:世界书 / 角色卡描述 / user 人设。
@@ -42,13 +45,14 @@ function stripManagedTags(s: string): string {
 
 /**
  * 世界书扫描文本清洗:整块删噪声标签,再裁剪到 <bbs_start>…</bbs_end> 正文段。
- * 与柏宝书 clampToTimeTags 同口径(不含其用户自定义标签配置)。
+ * 与柏宝书 clampToTimeTags 同口径(含其用户自定义标签配置,名单走共享存储)。
  */
 function cleanScanText(mes: string): string {
   let s = String(mes ?? '')
     .replace(RE_THINK_BLOCK, '') // 思维链
     .replace(/<!--[\s\S]+?-->/g, '') // HTML 注释
     .replace(/<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi, ''); // 旧 horae 格式
+  s = stripCustomTags(s, settings.excludes.customStripTags); // 用户自定义标签(与柏宝书同名单)
   s = stripManagedTags(s);
 
   // 最后一个 <bbs_start> 的位置:全局扫一遍取末次
@@ -163,10 +167,10 @@ async function fetchWorldInfoViaPrompt(
 
 /**
  * 按本轮待扫描文本激活世界书条目(关键词触发 + constant 蓝灯),返回设定文本。
- * 优先走 checkWorldInfo:返回**条目对象**,可逐条渲染成品(展宏 + EJS)。
+ * 优先走 checkWorldInfo:返回**条目对象**,可逐条渲染成品(展宏 + EJS),
+ * 并据此按「整本排除」+「条目名规则」(共享存储名单,与柏宝书同口径)过滤掉不需要的条目。
  * checkWorldInfo 取不到(旧版/路径变动)→ 降级到 getWorldInfoPrompt(不过滤,但至少带书,不崩)。
  * 无激活条目 / 角色卡无世界书 / 出错 → 返回空串(不影响主流程)。
- * (柏宝书的「整本排除/条目名排除」名单在其自身设置里,公共 API 不暴露,暂不执行过滤。)
  */
 export async function fetchWorldInfo(
   chat: STMessage[],
@@ -186,11 +190,16 @@ export async function fetchWorldInfo(
     const res = await check(scanText, HUGE_WI_CONTEXT, true);
     const activated = res?.allActivatedEntries;
     if (!activated) return '';
-    // allActivatedEntries 可能是 Set<entry> 或 Map<key,entry>,统一取 values
-    const entries = activated instanceof Map ? [...activated.values()] : [...activated];
-    // 逐条渲染(展宏 + 执行 EJS),让「按好感度切换人设」等动态条目拿到成品而非原文
+    // allActivatedEntries 可能是 Set<entry> 或 Map<key,entry>,统一取 values;
+    // 再排成 ST 主提示词同款顺序(扫描命中序不含排序,与柏宝书同口径),
+    // 然后按共享排除名单过滤(整本/条目名),最后逐条渲染(展宏 + 执行 EJS)。
+    const entries = sortWorldInfoEntriesLikeST(
+      activated instanceof Map ? [...activated.values()] : [...activated],
+    );
     const chunks = await Promise.all(
-      entries.map(e => renderWorldInfoContent(typeof e.content === 'string' ? e.content : '', e, refFloor, renderTemplates)),
+      entries
+        .filter(e => e && !isWorldInfoEntryExcluded(e, settings.excludes))
+        .map(e => renderWorldInfoContent(typeof e.content === 'string' ? e.content : '', e, refFloor, renderTemplates)),
     );
     return joinWorldInfoChunks(chunks);
   } catch (e) {

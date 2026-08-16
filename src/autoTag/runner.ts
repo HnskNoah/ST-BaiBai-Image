@@ -13,7 +13,7 @@ import { clearAutoGenerateForFloor, markForAutoGenerate } from '@/floor/autoGene
 import { applyMessageText } from '@/st/messageEdit';
 import { getContext, type STMessage } from '@/st/context';
 import { stripImageTags } from '@/st/imageTagRegex';
-import { getTagGenChannel, settings } from '@/state/settings';
+import { getTagGenChannel, isCurrentChatExcluded, settings } from '@/state/settings';
 
 const ignoredRenderTypes = new Set(['extension', 'first_message', 'command', 'impersonate']);
 const processed = new Set<string>();
@@ -83,6 +83,12 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
   const context = getContext();
   if (!context || !settings.enabled) return;
   if (!opts.manual && !settings.autoTag.enabled) return;
+  // 排除角色闸门(与柏宝书同名单):该角色名所在聊天的自动 tag 全流程停用,
+  // 手动按钮也在 actionButton 层隐藏,这里做兜底(手动触发时给反馈)。
+  if (isCurrentChatExcluded()) {
+    if (opts.manual) toastr.warning('该角色已被排除，不生成生图 tag', '柏宝绘');
+    return;
+  }
   const message = context.chat[floor];
   if (!isAiStoryMessage(message)) return;
   const rawSource = message.mes;

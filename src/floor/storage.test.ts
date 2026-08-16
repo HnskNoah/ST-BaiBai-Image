@@ -10,12 +10,14 @@ import {
   latestEntry,
   latestStaleEntry,
   mutateStore,
+  prepareImageForStorage,
   promptHash,
   readStore,
   saveImageResult,
   type BbiImageEntry,
 } from '@/floor/storage';
 import type { STContext, STMessage } from '@/st/context';
+import { settings } from '@/state/settings';
 
 function fakeEntry(overrides: Partial<BbiImageEntry> = {}): BbiImageEntry {
   return {
@@ -175,6 +177,69 @@ describe('mutateStore (CAS)', () => {
     const message = fakeMessage();
     const ctx = { chat: [message], saveChat: vi.fn(async () => undefined) } as unknown as STContext;
     expect(await mutateStore(ctx, 5, store => store)).toBe(false);
+  });
+});
+
+describe('prepareImageForStorage', () => {
+  const pngResult = { url: 'data:image/png;base64,AAAA', filename: 'x.png', format: 'png', revoke() {} };
+
+  afterEach(() => {
+    settings.storage.saveAsJpeg = false;
+  });
+
+  it('keeps the original format when the switch is off', async () => {
+    settings.storage.saveAsJpeg = false;
+    const out = await prepareImageForStorage(pngResult);
+    expect(out.format).toBe('png');
+    expect(out.base64).toBe('AAAA');
+  });
+
+  it('reencodes to jpg when the switch is on', async () => {
+    settings.storage.saveAsJpeg = true;
+    const jpegBlob = new Blob(['jpeg-bytes'], { type: 'image/jpeg' });
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => {
+      return { width: 2, height: 2, close: vi.fn() };
+    }));
+    const toBlob = vi.fn((cb: (b: Blob | null) => void, _type: string, _q: number) => {
+      cb(jpegBlob);
+    });
+    const ctx2d = { fillStyle: '', fillRect: vi.fn(), drawImage: vi.fn() };
+    vi.stubGlobal('document', {
+      createElement: () => ({
+        width: 0,
+        height: 0,
+        getContext: () => ctx2d,
+        toBlob,
+      }),
+    });
+    // 浏览器 FileReader.readAsDataURL 返回带 MIME 前缀的完整 Data URL
+    vi.stubGlobal('FileReader', class {
+      result: string | ArrayBuffer | null = null;
+      onload: (() => void) | null = null;
+      readAsDataURL() {
+        this.result = 'data:image/jpeg;base64,jpegb64';
+        this.onload?.();
+      }
+    });
+
+    const out = await prepareImageForStorage(pngResult);
+    expect(out.format).toBe('jpg');
+    expect(out.base64).toBe('jpegb64');
+    expect(createImageBitmap).toHaveBeenCalled();
+    expect(toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.9);
+    settings.storage.saveAsJpeg = false;
+  });
+
+  it('falls back to the original format when reencode fails', async () => {
+    settings.storage.saveAsJpeg = true;
+    // createImageBitmap 抛错 → 应回退 PNG 原样落盘
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => {
+      throw new Error('decode failed');
+    }));
+    const out = await prepareImageForStorage(pngResult);
+    expect(out.format).toBe('png');
+    expect(out.base64).toBe('AAAA');
+    settings.storage.saveAsJpeg = false;
   });
 });
 

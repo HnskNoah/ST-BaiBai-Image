@@ -169,8 +169,10 @@ async function requestCompletionAtUrl(
 /**
  * 读取 SSE 流(text/event-stream),拼接 delta.content。
  * ST 的 generate 端点在 stream=true 时透传上游 SSE:每行 `data: {json}`,以 `data: [DONE]` 结束。
+ * 推理模型的思维链增量(delta.reasoning 等)单独缓冲:只有 content 全空时才回退用它,
+ * 避免在 content 正常时把思维链混进正文。
  */
-async function readSseContent(resp: Response): Promise<string> {
+export async function readSseContent(resp: Response): Promise<string> {
   const reader = resp.body?.getReader();
   if (!reader) {
     // 无法流式读取(理论上不会):退回当作整体 JSON 处理
@@ -180,6 +182,7 @@ async function readSseContent(resp: Response): Promise<string> {
   const decoder = new TextDecoder();
   let buf = '';
   let out = '';
+  let reasoningOut = '';
   for (; ;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -195,24 +198,53 @@ async function readSseContent(resp: Response): Promise<string> {
       try {
         const json = JSON.parse(payload);
         if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
-        const delta = json?.choices?.[0]?.delta?.content ?? json?.choices?.[0]?.message?.content ?? json?.choices?.[0]?.text;
-        if (typeof delta === 'string') out += delta;
+        const choice = json?.choices?.[0];
+        const src = choice?.delta ?? choice?.message;
+        const piece = textOf(src?.content) || textOf(choice?.text);
+        if (piece) out += piece;
+        const reasoningPiece =
+          textOf(src?.reasoning) || textOf(src?.reasoning_content) || textOf(src?.thinking);
+        if (reasoningPiece) reasoningOut += reasoningPiece;
       } catch (e) {
         if (e instanceof ApiError) throw e;
         // 单行解析失败忽略(可能是注释行/心跳)
       }
     }
   }
-  return out.trim();
+  return out.trim() || reasoningOut.trim();
 }
 
-/** 从标准 OpenAI 响应体提取文本 */
-function extractContent(data: any): string {
+/** 把可能是 string / content-parts 数组 / 其他类型的值转成文本;非字符串成分一律丢弃。 */
+function textOf(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    let out = '';
+    for (const part of value) {
+      if (typeof part === 'string') out += part;
+      else if (part && typeof part === 'object') {
+        const text = (part as Record<string, unknown>).text;
+        if (typeof text === 'string') out += text;
+      }
+    }
+    return out;
+  }
+  return '';
+}
+
+/**
+ * 从响应体提取答案文本。
+ * 标准链:message.content / choices[0].text / data.content;
+ * 推理模型(如 deepseek-v4-flash)可能把整段答案(思维链+最终 JSON)全放进
+ * reasoning / reasoning_content / thinking 而 content 为空——标准链全空时回退取之,
+ * 混入的思维链由 parseImagePlan 的 JSON 块扫描自然剔除。
+ */
+export function extractContent(data: any): string {
+  const msg = data?.choices?.[0]?.message;
+  const content =
+    textOf(msg?.content) || textOf(data?.choices?.[0]?.text) || textOf(data?.content);
+  if (content.trim()) return content.trim();
   return (
-    data?.choices?.[0]?.message?.content ??
-    data?.choices?.[0]?.text ??
-    data?.content ??
-    ''
+    textOf(msg?.reasoning) || textOf(msg?.reasoning_content) || textOf(msg?.thinking)
   ).trim();
 }
 

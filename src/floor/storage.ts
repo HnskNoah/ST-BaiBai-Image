@@ -1,6 +1,7 @@
 import type { ComfyImageResult } from '@/backends/comfyui';
 import { deleteImageFile, uploadImageFile } from '@/floor/upload';
 import { getContext, type STContext, type STMessage } from '@/st/context';
+import { settings } from '@/state/settings';
 
 /**
  * 楼层卡片结果存储层（DESIGN-FLOOR-UI.md §7）。
@@ -201,6 +202,87 @@ async function resultToBase64(result: ComfyImageResult): Promise<string> {
   return btoa(binary);
 }
 
+/* —— 可选 JPG 转存(settings.storage.saveAsJpeg) —— */
+
+/** 转码质量：视觉无损档。不并设滑条——极少数不满意直接关开关即可，免多一项配置。 */
+const JPEG_QUALITY = 0.9;
+
+function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = new FileReader();
+  return new Promise((resolve, reject) => {
+    buffer.onload = () => {
+      const dataUrl = String(buffer.result ?? '');
+      const comma = dataUrl.indexOf(',');
+      if (comma < 0) {
+        reject(new Error('转码后图片格式无效'));
+        return;
+      }
+      resolve(dataUrl.slice(comma + 1));
+    };
+    buffer.onerror = () => reject(new Error('转码后图片读取失败'));
+    buffer.readAsDataURL(blob);
+  });
+}
+
+/**
+ * 把原图重编码为 JPG(固定质量 0.9,自底向上重绘消除 alpha)。
+ * PNG → canvas → JPEG：丢掉内嵌生成参数(NAI tEXt / ComfyUI 工作流块)，换来
+ * 约为原体积 10–20% 的文件——这是有意为之的取舍，开关默认关。
+ * 注：canvas 解码即屏敔一切元数据，无需额外「抹除」步骤。
+ */
+async function reencodeAsJpeg(source: Blob): Promise<Blob> {
+  // createImageBitmap 比 <img> 快且不进 DOM；但部分环境(如 iOS Safari 旧版)对
+  // EXIF 取向敏感度不同，这里显式 imageOrientation: 'none' 保持像素原样
+  const bitmap = await createImageBitmap(source);
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('canvas 2D 上下文不可用');
+    // JPG 无 alpha 通道：先铺白底再绘图，否则透明区域被压成黑色
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0);
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        blob => (blob ? resolve(blob) : reject(new Error('JPG 编码失败'))),
+        'image/jpeg',
+        JPEG_QUALITY,
+      );
+    });
+  } finally {
+    bitmap.close();
+  }
+}
+
+/**
+ * 按设置准备待落盘的图片：开关开启时重编码为 JPG，关闭时原样返回。
+ * 转码链路任何一步失败都回退原格式——宁可多占磁盘也不能把图开坏或丢失。
+ */
+export async function prepareImageForStorage(result: ComfyImageResult): Promise<{
+  base64: string;
+  format: string;
+}> {
+  if (settings.storage.saveAsJpeg) {
+    try {
+      // data URL/blob URL 都能被 fetch 成 Blob
+      const response = await fetch(result.url);
+      if (!response.ok) throw new Error(`读取图片失败 (${response.status})`);
+      const original = await response.blob();
+      // 本就是 JPG(webp 等不可再压)时直接跳过重编码，避免二次有损
+      if (result.format !== 'jpg' && result.format !== 'jpeg') {
+        const jpeg = await reencodeAsJpeg(original);
+        return { base64: await blobToBase64(jpeg), format: 'jpg' };
+      }
+      return { base64: await blobToBase64(original), format: result.format };
+    } catch (error) {
+      console.warn('[柏宝绘] JPG 转码失败，本次回退保存原格式', error);
+    }
+  }
+  return { base64: await resultToBase64(result), format: result.format };
+}
+
 /**
  * 完整保存流程（DESIGN-FLOOR-UI.md §7.6）：
  * 图片二进制落盘 → extra 写指针（先文件后指针，避免孤儿指针）；
@@ -221,8 +303,9 @@ export async function saveImageResult(
 
   const hash = promptHash(tag);
   const genId = generationId();
-  const name = imageFileName(chatId, swipeId, hash, genId, result.format);
-  const base64 = await resultToBase64(result);
+  // 先按设置决定落盘格式(开关开启时重编码为 JPG)，文件名后缀跟随实际格式
+  const { base64, format } = await prepareImageForStorage(result);
+  const name = imageFileName(chatId, swipeId, hash, genId, format);
   const path = await uploadImageFile(name, base64);
 
   const entry: BbiImageEntry = {

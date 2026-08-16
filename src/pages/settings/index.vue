@@ -14,11 +14,13 @@ import {
   DEFAULT_PREFILL_PROMPT,
   DEFAULT_THINKING_PROMPT,
   newChannel,
+  sanitizeTagName,
   settings,
   type ApiChannel,
   type AutoTagPrompts,
   type BackendId,
 } from '@/state/settings';
+import { getContext } from '@/st/context';
 import {
   ORB_SHAPES,
   THEMES,
@@ -268,6 +270,137 @@ async function pullModels(ch: ApiChannel) {
   }
 }
 
+/* —— 排除角色:勾选的角色名(含重名卡)的聊天里,自动 tag 全流程停用。
+   名单与柏宝书共享(见 state/settings.ts 的共享存储),任一端改动自动同步。
+   按「名字」排除,同名卡是一批一起排除。列表很长时易卡,故:① 仅在弹窗打开时取/去重角色名;
+   ② 带搜索框过滤;③ 用 v-show + 子串匹配,渲染量随搜索收敛。 —— */
+const excludeOpen = ref(false);
+const excludeSearch = ref('');
+
+// 弹窗打开时一次性算出去重后的角色名(按名排序),关闭后不再持有,避免常驻大列表。
+const charNames = computed<string[]>(() => {
+  if (!excludeOpen.value) return [];
+  const chars = getContext()?.characters ?? [];
+  const seen = new Set<string>();
+  for (const c of chars) {
+    const n = c?.name?.trim();
+    if (n) seen.add(n);
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b, 'zh'));
+});
+
+// 过滤:空搜索显示全部;否则大小写不敏感子串匹配
+const filteredCharNames = computed<string[]>(() => {
+  const q = excludeSearch.value.trim().toLowerCase();
+  if (!q) return charNames.value;
+  return charNames.value.filter(n => n.toLowerCase().includes(q));
+});
+
+function openExclude() {
+  excludeSearch.value = '';
+  excludeOpen.value = true;
+}
+function closeExclude() {
+  excludeOpen.value = false;
+}
+function isExcluded(name: string): boolean {
+  return settings.excludes.excludedChars.includes(name);
+}
+function toggleExcluded(name: string) {
+  const list = settings.excludes.excludedChars;
+  const idx = list.indexOf(name);
+  if (idx >= 0) list.splice(idx, 1);
+  else list.push(name);
+}
+
+/* —— 排除世界书:tag 生成副 API 不带这些整本世界书的条目。复刻排除角色的搜索+勾选弹窗;
+   世界书名从 ST 的 getWorldInfoNames()(全部已加载的世界书文件)取。 —— */
+const excludeWorldOpen = ref(false);
+const excludeWorldSearch = ref('');
+
+// 旧版 ST(如 1.13.5)的 getContext() 没有 getWorldInfoNames,退而从主页面世界书
+// 下拉框 #world_editor_select 读选项文本(value="" 是占位项,跳过)。
+function readWorldNamesFromDom(): string[] {
+  const opts = document.querySelectorAll<HTMLOptionElement>('#world_editor_select option');
+  const out: string[] = [];
+  for (const o of opts) {
+    if (o.value !== '' && o.textContent) out.push(o.textContent);
+  }
+  return out;
+}
+
+// 弹窗打开时一次性取世界书名(去重去空、按名排序);关闭后不持有。
+const worldNames = computed<string[]>(() => {
+  if (!excludeWorldOpen.value) return [];
+  const getNames = getContext()?.getWorldInfoNames;
+  const names = getNames ? getNames() : readWorldNamesFromDom();
+  const seen = new Set<string>();
+  for (const n of names) {
+    const t = n?.trim();
+    if (t) seen.add(t);
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b, 'zh'));
+});
+
+const filteredWorldNames = computed<string[]>(() => {
+  const q = excludeWorldSearch.value.trim().toLowerCase();
+  if (!q) return worldNames.value;
+  return worldNames.value.filter(n => n.toLowerCase().includes(q));
+});
+
+function openExcludeWorld() {
+  excludeWorldSearch.value = '';
+  excludeWorldOpen.value = true;
+}
+function closeExcludeWorld() {
+  excludeWorldOpen.value = false;
+}
+function isWorldExcluded(name: string): boolean {
+  return settings.excludes.excludedWorldNames.includes(name);
+}
+function toggleWorldExcluded(name: string) {
+  const list = settings.excludes.excludedWorldNames;
+  const idx = list.indexOf(name);
+  if (idx >= 0) list.splice(idx, 1);
+  else list.push(name);
+}
+
+/* —— 排除世界书条目:按条目名(comment)过滤,复刻清洗标签的输入框+chips。
+   规则当正则,普通名字即包含匹配;编译失败降级子串。 —— */
+const wiPatternDraft = ref('');
+function addWiPattern() {
+  const pat = wiPatternDraft.value.trim();
+  if (!pat) {
+    wiPatternDraft.value = '';
+    return;
+  }
+  if (!settings.excludes.excludedWorldInfoPatterns.includes(pat)) {
+    settings.excludes.excludedWorldInfoPatterns.push(pat);
+  }
+  wiPatternDraft.value = '';
+}
+function removeWiPattern(pat: string) {
+  const idx = settings.excludes.excludedWorldInfoPatterns.indexOf(pat);
+  if (idx >= 0) settings.excludes.excludedWorldInfoPatterns.splice(idx, 1);
+}
+
+/* —— 自定义清洗标签:用户填标签名(如 snow),清洗正文时把 <snow>…</snow> 整块删掉。
+   与柏宝书同名单共享(柏宝书配的清洗标签,绘里同样生效)。 —— */
+const stripTagDraft = ref('');
+function addStripTag() {
+  const tag = sanitizeTagName(stripTagDraft.value);
+  if (!tag) {
+    stripTagDraft.value = '';
+    return;
+  }
+  if (!settings.excludes.customStripTags.includes(tag)) settings.excludes.customStripTags.push(tag);
+  stripTagDraft.value = '';
+}
+function removeStripTag(tag: string) {
+  const idx = settings.excludes.customStripTags.indexOf(tag);
+  if (idx >= 0) settings.excludes.customStripTags.splice(idx, 1);
+}
+
 /* —— 模型可搜索下拉(combobox):输入框既是当前值也是过滤词,聚焦弹出过滤列表 —— */
 const modelMenuOpen = ref(false);
 const modelQuery = ref(''); // 聚焦后用户输入的过滤词;失焦时清空
@@ -353,6 +486,15 @@ function closeModelMenuSoon() {
           <span class="bbi-field-label">出图后端</span>
           <BbiSelect v-model="backendSel" :options="BACKEND_OPTIONS" aria-label="出图后端" />
         </div>
+
+        <label class="bbi-switch-row">
+          <span class="bbi-field-label">新图保存为 JPG</span>
+          <input v-model="settings.storage.saveAsJpeg" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p class="bbi-field-hint">
+          开启后新生成的图片统一转为 JPG(质量 0.9)再保存，体积约为 PNG 的一到两成；不再保存
+          PNG。代价：图片内嵌的生成参数会丢失(无法再拖回 NovelAI / ComfyUI 复现)，提示词与种子仍保存在聊天记录里。仅影响新图，已保存的 PNG 不变；转码失败时自动回退原格式。
+        </p>
 
         <label class="bbi-switch-row">
           <span class="bbi-field-label">移动端点当前页导航关窗</span>
@@ -478,6 +620,115 @@ function closeModelMenuSoon() {
         <p class="bbi-field-hint">取世界书条目前先展开 &#123;&#123;宏&#125;&#125; 并执行 ST-Prompt-Template 的 EJS，拿到“执行后”的成品；未装模板插件时仅展宏。含写变量的 EJS 每次自动 tag 会额外执行一次，遇到这类世界书可关掉。</p>
       </Collapsible>
 
+      <!-- 排除角色:名单与柏宝书共享(见 state/settings.ts 的共享存储),任一端改动自动同步 -->
+      <Collapsible title="排除角色" :open="false">
+        <p class="bbi-field-hint">勾选的角色名(含同名的重名卡)所在聊天里,柏宝绘不会自动生成生图 tag(楼层按钮同步隐藏)。名单与柏宝书共享——柏宝书里排除的角色,绘里同样停用,任一端改动自动同步。适合工具性、不需要 AI 参与的角色。</p>
+        <div class="bbi-channel-bar">
+          <span class="bbi-field-label">已排除 {{ settings.excludes.excludedChars.length }} 个</span>
+          <button class="bbi-btn bbi-btn-primary bbi-btn-sm" type="button" @click="openExclude">
+            <Icon name="edit" /> 编辑名单
+          </button>
+        </div>
+        <ul v-if="settings.excludes.excludedChars.length" class="bbi-exclude-chips">
+          <li v-for="name in settings.excludes.excludedChars" :key="name" class="bbi-exclude-chip">
+            <span class="bbi-exclude-chip-name">{{ name }}</span>
+            <button class="bbi-exclude-chip-x" type="button" title="移出名单" @click="toggleExcluded(name)">
+              <Icon name="close" />
+            </button>
+          </li>
+        </ul>
+        <p v-else class="bbi-field-hint">名单为空,所有角色都启用自动 tag。</p>
+      </Collapsible>
+
+      <!-- 排除世界书内容:与柏宝书同名单共享 -->
+      <Collapsible title="排除世界书内容" :open="false">
+        <p class="bbi-field-hint">
+          生成 tag 时会激活世界书当参考。这里可剔除对画面无用的条目——如全局挂载的附加知识书、
+          规则说明等,既省 token 也避免干扰。名单与柏宝书共享(柏宝书里排除的书,绘里同样不带),
+          任一端改动自动同步。仅影响副 API,不改变你主对话里的世界书。
+        </p>
+
+        <!-- 整本排除:复刻排除角色的搜索+勾选弹窗 -->
+        <div class="bbi-channel-bar">
+          <span class="bbi-field-label">整本排除 · 已选 {{ settings.excludes.excludedWorldNames.length }} 本</span>
+          <button class="bbi-btn bbi-btn-primary bbi-btn-sm" type="button" @click="openExcludeWorld">
+            <Icon name="edit" /> 编辑名单
+          </button>
+        </div>
+        <ul v-if="settings.excludes.excludedWorldNames.length" class="bbi-exclude-chips">
+          <li v-for="name in settings.excludes.excludedWorldNames" :key="name" class="bbi-exclude-chip">
+            <span class="bbi-exclude-chip-name">{{ name }}</span>
+            <button class="bbi-exclude-chip-x" type="button" title="移出名单" @click="toggleWorldExcluded(name)">
+              <Icon name="close" />
+            </button>
+          </li>
+        </ul>
+        <p v-else class="bbi-field-hint">未排除任何世界书,全部激活条目都会进 tag 生成参考。</p>
+
+        <hr class="bbi-rule" />
+
+        <!-- 按条目名过滤:复刻清洗标签的输入框 + chips -->
+        <div class="bbi-field-head">
+          <span class="bbi-field-label">按条目名过滤</span>
+        </div>
+        <p class="bbi-field-hint">
+          填条目备注名(comment)即按<strong>包含</strong>匹配(不分大小写)——如填 <code>附加</code> 可命中「附加设定」。
+          也支持正则:<code>^规则</code> 表示以「规则」开头。对上面未整本排除的世界书生效。
+          默认预置一条 <code>\[mvu[\s\S]*?\]</code>,过滤变量框架 MVU 的机制条目;不需要可直接删。
+        </p>
+        <div class="bbi-striptag-bar">
+          <input
+            v-model="wiPatternDraft"
+            class="bbi-input"
+            type="text"
+            placeholder="条目名或正则,如 附加 或 ^规则"
+            @keydown.enter.prevent="addWiPattern"
+          />
+          <button class="bbi-btn bbi-btn-primary bbi-btn-sm" type="button" @click="addWiPattern">
+            <Icon name="plus" /> 添加
+          </button>
+        </div>
+        <ul v-if="settings.excludes.excludedWorldInfoPatterns.length" class="bbi-exclude-chips">
+          <li v-for="pat in settings.excludes.excludedWorldInfoPatterns" :key="pat" class="bbi-exclude-chip">
+            <span class="bbi-exclude-chip-name">{{ pat }}</span>
+            <button class="bbi-exclude-chip-x" type="button" title="移除" @click="removeWiPattern(pat)">
+              <Icon name="close" />
+            </button>
+          </li>
+        </ul>
+        <p v-else class="bbi-field-hint">暂无条目名规则。</p>
+      </Collapsible>
+
+      <!-- 自定义清洗标签:与柏宝书同名单共享 -->
+      <Collapsible title="自定义清洗标签" :open="false">
+        <p class="bbi-field-hint">
+          正文里若混入其它插件/世界书写的格式块(如状态栏 <code>&lt;snow&gt;…&lt;/snow&gt;</code>),
+          可在此填入标签名(只填 <code>snow</code>,不带尖括号),世界书扫描与正文清洗时会把整块连内容一并删掉。
+          名单与柏宝书共享(柏宝书配的清洗标签,绘里同样生效),任一端改动自动同步。
+        </p>
+        <div class="bbi-striptag-bar">
+          <input
+            v-model="stripTagDraft"
+            class="bbi-input"
+            type="text"
+            placeholder="标签名,如 snow"
+            @keydown.enter.prevent="addStripTag"
+          />
+          <button class="bbi-btn bbi-btn-primary bbi-btn-sm" type="button" @click="addStripTag">
+            <Icon name="plus" /> 添加
+          </button>
+        </div>
+        <ul v-if="settings.excludes.customStripTags.length" class="bbi-exclude-chips">
+          <li v-for="tag in settings.excludes.customStripTags" :key="tag" class="bbi-exclude-chip">
+            <span class="bbi-exclude-chip-name">&lt;{{ tag }}&gt;</span>
+            <button class="bbi-exclude-chip-x" type="button" title="移除" @click="removeStripTag(tag)">
+              <Icon name="close" />
+            </button>
+          </li>
+        </ul>
+        <p v-else class="bbi-field-hint">暂无自定义标签。仅内置清洗(思维链、注释、物品旁注等)生效。</p>
+      </Collapsible>
+
       <!-- 自定义提示词(与柏宝书同款入口,独立成区) -->
       <Collapsible title="自定义提示词" :open="false">
         <ul class="bbi-prompt-list">
@@ -529,6 +780,82 @@ function closeModelMenuSoon() {
         <p v-else class="bbi-field-hint">还没有渠道。点「添加渠道」配置生成 tag 要用的 API。</p>
       </Collapsible>
     </div>
+
+    <!-- ===== 排除角色弹窗:搜索 + 勾选列表 ===== -->
+    <ModalMask :open="excludeOpen" @close="closeExclude">
+      <div class="bbi-modal" role="dialog" aria-modal="true" aria-label="编辑排除名单">
+        <header class="bbi-modal-head">
+          <span class="bbi-modal-title">排除角色</span>
+          <button class="bbi-icon-mini" type="button" title="关闭" @click="closeExclude"><Icon name="close" /></button>
+        </header>
+
+        <input
+          v-model="excludeSearch"
+          class="bbi-input"
+          type="search"
+          placeholder="搜索角色名…"
+          spellcheck="false"
+        />
+
+        <div class="bbi-exclude-list">
+          <label v-for="name in filteredCharNames" :key="name" class="bbi-exclude-row">
+            <input
+              type="checkbox"
+              class="bbi-checkbox"
+              :checked="isExcluded(name)"
+              @change="toggleExcluded(name)"
+            />
+            <span class="bbi-exclude-row-name">{{ name }}</span>
+          </label>
+          <p v-if="!charNames.length" class="bbi-field-hint">未读取到角色列表。请先在 ST 里加载角色卡。</p>
+          <p v-else-if="!filteredCharNames.length" class="bbi-field-hint">没有匹配「{{ excludeSearch }}」的角色。</p>
+        </div>
+
+        <footer class="bbi-modal-foot">
+          <span class="bbi-exclude-count">共 {{ charNames.length }} 个角色 · 已排除 {{ settings.excludes.excludedChars.length }}</span>
+          <span class="bbi-modal-foot-spacer"></span>
+          <button class="bbi-btn bbi-btn-primary" type="button" @click="closeExclude">完成</button>
+        </footer>
+      </div>
+    </ModalMask>
+
+    <!-- ===== 排除世界书弹窗:搜索 + 勾选列表(复刻排除角色) ===== -->
+    <ModalMask :open="excludeWorldOpen" @close="closeExcludeWorld">
+      <div class="bbi-modal" role="dialog" aria-modal="true" aria-label="编辑排除世界书名单">
+        <header class="bbi-modal-head">
+          <span class="bbi-modal-title">整本排除世界书</span>
+          <button class="bbi-icon-mini" type="button" title="关闭" @click="closeExcludeWorld"><Icon name="close" /></button>
+        </header>
+
+        <input
+          v-model="excludeWorldSearch"
+          class="bbi-input"
+          type="search"
+          placeholder="搜索世界书名…"
+          spellcheck="false"
+        />
+
+        <div class="bbi-exclude-list">
+          <label v-for="name in filteredWorldNames" :key="name" class="bbi-exclude-row">
+            <input
+              type="checkbox"
+              class="bbi-checkbox"
+              :checked="isWorldExcluded(name)"
+              @change="toggleWorldExcluded(name)"
+            />
+            <span class="bbi-exclude-row-name">{{ name }}</span>
+          </label>
+          <p v-if="!worldNames.length" class="bbi-field-hint">未读取到世界书。请先在 ST 里加载 / 挂载世界书。</p>
+          <p v-else-if="!filteredWorldNames.length" class="bbi-field-hint">没有匹配「{{ excludeWorldSearch }}」的世界书。</p>
+        </div>
+
+        <footer class="bbi-modal-foot">
+          <span class="bbi-exclude-count">共 {{ worldNames.length }} 本 · 已排除 {{ settings.excludes.excludedWorldNames.length }}</span>
+          <span class="bbi-modal-foot-spacer"></span>
+          <button class="bbi-btn bbi-btn-primary" type="button" @click="closeExcludeWorld">完成</button>
+        </footer>
+      </div>
+    </ModalMask>
 
     <!-- ===== 渠道编辑弹窗 ===== -->
     <ModalMask :open="!!editingChannel" @close="closeChannel">
@@ -1139,6 +1466,80 @@ function closeModelMenuSoon() {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   tab-size: 2;
+}
+
+/* ============ 排除名单(chips + 弹窗列表):与柏宝书同款交互,类名换 bbi 前缀 ============ */
+.bbi-exclude-chips {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.bbi-exclude-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 11px;
+  border-radius: var(--bbi-radius-pill);
+  background: var(--bbi-accent-soft);
+  color: var(--bbi-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.bbi-exclude-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.bbi-exclude-chip-x:hover {
+  opacity: 1;
+  background: oklch(0 0 0 / 0.08);
+}
+.bbi-striptag-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.bbi-striptag-bar .bbi-input {
+  flex: 1;
+  min-width: 0;
+}
+.bbi-striptag-bar .bbi-btn {
+  flex: none;
+}
+.bbi-exclude-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0;
+  padding-right: 2px;
+}
+.bbi-exclude-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px;
+  border-radius: var(--bbi-radius-sm);
+  cursor: pointer;
+}
+.bbi-exclude-count {
+  font-size: 12px;
+  color: var(--bbi-ink-muted);
 }
 
 /* ============ 移动端:折叠区内部正文整体收一号,与窄屏标题节奏统一 ============ */
