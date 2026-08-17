@@ -2,7 +2,8 @@ import { unzipSync } from 'fflate';
 
 import type { ComfyImageResult } from '@/backends/comfyui';
 import { parseSize, pickSize, type Orientation } from '@/backends/size';
-import type { NaiSettings, NaiVibe } from '@/state/settings';
+import { loadVibeData } from '@/backends/vibeStore';
+import type { NaiSettings, NaiVibe, NaiVibeData, NaiVibeEncodings } from '@/state/settings';
 
 /**
  * NovelAI 生图后端(浏览器直连,协议与官方 image.novelai.net 一致)。
@@ -291,7 +292,11 @@ export function vibeModelKey(model: string): string {
  *   reference_strength_multiple;强度总和超过 1 且开启归一化时按比例压回 1。
  * 返回被跳过的 vibe 名(缺当前模型编码/缺原图),调用方据以提示。
  */
-export function applyVibes(params: JsonObject, nai: NaiSettings): string[] {
+export function applyVibes(
+  params: JsonObject,
+  nai: NaiSettings,
+  dataById: ReadonlyMap<string, NaiVibeData>,
+): string[] {
   const active = nai.vibes.filter(v => v.enabled);
   if (!active.length) return [];
   const skipped: string[] = [];
@@ -301,11 +306,12 @@ export function applyVibes(params: JsonObject, nai: NaiSettings): string[] {
     const images = params.reference_image_multiple as string[];
     const infos = params.reference_information_extracted_multiple as number[];
     for (const vibe of active) {
-      if (!vibe.image) {
+      const data = dataById.get(vibe.id);
+      if (!data?.image) {
         skipped.push(vibe.name);
         continue;
       }
-      images.push(vibe.image);
+      images.push(data.image);
       infos.push(1);
       strengths.push(vibe.strength);
     }
@@ -316,7 +322,7 @@ export function applyVibes(params: JsonObject, nai: NaiSettings): string[] {
   const modelKey = vibeModelKey(nai.model);
   const picked: number[] = [];
   for (const vibe of active) {
-    const enc = vibe.encodings[modelKey];
+    const enc = dataById.get(vibe.id)?.encodings[modelKey];
     if (!enc?.encoding) {
       skipped.push(vibe.name);
       continue;
@@ -408,7 +414,26 @@ export async function generateNaiImage(
   if (!values.prompt.trim()) throw new NaiError('正向提示词不能为空');
 
   const params = buildNaiParameters(nai, values);
-  const skipped = applyVibes(params, nai);
+  const activeVibes = nai.vibes.filter(vibe => vibe.enabled);
+  const loaded = new Map<string, NaiVibeData>();
+  for (const vibe of activeVibes) {
+    try {
+      const data = await loadVibeData(vibe);
+      loaded.set(
+        vibe.id,
+        isNai3(nai.model)
+          ? data
+          : {
+              image: '',
+              thumbnail: '',
+              encodings: data.encodings,
+            },
+      );
+    } catch (error) {
+      console.warn(`[柏宝绘] 读取 vibe「${vibe.name}」失败:`, error);
+    }
+  }
+  const skipped = applyVibes(params, nai, loaded);
   if (skipped.length) {
     console.warn('[柏宝绘] 以下 vibe 因缺当前模型编码被跳过:', skipped);
     toastr.warning(`vibe「${skipped.join('、')}」缺当前模型编码,已跳过`, '柏宝绘');
@@ -480,7 +505,7 @@ export interface ImportedVibe {
   name: string;
   image: string;
   thumbnail: string;
-  encodings: NaiVibe['encodings'];
+  encodings: NaiVibeEncodings;
   strength: number;
 }
 
@@ -495,7 +520,7 @@ export function parseNaiv4vibe(text: string): ImportedVibe {
   if (json?.identifier !== 'novelai-vibe-transfer') {
     throw new NaiError('不是 NovelAI vibe 文件(缺少 novelai-vibe-transfer 标识)');
   }
-  const encodings: NaiVibe['encodings'] = {};
+  const encodings: NaiVibeEncodings = {};
   for (const [modelKey, group] of Object.entries(json.encodings ?? {})) {
     const first = Object.values(group as Record<string, any>)[0];
     if (typeof first?.encoding === 'string' && first.encoding) {
@@ -520,9 +545,9 @@ export function parseNaiv4vibe(text: string): ImportedVibe {
 }
 
 /** 导出为官方兼容的 .naiv4vibe JSON(全部已编码模型一并带上)。 */
-export async function buildNaiv4vibe(vibe: NaiVibe): Promise<string> {
+export async function buildNaiv4vibe(vibe: NaiVibe, data: NaiVibeData): Promise<string> {
   const encodings: Record<string, unknown> = {};
-  for (const [modelKey, enc] of Object.entries(vibe.encodings)) {
+  for (const [modelKey, enc] of Object.entries(data.encodings)) {
     encodings[modelKey] = {
       [VIBE_ENCODING_KEY]: {
         encoding: enc.encoding,
@@ -530,19 +555,19 @@ export async function buildNaiv4vibe(vibe: NaiVibe): Promise<string> {
       },
     };
   }
-  const id = vibe.image ? await sha256Hex(vibe.image) : crypto.randomUUID();
+  const id = data.image ? await sha256Hex(data.image) : crypto.randomUUID();
   return JSON.stringify({
     identifier: 'novelai-vibe-transfer',
     version: 1,
     type: 'image',
-    image: vibe.image,
+    image: data.image,
     id,
     encodings,
     name: vibe.name,
-    thumbnail: vibe.thumbnail,
+    thumbnail: data.thumbnail,
     createdAt: Date.now(),
     importInfo: {
-      model: Object.keys(vibe.encodings)[0] ?? '',
+      model: Object.keys(data.encodings)[0] ?? '',
       information_extracted: 1,
       strength: vibe.strength,
     },

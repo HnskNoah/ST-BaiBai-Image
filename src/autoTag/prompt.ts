@@ -107,7 +107,7 @@ export async function buildAutoTagMessages(
   // 世界书扫描文本 = 目标楼 + 携带的上下文楼(关键词激活与主对话一致)。
   const scanFloors = recentFloors(context, targetFloor, options.contextMessages);
   const [worldInfo, charCard, persona] = await Promise.all([
-    fetchWorldInfo(context.chat, scanFloors, context.name1, context.name2, options.renderWorldInfoTemplates),
+    fetchWorldInfo(context.chat, scanFloors, context.name1, context.name2),
     Promise.resolve(fetchCharCard(context)),
     Promise.resolve(fetchUserPersona(context)),
   ]);

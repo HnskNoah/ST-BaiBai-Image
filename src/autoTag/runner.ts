@@ -137,9 +137,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
   running.set(slot, controller);
 
   try {
-    const memory = settings.autoTag.useBaiBaiBook
-      ? readBookMemory(floor, context.chat[floor]?.mes ?? '', context.name1)
-      : null;
+    const memory = readBookMemory(floor, context.chat[floor]?.mes ?? '', context.name1);
     const entriesBefore = charTagsBeforeFloor(floor);
     // 柏宝书新面孔只暂存为本楼建档操作;请求/写回失败时不会污染角色库。
     const anchors = await resolveCharAnchors(memory?.roles ?? [], entriesBefore, controller.signal);

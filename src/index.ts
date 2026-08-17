@@ -89,10 +89,10 @@ $(() => {
   hydrateWhenReady();
 });
 
-function hydrateWhenReady(attempt = 0) {
+async function hydrateWhenReady(attempt = 0) {
   if ((window as unknown as { SillyTavern?: { getContext?: unknown } }).SillyTavern?.getContext) {
     try {
-      hydrateSettings();
+      await hydrateSettings();
       bindCharTagSync();
       ensureImageTagRegexRegistered();
       bindAutoTagging();

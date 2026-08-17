@@ -228,7 +228,9 @@ runForFloor(floor, opts)
 - `nai.ts`:协议与官方一致(浏览器直连,url 可指第三方兼容站,自动补 `/ai` 前缀);v4 系走
   `v4_prompt` 结构 + vibe 编码缓存;NAI3 直接发参考原图;质量词/负面预设按模型查内置表;
   `.naiv4vibe` 导入导出与官方互通。
-- `chatu8Vibe.ts`:只读智绘姬的 extension_settings + IndexedDB,导入 vibe(内容指纹去重)。
+- `chatu8Vibe.ts`:只读智绘姬的 extension_settings + IndexedDB,逐条导入 vibe(内容指纹去重、读取超时、迁移进度)。
+- `vibeStore.ts`:Vibe 原图/编码正文与缩略图分文件存 ST `user/files`，文件存储不可用时回退本机 IndexedDB。
+  `extensionSettings['baibai_image']` 只留路径、模型键、指纹等小型索引，禁止再放 Base64。
 
 ## 7. 状态与持久化
 
@@ -237,6 +239,17 @@ runForFloor(floor, opts)
   (**normalize 逐字段容错 + 存量迁移**,如 resolution→横竖两格、webui 隐藏迁移);
   `ready` 守门标志防默认值覆盖服务器设置;deep watch → 防抖 `saveSettingsDebounced()`。
   订阅者用 `onSettingsReady(cb)` 等 hydrate 完成(如 ui.ts 回灌主题)。
+- **Vibe 大文件**:
+  - `extensionSettings['baibai_image'].nai.vibes`:仅存 `NaiVibe` 小型索引，不存原图、缩略图 dataURL 或编码正文;
+  - `user/files/bbi-vibe-*.json`:原图与各模型编码正文;
+  - `user/files/bbi-vibe-thumb-*`:列表缩略图;
+  - IndexedDB `baibai_image_vibes`:ST 文件写入失败时的本机回退，不跨设备同步。
+- **旧版 Vibe 自动修复**:`hydrateSettings()` 在 normalize 前直接扫描旧条目，按顺序逐条落盘;
+  每条成功后立即原地替换并释放该条 Base64，不等整库完成。全部成功后只保存一次轻量设置。
+  首次升级可能需要等待搬迁，刷新后恢复正常;若某条文件与 IndexedDB 都写失败，则保留原条目并报错，
+  已成功条目不会退回大对象，下次刷新继续重试。
+- **智绘姬迁移**:`chatu8Vibe.ts` 顺序读取并立即调用 `vibeStore.ts` 落盘，不在内存或设置中积累整库大对象;
+  导入项默认不启用，避免生成时一次读取全部 Vibe 正文。
 - **副 API 渠道(跨插件共享)**:真身存 `extensionSettings['baibai_api_channels']`(带 revision),
   本插件设置里只是镜像;写入后广播 `st-baibai-api-channels:changed`,他端监听重读。
   与柏宝书共用,任一端增删改实时同步。
@@ -292,7 +305,7 @@ runForFloor(floor, opts)
 | 跟随主 API | src/api/client.ts 的 requestViaMainApi |
 | ComfyUI 工作流 / 出图 / 通道回退 | src/backends/comfyui.ts |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
-| NAI 参数 / vibe / .naiv4vibe | src/backends/nai.ts(+ chatu8Vibe.ts 导入) |
+| NAI 参数 / vibe / .naiv4vibe | src/backends/nai.ts + vibeStore.ts(+ chatu8Vibe.ts 导入) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |
 | 卡片「生成中」状态 / 取消 / 并发 | src/floor/genState.ts(运行态)+ genQueue.ts(NAI 闸门) |

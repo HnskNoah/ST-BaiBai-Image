@@ -1,4 +1,5 @@
 import { parseNaiv4vibe } from '@/backends/nai';
+import { saveVibeFiles, vibeFingerprint, vibeMetaFromData } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
 import type { NaiVibe } from '@/state/settings';
 
@@ -20,6 +21,9 @@ import type { NaiVibe } from '@/state/settings';
 export const CHATU8_SETTINGS_KEY = 'st-chatu8';
 const CHATU8_DB_NAME = 'chatu8_config_images';
 const CHATU8_STORE_NAME = 'config_images';
+const FETCH_TIMEOUT_MS = 20_000;
+
+export { vibeFingerprint } from '@/backends/vibeStore';
 
 export interface Chatu8VibeRef {
   vibeDataId: string;
@@ -67,14 +71,6 @@ export function collectChatu8VibeRefs(chatu8: unknown): Chatu8VibeRef[] {
   return refs;
 }
 
-/** vibe 内容指纹:排序后的模型 key + 编码前缀,导入去重(库内重复/与已有重复)用。 */
-export function vibeFingerprint(encodings: NaiVibe['encodings']): string {
-  return Object.keys(encodings)
-    .sort()
-    .map(k => `${k}:${encodings[k].encoding.slice(0, 64)}`)
-    .join('|');
-}
-
 function base64ToUtf8(b64: string): string {
   const bin = atob(b64);
   const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
@@ -91,8 +87,10 @@ function decodeDataUrlText(dataUrl: string): string {
 
 /** 与 chatu8 getConfigText 的服务器分支同口径:fetch 路径后按 data:/JSON/base64 尝试解码。 */
 async function fetchServerText(path: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const resp = await fetch(path);
+    const resp = await fetch(path, { signal: controller.signal });
     if (!resp.ok) return null;
     const text = await resp.text();
     if (text.startsWith('data:')) return decodeDataUrlText(text);
@@ -105,6 +103,8 @@ async function fetchServerText(path: string): Promise<string | null> {
     }
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -112,8 +112,11 @@ async function fetchServerText(path: string): Promise<string | null> {
  * 读 chatu8 的 IndexedDB(不带版本号打开,避免触发 upgrade;只读单条记录)。
  * data 可能是字符串(text)或 ArrayBuffer(图片,不会是 vibe 文本,忽略)。
  */
-function readChatu8Store(id: string): Promise<string | null> {
-  return new Promise(resolve => {
+let chatu8DbPromise: Promise<IDBDatabase | null> | null = null;
+
+function openChatu8Db(): Promise<IDBDatabase | null> {
+  if (chatu8DbPromise) return chatu8DbPromise;
+  chatu8DbPromise = new Promise(resolve => {
     let req: IDBOpenDBRequest;
     try {
       req = indexedDB.open(CHATU8_DB_NAME);
@@ -125,26 +128,32 @@ function readChatu8Store(id: string): Promise<string | null> {
     req.onblocked = () => resolve(null);
     req.onsuccess = () => {
       const db = req.result;
-      const done = (value: string | null) => {
+      if (!db.objectStoreNames.contains(CHATU8_STORE_NAME)) {
         db.close();
-        resolve(value);
-      };
-      try {
-        if (!db.objectStoreNames.contains(CHATU8_STORE_NAME)) {
-          done(null);
-          return;
-        }
-        const get = db.transaction([CHATU8_STORE_NAME], 'readonly').objectStore(CHATU8_STORE_NAME).get(id);
-        get.onsuccess = () => {
-          const data = (get.result as { data?: unknown } | undefined)?.data;
-          if (typeof data === 'string') done(data);
-          else done(null);
-        };
-        get.onerror = () => done(null);
-      } catch {
-        done(null);
+        resolve(null);
+        return;
       }
+      resolve(db);
     };
+  });
+  return chatu8DbPromise;
+}
+
+async function readChatu8Store(id: string): Promise<string | null> {
+  const db = await openChatu8Db();
+  if (!db) return null;
+  return new Promise(resolve => {
+    try {
+      const get = db.transaction([CHATU8_STORE_NAME], 'readonly').objectStore(CHATU8_STORE_NAME).get(id);
+      get.onsuccess = () => {
+        const data = (get.result as { data?: unknown } | undefined)?.data;
+        if (typeof data === 'string') resolve(data);
+        else resolve(null);
+      };
+      get.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
   });
 }
 
@@ -183,11 +192,18 @@ export interface Chatu8ImportResult {
 
 let importSeq = 0;
 
+export interface Chatu8ImportOptions {
+  onProgress?: (current: number, total: number) => void;
+}
+
 /**
  * 从 st-chatu8 导入全部 vibe。existing 传当前库(内容去重用)。
  * 单个失败不阻塞整体;结果为 null 表示未检测到 chatu8。
  */
-export async function importVibesFromChatu8(existing: NaiVibe[]): Promise<Chatu8ImportResult> {
+export async function importVibesFromChatu8(
+  existing: NaiVibe[],
+  options: Chatu8ImportOptions = {},
+): Promise<Chatu8ImportResult> {
   const chatu8 = getContext()?.extensionSettings?.[CHATU8_SETTINGS_KEY];
   if (!chatu8 || typeof chatu8 !== 'object') {
     return { found: false, imported: 0, duplicates: 0, failed: 0, vibes: [] };
@@ -199,10 +215,11 @@ export async function importVibesFromChatu8(existing: NaiVibe[]): Promise<Chatu8
       ? ((chatu8 as Record<string, unknown>).configImageStorage as Record<string, { path?: unknown }>)
       : {};
 
-  const fingerprints = new Set(existing.map(v => vibeFingerprint(v.encodings)));
+  const fingerprints = new Set(existing.map(v => v.fingerprint).filter(Boolean));
   const result: Chatu8ImportResult = { found: true, imported: 0, duplicates: 0, failed: 0, vibes: [] };
 
-  for (const ref of refs) {
+  for (const [index, ref] of refs.entries()) {
+    options.onProgress?.(index + 1, refs.length);
     // 服务器优先(chatu8 同口径),取不到再试 IndexedDB
     const path = serverMap[ref.vibeDataId]?.path;
     let text = typeof path === 'string' && path ? await fetchServerText(path) : null;
@@ -220,17 +237,22 @@ export async function importVibesFromChatu8(existing: NaiVibe[]): Promise<Chatu8
         result.duplicates++;
         continue;
       }
+      const id = `vibe_${Date.now()}_${++importSeq}`;
+      const data = { image: parsed.image, thumbnail: parsed.thumbnail, encodings: parsed.encodings };
+      const paths = await saveVibeFiles(data, null, id);
       fingerprints.add(fingerprint);
-      result.vibes.push({
-        id: `vibe_${Date.now()}_${++importSeq}`,
-        // 预设用预设名(用户起的);组内条目无名,用「组名 · vibe文件原名」
-        name: ref.kind === 'preset' ? ref.source : `${ref.source} · ${parsed.name}`,
-        image: parsed.image,
-        thumbnail: parsed.thumbnail,
-        encodings: parsed.encodings,
-        strength: ref.strength,
-        enabled: true,
-      });
+      result.vibes.push(
+        vibeMetaFromData(
+          id,
+          // 预设用预设名(用户起的);组内条目无名,用「组名 · vibe文件原名」
+          ref.kind === 'preset' ? ref.source : `${ref.source} · ${parsed.name}`,
+          paths.dataPath,
+          paths.thumbnailPath,
+          data,
+          ref.strength,
+          false,
+        ),
+      );
       result.imported++;
     } catch {
       result.failed++;

@@ -15,6 +15,13 @@ import {
   ucPresetNames,
   vibeModelKey,
 } from '@/backends/nai';
+import {
+  deleteVibeData,
+  loadVibeData,
+  saveVibeFiles,
+  vibeFingerprint,
+  vibeMetaFromData,
+} from '@/backends/vibeStore';
 import Collapsible from '@/components/Collapsible.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Icon from '@/components/Icon.vue';
@@ -110,15 +117,24 @@ async function onVibeFileChange(event: Event) {
     const imageBase64 = dataUrl.split(',')[1] ?? '';
     const encoding = await encodeVibeImage(settings.nai, imageBase64, settings.nai.model);
     const thumbnail = await makeThumbnail(dataUrl);
-    settings.nai.vibes.push({
-      id: `vibe_${Date.now()}_${++vibeSeq}`,
-      name: file.name.replace(/\.[^.]+$/, '') || `Vibe ${settings.nai.vibes.length + 1}`,
+    const id = `vibe_${Date.now()}_${++vibeSeq}`;
+    const data = {
       image: imageBase64,
       thumbnail,
       encodings: { [currentVibeKey.value]: { encoding, infoExtracted: 1 } },
-      strength: 0.6,
-      enabled: true,
-    });
+    };
+    const paths = await saveVibeFiles(data, null, id);
+    settings.nai.vibes.push(
+      vibeMetaFromData(
+        id,
+        file.name.replace(/\.[^.]+$/, '') || `Vibe ${settings.nai.vibes.length + 1}`,
+        paths.dataPath,
+        paths.thumbnailPath,
+        data,
+        0.6,
+        true,
+      ),
+    );
     toastr.success(`已按 ${settings.nai.model} 编码并加入 Vibe 库`, 'Vibe');
   } catch (error) {
     toastr.error(errorMessage(error), 'Vibe 编码失败');
@@ -129,11 +145,18 @@ async function onVibeFileChange(event: Event) {
 
 /**  vibe 缺当前模型编码时单独补(切换模型后常见)。 */
 async function reencodeVibe(vibe: NaiVibe) {
-  if (!vibe.image || vibeEncoding.value) return;
+  if (!vibe.hasImage || vibeEncoding.value) return;
   vibeEncoding.value = true;
   try {
-    const encoding = await encodeVibeImage(settings.nai, vibe.image, settings.nai.model);
-    vibe.encodings[currentVibeKey.value] = { encoding, infoExtracted: 1 };
+    const data = await loadVibeData(vibe);
+    if (!data.image) throw new Error('该 Vibe 没有参考原图');
+    const encoding = await encodeVibeImage(settings.nai, data.image, settings.nai.model);
+    data.encodings[currentVibeKey.value] = { encoding, infoExtracted: 1 };
+    const paths = await saveVibeFiles(data, vibe, vibe.id);
+    vibe.dataPath = paths.dataPath;
+    vibe.thumbnailPath = paths.thumbnailPath;
+    vibe.modelKeys = Object.keys(data.encodings);
+    vibe.fingerprint = vibeFingerprint(data.encodings);
     toastr.success(`「${vibe.name}」已补 ${settings.nai.model} 编码`, 'Vibe');
   } catch (error) {
     toastr.error(errorMessage(error), 'Vibe 编码失败');
@@ -163,13 +186,18 @@ async function runMigrate() {
   migrating.value = true;
   migrateMsg.value = '';
   try {
-    const result = await importVibesFromChatu8(settings.nai.vibes);
+    const result = await importVibesFromChatu8(settings.nai.vibes, {
+      onProgress: (current, total) => {
+        migrateMsg.value = `正在迁移 ${current}/${total}…`;
+      },
+    });
     settings.nai.vibes.push(...result.vibes);
     const parts = [`新增 ${result.imported} 个`];
     if (result.duplicates) parts.push(`重复跳过 ${result.duplicates}`);
-    if (result.failed) parts.push(`读不到 ${result.failed}`);
+    if (result.failed) parts.push(`失败 ${result.failed}`);
     migrateMsg.value = `迁移完成：${parts.join(' / ')}。`;
-    if (result.failed) migrateMsg.value += '读不到的多半存在其他设备的浏览器本地存储里。';
+    if (result.imported) migrateMsg.value += '新迁移的 Vibe 默认未启用，请按需开启。';
+    if (result.failed) migrateMsg.value += '失败项可能不在本机浏览器，或保存文件时出错。';
     toastr.success(migrateMsg.value, '从智绘姬迁移');
   } catch (error) {
     migrateMsg.value = `迁移失败：${errorMessage(error)}`;
@@ -185,15 +213,12 @@ async function onVibeImportChange(event: Event) {
   if (!file) return;
   try {
     const parsed = parseNaiv4vibe(await file.text());
-    settings.nai.vibes.push({
-      id: `vibe_${Date.now()}_${++vibeSeq}`,
-      name: parsed.name,
-      image: parsed.image,
-      thumbnail: parsed.thumbnail,
-      encodings: parsed.encodings,
-      strength: parsed.strength,
-      enabled: true,
-    });
+    const id = `vibe_${Date.now()}_${++vibeSeq}`;
+    const data = { image: parsed.image, thumbnail: parsed.thumbnail, encodings: parsed.encodings };
+    const paths = await saveVibeFiles(data, null, id);
+    settings.nai.vibes.push(
+      vibeMetaFromData(id, parsed.name, paths.dataPath, paths.thumbnailPath, data, parsed.strength, true),
+    );
     toastr.success(`已导入「${parsed.name}」`, 'Vibe');
   } catch (error) {
     toastr.error(errorMessage(error), 'Vibe 导入失败');
@@ -202,7 +227,7 @@ async function onVibeImportChange(event: Event) {
 
 async function exportVibe(vibe: NaiVibe) {
   try {
-    const json = await buildNaiv4vibe(vibe);
+    const json = await buildNaiv4vibe(vibe, await loadVibeData(vibe));
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -215,9 +240,16 @@ async function exportVibe(vibe: NaiVibe) {
   }
 }
 
-function removeVibe(vibe: NaiVibe) {
+async function removeVibe(vibe: NaiVibe) {
+  let deleteError: unknown = null;
+  try {
+    await deleteVibeData(vibe);
+  } catch (error) {
+    deleteError = error;
+  }
   const index = settings.nai.vibes.indexOf(vibe);
   if (index >= 0) settings.nai.vibes.splice(index, 1);
+  if (deleteError) toastr.warning(`索引已删除，但文件清理失败：${errorMessage(deleteError)}`, 'Vibe');
 }
 </script>
 
@@ -482,7 +514,7 @@ function removeVibe(vibe: NaiVibe) {
         <p v-if="!settings.nai.vibes.length" class="bbi-field-hint">还没有 vibe;上传一张参考图开始。</p>
 
         <div v-for="vibe in settings.nai.vibes" :key="vibe.id" class="vibe-item">
-          <img v-if="vibe.thumbnail" class="vibe-thumb" :src="vibe.thumbnail" :alt="vibe.name" />
+          <img v-if="vibe.thumbnailPath" class="vibe-thumb" :src="vibe.thumbnailPath" :alt="vibe.name" />
           <div v-else class="vibe-thumb vibe-thumb--empty"><Icon name="generate" /></div>
           <div class="vibe-main">
             <div class="vibe-head">
@@ -498,7 +530,7 @@ function removeVibe(vibe: NaiVibe) {
             </div>
             <div class="vibe-ops">
               <button
-                v-if="!vibe.encodings[currentVibeKey] && vibe.image"
+                v-if="!vibe.modelKeys.includes(currentVibeKey) && vibe.hasImage"
                 class="bbi-btn bbi-btn--mini"
                 type="button"
                 :disabled="vibeEncoding"
@@ -507,7 +539,7 @@ function removeVibe(vibe: NaiVibe) {
               >
                 <Icon name="refresh" :size="12" /> 补当前模型编码
               </button>
-              <span v-else-if="!vibe.encodings[currentVibeKey]" class="vibe-missing">
+              <span v-else-if="!vibe.modelKeys.includes(currentVibeKey)" class="vibe-missing">
                 缺当前模型编码且无原图,无法使用
               </span>
               <button class="bbi-btn bbi-btn--mini" type="button" title="导出 .naiv4vibe" @click="exportVibe(vibe)">

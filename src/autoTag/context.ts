@@ -111,15 +111,13 @@ const HUGE_WI_CONTEXT = 1_000_000_000;
  * 渲染世界书条目内容,让副 API 拿到「执行后」的成品而非原文:
  *   ① substituteParams 展开 {{宏}};
  *   ② 若装了 ST-Prompt-Template(提示词模板)且文本含 <% %>,调其执行器跑 EJS。
- * 复刻柏宝书 renderWorldInfoContent 的顺序(先宏后 EJS)。开关 renderWorldInfoTemplates 关闭时整体跳过。
+ * 复刻柏宝书 renderWorldInfoContent 的顺序(先宏后 EJS)。
  */
 async function renderWorldInfoContent(
   content: string,
   entry: WorldInfoEntry | undefined,
   floor: number | undefined,
-  renderTemplates: boolean,
 ): Promise<string> {
-  if (!renderTemplates) return content;
   const ctx = getContext();
   // ① 展宏(substituteParams 不存在时保持原文)
   let text = typeof ctx?.substituteParams === 'function' ? ctx.substituteParams(content) : content;
@@ -146,7 +144,6 @@ async function renderWorldInfoContent(
 async function fetchWorldInfoViaPrompt(
   scanText: string[],
   refFloor: number | undefined,
-  renderTemplates: boolean,
 ): Promise<string> {
   const fn = getContext()?.getWorldInfoPrompt;
   if (typeof fn !== 'function') return '';
@@ -161,7 +158,7 @@ async function fetchWorldInfoViaPrompt(
   for (const e of res.anBefore ?? []) if (typeof e === 'string') chunks.push(e);
   for (const e of res.anAfter ?? []) if (typeof e === 'string') chunks.push(e);
   // 逐块渲染(展宏 + EJS);此路径拿不到条目对象,EJS 仅带当前状态上下文(无 world_info),但仍按 refFloor 取变量
-  const rendered = await Promise.all(chunks.map(c => renderWorldInfoContent(c, undefined, refFloor, renderTemplates)));
+  const rendered = await Promise.all(chunks.map(c => renderWorldInfoContent(c, undefined, refFloor)));
   return joinWorldInfoChunks(rendered);
 }
 
@@ -177,7 +174,6 @@ export async function fetchWorldInfo(
   targets: number[],
   name1: string,
   name2: string,
-  renderTemplates: boolean,
 ): Promise<string> {
   const scanText = buildScanText(chat, targets, name1, name2);
   if (!scanText.length) return '';
@@ -185,7 +181,7 @@ export async function fetchWorldInfo(
   const refFloor = targets.length ? targets[targets.length - 1] : undefined;
   try {
     const check = await getCheckWorldInfo();
-    if (!check) return fetchWorldInfoViaPrompt(scanText, refFloor, renderTemplates);
+    if (!check) return fetchWorldInfoViaPrompt(scanText, refFloor);
 
     const res = await check(scanText, HUGE_WI_CONTEXT, true);
     const activated = res?.allActivatedEntries;
@@ -199,7 +195,7 @@ export async function fetchWorldInfo(
     const chunks = await Promise.all(
       entries
         .filter(e => e && !isWorldInfoEntryExcluded(e, settings.excludes))
-        .map(e => renderWorldInfoContent(typeof e.content === 'string' ? e.content : '', e, refFloor, renderTemplates)),
+        .map(e => renderWorldInfoContent(typeof e.content === 'string' ? e.content : '', e, refFloor)),
     );
     return joinWorldInfoChunks(chunks);
   } catch (e) {

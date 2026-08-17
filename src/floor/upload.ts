@@ -27,11 +27,11 @@ async function postFile(endpoint: string, body: Record<string, unknown>): Promis
   return { ok: response.ok, status: response.status, text };
 }
 
-/** 上传 base64 图片，返回可访问的相对路径（/user/files/...）。失败抛错。 */
-export async function uploadImageFile(name: string, base64: string): Promise<string> {
+/** 上传 base64 文件，返回可访问的相对路径（/user/files/...）。失败抛错。 */
+export async function uploadBase64File(name: string, base64: string): Promise<string> {
   const { ok, status, text } = await postFile('/api/files/upload', { name, data: base64 });
   if (!ok) {
-    throw new FileStoreError(`图片上传失败 (${status})${text ? `：${text.slice(0, 300)}` : ''}`, status);
+    throw new FileStoreError(`文件上传失败 (${status})${text ? `：${text.slice(0, 300)}` : ''}`, status);
   }
   let path = '';
   try {
@@ -40,14 +40,24 @@ export async function uploadImageFile(name: string, base64: string): Promise<str
   } catch {
     /* 响应不是 JSON，落到下方统一报错 */
   }
-  if (!path) throw new FileStoreError('图片上传失败：服务端未返回路径');
+  if (!path) throw new FileStoreError('文件上传失败：服务端未返回路径');
   return path;
 }
 
+/** 上传图片。 */
+export function uploadImageFile(name: string, base64: string): Promise<string> {
+  return uploadBase64File(name, base64);
+}
+
 /** 删除已上传文件。返回 false 表示文件本就不存在（无需清理）。 */
-export async function deleteImageFile(path: string): Promise<boolean> {
+export async function deleteUploadedFile(path: string): Promise<boolean> {
   const { ok, status, text } = await postFile('/api/files/delete', { path });
   if (ok) return true;
   if (status === 404) return false;
-  throw new FileStoreError(`图片删除失败 (${status})${text ? `：${text.slice(0, 300)}` : ''}`, status);
+  throw new FileStoreError(`文件删除失败 (${status})${text ? `：${text.slice(0, 300)}` : ''}`, status);
+}
+
+/** 删除已上传图片。 */
+export function deleteImageFile(path: string): Promise<boolean> {
+  return deleteUploadedFile(path);
 }

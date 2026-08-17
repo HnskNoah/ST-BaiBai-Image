@@ -550,10 +550,16 @@ function closeModelMenuSoon() {
 
       <Collapsible title="自动生成 tag" :open="false">
         <label class="bbi-switch-row">
-          <span class="bbi-field-label">新 AI 正文完成后自动分析</span>
+          <span class="bbi-field-label">自动生成 tag</span>
           <input v-model="settings.autoTag.enabled" type="checkbox" class="bbi-checkbox" />
         </label>
         <p class="bbi-field-hint">使用独立请求判断最新 AI 楼层是否需要插图；写入 tag 后是否自动出图由下方开关决定。</p>
+
+        <label class="bbi-switch-row">
+          <span class="bbi-field-label">自动生成图片</span>
+          <input v-model="settings.autoTag.autoGenerate" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p class="bbi-field-hint">tag 写入楼层后立即按当前出图渠道自动生图（含手动「生成 tag」按钮）；关闭则只写 tag，图片在卡片上手动点「生成」。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">携带最近 AI 楼数</span>
@@ -594,30 +600,6 @@ function closeModelMenuSoon() {
           />
         </label>
         <p class="bbi-field-hint">副 API 请求失败或返回无法解析时自动重试；0 = 不重试，最多 5 次。</p>
-
-        <label class="bbi-switch-row">
-          <span class="bbi-field-label">写入 tag 后自动生成图片</span>
-          <input v-model="settings.autoTag.autoGenerate" type="checkbox" class="bbi-checkbox" />
-        </label>
-        <p class="bbi-field-hint">tag 写入楼层后立即按当前出图渠道自动生图（含手动「生成 tag」按钮）；关闭则只写 tag，图片在卡片上手动点「生成」。</p>
-
-        <label class="bbi-switch-row">
-          <span class="bbi-field-label">读取柏宝书状态</span>
-          <input v-model="settings.autoTag.useBaiBaiBook" type="checkbox" class="bbi-checkbox" />
-        </label>
-        <p class="bbi-field-hint">柏宝书可用时按最新楼层是否已有摘要，自动使用 D1 / D2 对应的状态快照；不可用时仅发送最近正文。</p>
-
-        <label class="bbi-switch-row">
-          <span class="bbi-field-label">注入世界书 / 角色卡 / 用户人设</span>
-          <input type="checkbox" class="bbi-checkbox" checked disabled />
-        </label>
-        <p class="bbi-field-hint">与柏宝书摘要请求同口径：世界书按关键词+常驻蓝灯激活并渲染，角色卡描述与用户人设自动附带；取不到或群聊时自动跳过。</p>
-
-        <label class="bbi-switch-row">
-          <span class="bbi-field-label">渲染世界书模板（展宏 + 执行 EJS）</span>
-          <input v-model="settings.autoTag.renderWorldInfoTemplates" type="checkbox" class="bbi-checkbox" />
-        </label>
-        <p class="bbi-field-hint">取世界书条目前先展开 &#123;&#123;宏&#125;&#125; 并执行 ST-Prompt-Template 的 EJS，拿到“执行后”的成品；未装模板插件时仅展宏。含写变量的 EJS 每次自动 tag 会额外执行一次，遇到这类世界书可关掉。</p>
       </Collapsible>
 
       <!-- 排除角色:名单与柏宝书共享(见 state/settings.ts 的共享存储),任一端改动自动同步 -->

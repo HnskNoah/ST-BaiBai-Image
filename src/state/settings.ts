@@ -1,4 +1,5 @@
 import { parseSize } from '@/backends/size';
+import { saveVibeFiles, vibeFingerprint, vibeMetaFromData } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
 import { reactive, watch } from 'vue';
 
@@ -57,17 +58,33 @@ export const NAI_MODELS: { value: NaiModel; label: string }[] = [
   { value: 'nai-diffusion-3', label: 'NAI 3(经典动漫风)' },
 ];
 
-/** Vibe 库条目:一张参考图 + 按模型编码好的 vibe 数据(兼容官方 .naiv4vibe)。 */
+export type NaiVibeEncodings = Record<string, { encoding: string; infoExtracted: number }>;
+
+/** Vibe 大数据正文:存 ST user/files，失败时回退本机 IndexedDB；不进入 extension_settings。 */
+export interface NaiVibeData {
+  /** 参考原图 base64(不含 data: 前缀):NAI3 直接使用。 */
+  image: string;
+  /** 缩略图 dataURL。 */
+  thumbnail: string;
+  /** 按模型分组的编码数据。 */
+  encodings: NaiVibeEncodings;
+}
+
+/** Vibe 设置索引:只含小型元数据和正文文件路径。 */
 export interface NaiVibe {
   id: string;
   /** 显示名(默认取 .naiv4vibe 的 name 或「Vibe-N」)。 */
   name: string;
-  /** 参考原图 base64(不含 data: 前缀):NAI3 vibe 直接发原图;.naiv4vibe 导出也带原图。 */
-  image: string;
-  /** 缩略图 dataURL(列表展示用)。 */
-  thumbnail: string;
-  /** 已编码的 vibe 数据,按模型 key(v4-5full / v4-5curated / v4full / v4curated / v3)分组。 */
-  encodings: Record<string, { encoding: string; infoExtracted: number }>;
+  /** ST user/files 正文路径，或 `idb:` 开头的本机回退引用。 */
+  dataPath: string;
+  /** ST user/files 下的小缩略图路径；本机回退时为空。 */
+  thumbnailPath: string;
+  /** 正文包含的模型编码键。 */
+  modelKeys: string[];
+  /** 正文是否包含参考原图。 */
+  hasImage: boolean;
+  /** 编码内容指纹，用于无需读取正文的迁移去重。 */
+  fingerprint: string;
   /** 参考强度 0–1。 */
   strength: number;
   /** 生成时是否叠加此 vibe。 */
@@ -103,7 +120,7 @@ export interface NaiSettings extends BackendConn {
    * ComfyUI 无此设置:它有服务端队列,一次性全发即可。
    */
   concurrency: number;
-  /** Vibe 库(跨设备同步;图片 base64 体积大,建议只留常用几张)。 */
+  /** Vibe 库索引；正文存在 ST user/files，设置中不存大 Base64。 */
   vibes: NaiVibe[];
 }
 
@@ -194,10 +211,6 @@ export interface AutoTagSettings {
   retryCount: number;
   /** 写入 tag 后是否立即调用出图渠道自动生成图片(默认开;关闭则卡片上手动点「生成」)。 */
   autoGenerate: boolean;
-  /** 可用时读取柏宝书当前状态快照。 */
-  useBaiBaiBook: boolean;
-  /** 渲染世界书模板(默认开):取世界书条目前,先展开 {{宏}} 并执行 ST-Prompt-Template 的 EJS。 */
-  renderWorldInfoTemplates: boolean;
   /** 可编辑提示词集(破限/后端规范/思维链/预填充);空串 = 回落内置默认。 */
   prompts: AutoTagPrompts;
 }
@@ -509,8 +522,6 @@ function defaults(): ImageSettings {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      useBaiBaiBook: true,
-      renderWorldInfoTemplates: true,
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     },
     excludes: excludesDefaults(),
@@ -614,30 +625,98 @@ function clampNumber(value: unknown, def: number, min: number, max: number): num
     : def;
 }
 
-function normalizeVibe(raw: unknown, seq: number): NaiVibe | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const o = raw as Partial<NaiVibe>;
-  const encodings: NaiVibe['encodings'] = {};
-  if (o.encodings && typeof o.encodings === 'object') {
-    for (const [key, value] of Object.entries(o.encodings)) {
-      const v = value as Partial<{ encoding: unknown; infoExtracted: unknown }> | null;
-      if (v && typeof v.encoding === 'string' && v.encoding) {
-        encodings[key] = {
-          encoding: v.encoding,
-          infoExtracted: clampNumber(v.infoExtracted, 1, 0, 1),
-        };
-      }
+function normalizeVibeEncodings(raw: unknown): NaiVibeEncodings {
+  const encodings: NaiVibeEncodings = {};
+  if (!raw || typeof raw !== 'object') return encodings;
+  for (const [key, value] of Object.entries(raw)) {
+    const v = value as Partial<{ encoding: unknown; infoExtracted: unknown }> | null;
+    if (v && typeof v.encoding === 'string' && v.encoding) {
+      encodings[key] = {
+        encoding: v.encoding,
+        infoExtracted: clampNumber(v.infoExtracted, 1, 0, 1),
+      };
     }
   }
-  return {
-    id: typeof o.id === 'string' && o.id ? o.id : `vibe_${Date.now()}_${seq}`,
-    name: typeof o.name === 'string' && o.name ? o.name : 'Vibe',
+  return encodings;
+}
+
+function readLegacyVibeData(raw: unknown): NaiVibeData | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Partial<NaiVibe & NaiVibeData>;
+  if (typeof o.dataPath === 'string' && o.dataPath) return null;
+  const data = {
     image: typeof o.image === 'string' ? o.image : '',
     thumbnail: typeof o.thumbnail === 'string' ? o.thumbnail : '',
-    encodings,
+    encodings: normalizeVibeEncodings(o.encodings),
+  };
+  return data.image || data.thumbnail || Object.keys(data.encodings).length ? data : null;
+}
+
+function normalizeVibe(raw: unknown, seq: number): NaiVibe | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Partial<NaiVibe & NaiVibeData>;
+  const encodings = normalizeVibeEncodings(o.encodings);
+  const id = typeof o.id === 'string' && o.id ? o.id : `vibe_${Date.now()}_${seq}`;
+  const image = typeof o.image === 'string' ? o.image : '';
+  const modelKeys = Array.isArray(o.modelKeys)
+    ? o.modelKeys.filter((key): key is string => typeof key === 'string' && !!key)
+    : Object.keys(encodings);
+  return {
+    id,
+    name: typeof o.name === 'string' && o.name ? o.name : 'Vibe',
+    dataPath: typeof o.dataPath === 'string' ? o.dataPath : '',
+    thumbnailPath: typeof o.thumbnailPath === 'string' ? o.thumbnailPath : '',
+    modelKeys,
+    hasImage: typeof o.hasImage === 'boolean' ? o.hasImage : !!image,
+    fingerprint:
+      typeof o.fingerprint === 'string' && o.fingerprint ? o.fingerprint : vibeFingerprint(encodings),
     strength: clampNumber(o.strength, 0.6, 0, 1),
     enabled: typeof o.enabled === 'boolean' ? o.enabled : false,
   };
+}
+
+async function migrateLegacyVibesInPlace(
+  stored: unknown,
+): Promise<{ migrated: number; error: unknown }> {
+  const root = stored as { nai?: { vibes?: unknown } };
+  const vibes = root?.nai?.vibes;
+  if (!Array.isArray(vibes)) return { migrated: 0, error: null };
+  const total = vibes.reduce((count, vibe) => count + (readLegacyVibeData(vibe) ? 1 : 0), 0);
+  if (!total) return { migrated: 0, error: null };
+
+  toastr.info(`检测到 ${total} 个旧版 Vibe，正在自动搬迁大文件…`, '柏宝绘');
+  let migrated = 0;
+  let firstError: unknown = null;
+  for (let index = 0; index < vibes.length; index++) {
+    const raw = vibes[index];
+    const data = readLegacyVibeData(raw);
+    if (!data) continue;
+    const normalized = normalizeVibe(raw, index);
+    if (!normalized) continue;
+    try {
+      const paths = await saveVibeFiles(data, null, normalized.id);
+      vibes[index] = vibeMetaFromData(
+        normalized.id,
+        normalized.name,
+        paths.dataPath,
+        paths.thumbnailPath,
+        data,
+        normalized.strength,
+        normalized.enabled,
+      );
+      migrated++;
+      console.info(`[柏宝绘] 旧版 Vibe 自动搬迁 ${migrated}/${total}`);
+    } catch (error) {
+      firstError ??= error;
+      console.error(`[柏宝绘] Vibe「${normalized.name}」自动搬迁失败`, error);
+    }
+  }
+  if (firstError) {
+    toastr.error('部分旧版 Vibe 搬迁失败，原数据已保留；刷新后会自动重试。', '柏宝绘');
+    return { migrated, error: firstError };
+  }
+  toastr.success(`已自动修复 ${migrated} 个旧版 Vibe，后续加载将恢复正常。`, '柏宝绘');
+  return { migrated, error: null };
 }
 
 function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
@@ -766,12 +845,6 @@ function normalize(raw: unknown): ImageSettings {
         : d.autoTag.retryCount,
     autoGenerate:
       typeof rt.autoGenerate === 'boolean' ? rt.autoGenerate : d.autoTag.autoGenerate,
-    useBaiBaiBook:
-      typeof rt.useBaiBaiBook === 'boolean' ? rt.useBaiBaiBook : d.autoTag.useBaiBaiBook,
-    renderWorldInfoTemplates:
-      typeof rt.renderWorldInfoTemplates === 'boolean'
-        ? rt.renderWorldInfoTemplates
-        : d.autoTag.renderWorldInfoTemplates,
     // 可编辑提示词集:逐字段兜底;旧版 jailbreakPrompt 字段迁移进 prompts.jailbreak
     prompts: (() => {
       const rp = (rt.prompts ?? {}) as Partial<AutoTagPrompts>;
@@ -1105,14 +1178,23 @@ function persist(): void {
  * ST 就绪后调用:从 extension_settings 载入真实设置并放行 watch 回写。
  * 可安全重复调用(只在首次真正 hydrate)。
  */
-export function hydrateSettings(): void {
+export async function hydrateSettings(): Promise<void> {
   if (ready) return;
   const ctx = getContext();
   if (!ctx?.extensionSettings) return; // ST 未就绪,稍后重试
 
   const stored = ctx.extensionSettings[SETTINGS_KEY];
   if (stored && typeof stored === 'object') {
+    const migration = await migrateLegacyVibesInPlace(stored);
+    if (migration.error) {
+      if (migration.migrated) ctx.saveSettingsDebounced?.();
+      throw migration.error;
+    }
     applyInto(settings, normalize(stored));
+    if (migration.migrated) {
+      ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(settings));
+      ctx.saveSettingsDebounced?.();
+    }
   } else {
     // 把默认值写进 extension_settings,确立同步源
     ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(settings));

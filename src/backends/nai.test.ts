@@ -15,7 +15,7 @@ import {
   vibeModelKey,
   NaiError,
 } from '@/backends/nai';
-import type { NaiSettings, NaiVibe } from '@/state/settings';
+import type { NaiSettings, NaiVibe, NaiVibeData } from '@/state/settings';
 import { strToU8, zipSync } from 'fflate';
 
 function nai(overrides: Partial<NaiSettings> = {}): NaiSettings {
@@ -48,11 +48,22 @@ function vibe(overrides: Partial<NaiVibe> = {}): NaiVibe {
   return {
     id: 'v1',
     name: '测试Vibe',
+    dataPath: '/user/files/v1.json',
+    thumbnailPath: '/user/files/v1.jpg',
+    modelKeys: ['v4-5full'],
+    hasImage: true,
+    fingerprint: 'v4-5full:ZW5jb2Rpbmc=',
+    strength: 0.6,
+    enabled: true,
+    ...overrides,
+  };
+}
+
+function vibeData(overrides: Partial<NaiVibeData> = {}): NaiVibeData {
+  return {
     image: 'aW1hZ2U=',
     thumbnail: '',
     encodings: { 'v4-5full': { encoding: 'ZW5jb2Rpbmc=', infoExtracted: 1 } },
-    strength: 0.6,
-    enabled: true,
     ...overrides,
   };
 }
@@ -205,7 +216,7 @@ describe('skipCfgAboveSigma', () => {
 describe('applyVibes', () => {
   it('NAI4/4.5:编码数据进 cached,强度并进 strength 数组', () => {
     const params = buildNaiParameters(nai(), { prompt: 'x', seed: 1 });
-    const skipped = applyVibes(params, nai({ vibes: [vibe()] }));
+    const skipped = applyVibes(params, nai({ vibes: [vibe()] }), new Map([['v1', vibeData()]]));
     expect(skipped).toEqual([]);
     const cached = params.reference_image_multiple_cached as { cache_secret_key: string; data: string }[];
     expect(cached).toHaveLength(1);
@@ -218,7 +229,8 @@ describe('applyVibes', () => {
     const params = buildNaiParameters(nai(), { prompt: 'x', seed: 1 });
     const skipped = applyVibes(
       params,
-      nai({ vibes: [vibe({ name: '旧模型Vibe', encodings: { v3: { encoding: 'eQ==', infoExtracted: 1 } } })] }),
+      nai({ vibes: [vibe({ name: '旧模型Vibe', modelKeys: ['v3'] })] }),
+      new Map([['v1', vibeData({ encodings: { v3: { encoding: 'eQ==', infoExtracted: 1 } } })]]),
     );
     expect(skipped).toEqual(['旧模型Vibe']);
     expect(params.reference_image_multiple_cached).toEqual([]);
@@ -231,6 +243,10 @@ describe('applyVibes', () => {
       nai({
         vibes: [vibe({ id: 'a', strength: 0.8 }), vibe({ id: 'b', strength: 0.6 })],
       }),
+      new Map([
+        ['a', vibeData()],
+        ['b', vibeData()],
+      ]),
     );
     const strengths = params.reference_strength_multiple as number[];
     expect(strengths[0] + strengths[1]).toBeCloseTo(1, 6);
@@ -239,7 +255,7 @@ describe('applyVibes', () => {
   it('NAI3:参考原图进 reference_image_multiple', () => {
     const settings = nai({ model: 'nai-diffusion-3', vibes: [vibe()] });
     const params = buildNaiParameters(settings, { prompt: 'x', seed: 1 });
-    const skipped = applyVibes(params, settings);
+    const skipped = applyVibes(params, settings, new Map([['v1', vibeData()]]));
     expect(skipped).toEqual([]);
     expect(params.reference_image_multiple).toEqual(['aW1hZ2U=']);
     expect(params.reference_information_extracted_multiple).toEqual([1]);
@@ -248,7 +264,7 @@ describe('applyVibes', () => {
 
   it('未启用的 vibe 不参与', () => {
     const params = buildNaiParameters(nai(), { prompt: 'x', seed: 1 });
-    applyVibes(params, nai({ vibes: [vibe({ enabled: false })] }));
+    applyVibes(params, nai({ vibes: [vibe({ enabled: false })] }), new Map([['v1', vibeData()]]));
     expect(params.reference_image_multiple_cached).toEqual([]);
   });
 });

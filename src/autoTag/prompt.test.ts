@@ -41,8 +41,6 @@ describe('auto tag prompt', () => {
       maxImages: 3,
       retryCount: 1,
       autoGenerate: true,
-      useBaiBaiBook: false,
-      renderWorldInfoTemplates: true,
       prompts: { jailbreak: '附加规则', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
@@ -72,8 +70,6 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      useBaiBaiBook: false,
-      renderWorldInfoTemplates: true,
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const messages = await buildAutoTagMessages(
@@ -117,8 +113,6 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      useBaiBaiBook: false,
-      renderWorldInfoTemplates: true,
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     };
 
@@ -151,8 +145,6 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      useBaiBaiBook: false,
-      renderWorldInfoTemplates: true,
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
@@ -177,8 +169,6 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      useBaiBaiBook: false,
-      renderWorldInfoTemplates: true,
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '自定义清单', prefill: 'custom>' },
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
@@ -195,8 +185,6 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      useBaiBaiBook: false,
-      renderWorldInfoTemplates: true,
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const library = '【角色固定外貌库(系统维护)】\n小雪: 1girl, long silver hair';
@@ -214,8 +202,6 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      useBaiBaiBook: false,
-      renderWorldInfoTemplates: true,
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const oldBackend = settings.defaultBackend;
