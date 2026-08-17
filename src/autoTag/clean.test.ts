@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { stripCustomTags } from '@/autoTag/clean';
+import {
+  cleanHistoryText,
+  cleanTargetText,
+  prepareTargetText,
+  stripCustomTags,
+} from '@/autoTag/clean';
 
 describe('stripCustomTags', () => {
   it('配对块整删(含内部内容)', () => {
@@ -37,5 +42,86 @@ describe('stripCustomTags', () => {
 
   it('多个标签依次整删', () => {
     expect(stripCustomTags('<a>1</a>x<b>2</b>y', ['a', 'b'])).toBe('xy');
+  });
+});
+
+describe('prompt body cleaning', () => {
+  const source = `状态栏
+<think>不可见思维</think>
+<bbs_start>2026/8/16 10:00</bbs_start>
+第一段正文
+<snow>自定义状态</snow>
+<bbi_image>1girl, silver hair<size>portrait</size></bbi_image>
+第二段正文
+<bbs_end>2026/8/16 10:05</bbs_end>
+<bbs_items>
+- 不应发送的物品旁注
+</bbs_items>
+尾部状态`;
+
+  it('cleans historical floors like BaiBai Book while preserving image tags', () => {
+    expect(cleanHistoryText(source, ['snow', 'bbi_image'])).toBe(
+      `(起始时间:2026/8/16 10:00)
+第一段正文
+
+<bbi_image>1girl, silver hair<size>portrait</size></bbi_image>
+第二段正文
+(结束时间:2026/8/16 10:05)`,
+    );
+  });
+
+  it('removes target noise and time markers without changing retained prose', () => {
+    expect(cleanTargetText(source, ['snow'])).toBe(
+      `第一段正文
+
+<bbi_image>1girl, silver hair<size>portrait</size></bbi_image>
+
+第二段正文`,
+    );
+  });
+
+  it('builds stable position IDs mapped to original physical lines', () => {
+    expect(prepareTargetText(source, ['snow'])).toEqual({
+      promptText: `第一段正文 ⟦P1⟧
+
+<bbi_image>1girl, silver hair<size>portrait</size></bbi_image> ⟦P2⟧
+
+第二段正文 ⟦P3⟧`,
+      segments: [
+        { id: 'P1', sourceLine: 3, text: '第一段正文' },
+        {
+          id: 'P2',
+          sourceLine: 5,
+          text: '<bbi_image>1girl, silver hair<size>portrait</size></bbi_image>',
+        },
+        { id: 'P3', sourceLine: 6, text: '第二段正文' },
+      ],
+    });
+  });
+
+  it('keeps inline prose on one mapped source line after removing a block', () => {
+    expect(prepareTargetText('前文<snow>隐藏</snow>后文', ['snow'])).toEqual({
+      promptText: '前文 后文 ⟦P1⟧',
+      segments: [{ id: 'P1', sourceLine: 0, text: '前文 后文' }],
+    });
+  });
+
+  it('removes a lone closing time tag from the target', () => {
+    expect(prepareTargetText('正文\n</bbs_end>', [])).toEqual({
+      promptText: '正文 ⟦P1⟧',
+      segments: [{ id: 'P1', sourceLine: 0, text: '正文' }],
+    });
+  });
+
+  it('keeps source offsets stable when emoji appear before removed blocks', () => {
+    expect(
+      prepareTargetText(
+        '😀状态<snow><bbs_start>伪时间</bbs_start></snow>\n<bbs_start>真实时间</bbs_start>\n正文',
+        ['snow'],
+      ),
+    ).toEqual({
+      promptText: '正文 ⟦P1⟧',
+      segments: [{ id: 'P1', sourceLine: 2, text: '正文' }],
+    });
   });
 });

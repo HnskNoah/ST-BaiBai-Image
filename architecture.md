@@ -37,7 +37,8 @@ src/
 ├── autoTag/           # ★ 链路 A:自动生 tag(独立 LLM 请求 → 协议校验 → 注入正文)
 │   ├── runner.ts      # 事件监听、去重、重试、编排(入口)
 │   ├── prompt.ts      # 组装消息:破限/角色/人设/世界书/规范/协议/思维链/预填充
-│   ├── protocol.ts    # 行号编号 [Lxxxx]、JSON 严格解析校验、tag 注入格式
+│   ├── protocol.ts    # 段尾位置 ID、JSON 严格解析校验、tag 注入格式
+│   ├── clean.ts       # 历史/目标正文清洗(共享排除标签;历史保留 bbi_image)
 │   ├── context.ts     # 世界书激活(条目级渲染:展宏+EJS)、角色卡、user 人设
 │   ├── bookMemory.ts  # 读「柏宝书」全局 API,解析成角色参考块
 │   └── charAnchors.ts # 角色库:柏宝书建档/库文本注入 → @占位符替换(AI 报名不抄外貌)
@@ -126,17 +127,17 @@ runForFloor(floor, opts)
   5. 请求:getTagGenChannel() 有指派渠道 → requestCompletion(服务端代理);
      否则 requestViaMainApi(generateRaw)
   6. 重试循环:retryCount 次(请求异常 / 解析抛错都重试;abort 不消耗;「无画面」不算失败)
-  7. protocol.parseImagePlan 严格校验(JSON 结构/行号范围/禁含子标签/size 宽容降级竖屏)
+  7. protocol.parseImagePlan 严格校验(JSON 结构/目标位置 ID/禁含子标签/size 宽容降级竖屏)
   8. changes 落库(先于引用:本楼变化当楼生效;建档/字段变更记历史,不询问用户)
   9. @占位符替换:applyCharRefs 把 tag/nl 里的 @角色名 换成最新库 tag(nl 优先条目自然语言句),未知占位符剥除并告警
- 10. protocol.injectImageTags 按行号插入 <bbi_image>tag<nl>…</nl><size>…</size></bbi_image>
+ 10. protocol.injectImageTags 按位置 ID 映射在原始物理行后插入 <bbi_image>tag<nl>…</nl><size>…</size></bbi_image>
  11. 若 autoGenerate 开:先 markForAutoGenerate 每个新槽位(见链路 B 握手)
  12. messageEdit.applyMessageText CAS 写回(正文/swipe/聊天任一变化即放弃,并撤销标记)
 ```
 
 消息顺序(prompt.ts 固定):破限 system → 角色卡 system → persona system → 世界书 system →
 后端规范 system(ComfyUI/NAI 内置 spec,`{{nl}}` 宏按「生成自然语言」开关展开)→ 固定协议
-(输出 JSON 契约:images + changes)→ 思维链 system → user(角色参考 + 角色库 + 前 N 层上下文 + `[Lxxxx]` 编号正文)
+(输出 JSON 契约:images + changes)→ 思维链 system → user(角色参考 + 角色库 + 清洗后的最近 N 个 AI 故事楼及其间 user 楼 + 带段尾位置 ID 的目标正文)
 → assistant 预填充(`<thinking>`,渠道关闭 prefill 时由 client 丢弃)。
 
 全部可编辑提示词(破限/规范/思维链/预填充)在 `state/settings.ts` 有内置默认常量
@@ -271,7 +272,7 @@ runForFloor(floor, opts)
 | 提示词内置默认(破限/规范/思维链/预填充) | src/state/settings.ts 的 `DEFAULT_*` 常量 |
 | 自动 tag 触发条件 / 去重 / 重试 | src/autoTag/runner.ts |
 | 发给 LLM 的消息组装(顺序/内容) | src/autoTag/prompt.ts |
-| LLM 输出协议(JSON 形状/行号/tag 格式) | src/autoTag/protocol.ts |
+| LLM 输出协议(JSON 形状/位置 ID/tag 格式) | src/autoTag/protocol.ts |
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
 | 柏宝书状态读取 | src/autoTag/bookMemory.ts |
 | 角色库(建档/@占位符/changes 落库/历史回滚) | src/autoTag/charAnchors.ts + src/state/charTags.ts + src/autoTag/runner.ts |

@@ -1,6 +1,7 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import { applyCharRefs, resolveCharAnchors } from '@/autoTag/charAnchors';
+import { prepareTargetText } from '@/autoTag/clean';
 import { buildAutoTagMessages } from '@/autoTag/prompt';
 import {
   applyAiChange,
@@ -8,7 +9,7 @@ import {
   createAiEntry,
   type CharTagField,
 } from '@/state/charTags';
-import { injectImageTags, parseImagePlan, sourceLineCount, type ImagePlan } from '@/autoTag/protocol';
+import { injectImageTags, parseImagePlan, type ImagePlan } from '@/autoTag/protocol';
 import { clearAutoGenerateForFloor, markForAutoGenerate } from '@/floor/autoGenerate';
 import { applyMessageText } from '@/st/messageEdit';
 import { getContext, type STMessage } from '@/st/context';
@@ -100,6 +101,8 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
   // replace:分析和注入都基于剔除旧 tag 后的正文;写回时旧 tag 随之消失
   const source = opts.replace ? stripImageTags(rawSource) : rawSource;
   if (!source.trim()) return;
+  const preparedTarget = prepareTargetText(source, settings.excludes.customStripTags);
+  if (!preparedTarget.segments.length) return;
 
   const chatId = context.getCurrentChatId?.() ?? '';
   if (!chatId) return;
@@ -126,7 +129,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       floor,
       settings.autoTag,
       memory,
-      opts.replace ? source : undefined,
+      source,
       library,
     );
     const channel = getTagGenChannel();
@@ -148,7 +151,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           processed.delete(identity);
           return;
         }
-        plan = parseImagePlan(raw, sourceLineCount(source), settings.autoTag.maxImages);
+        plan = parseImagePlan(raw, preparedTarget.segments, settings.autoTag.maxImages);
       } catch (error) {
         if (controller.signal.aborted) {
           processed.delete(identity);

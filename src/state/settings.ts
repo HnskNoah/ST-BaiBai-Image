@@ -186,7 +186,7 @@ export const DEFAULT_JAILBREAK_PROMPT = `<sanctuary_override_directive>
 export interface AutoTagSettings {
   /** 新 AI 正文落地后自动请求模型。 */
   enabled: boolean;
-  /** 发送目标楼及其之前最近多少层完整正文；不再另设字符上限。 */
+  /** 发送最近多少个 AI 故事楼及其间 user 楼的清洗后正文；目标楼计入数量。 */
   contextMessages: number;
   /** 单楼允许模型选择的最大画面数。 */
   maxImages: number;
@@ -367,7 +367,7 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 核心动作与景别匹配：先想清本画面核心动作/接触点是什么——景别必须能框住它（核心在躯干以下如膝压、脚踩、下肢接触时，不用 upper body / close-up）；核心动作写成动作区第一条独立短 tag，姿态词只是辅助。
    - 画幅方向（size）：跟着上一条的镜头与人数定——多人同框/远景全景/宽阔场景 → landscape；单人/近景特写/站立全身 → portrait。
 4. 查角色库：对照【角色固定外貌库】逐个检查本楼出场角色——外貌发生了**永久变化**（剪发、留疤、长大、换造型）的写进 changes（含 name/field/value/reason）；临时状态（湿身、当天盘发）不算。没有变化就跳过这步。
-5. 定行号：每个画面选「该画面完成时刻」的非空行，记下 [Lxxxx]；行号必须在目标正文范围内。
+5. 定位置：每个画面选择「该画面完成时刻」段尾标出的 P编号，写入 position；不得使用上下文楼层或自行编造编号。
 6. 自查：时代服饰 tag 有没有写？镜头与光线有没有写？画幅方向是否与人数、景别相符？景别能容纳核心动作/接触点吗（躯干以下的核心动作没用 upper body 吧）？核心动作是独立短 tag 且排在动作区最前吗？库角色的 @占位符 用了没有？人数与正文是否一致？tag 是英文 danbooru 短 tag、无质量词负面词；张数不超上限；要求 nl 时，nl 与 tag 是同一画面的连贯英文描述。`;
 
 /** 预填充内置默认:以 <thinking> 开头,引导模型先过思考清单再输出 JSON。 */

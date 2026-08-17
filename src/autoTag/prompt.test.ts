@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildAutoTagMessages } from '@/autoTag/prompt';
-import { type AutoTagSettings } from '@/state/settings';
+import { settings, type AutoTagSettings } from '@/state/settings';
 import type { STContext } from '@/st/context';
 
 function context(): STContext {
@@ -34,7 +34,7 @@ function context(): STContext {
 }
 
 describe('auto tag prompt', () => {
-  it('numbers only the target floor and keeps selected context complete', async () => {
+  it('marks only clean target paragraphs without pulling user messages before the earliest selected AI floor', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
@@ -52,11 +52,62 @@ describe('auto tag prompt', () => {
     expect(messages.some(m => m.content.includes('不得包含质量词'))).toBe(true);
     const user = messages[messages.length - 2];
     expect(user.role).toBe('user');
-    expect(user.content).toContain('上一层');
-    expect(user.content).toContain('[L0001] 目标第一行');
-    expect(user.content).toContain('[L0002] ');
-    expect(user.content).toContain('[L0003] 目标第三行');
-    expect(user.content).not.toContain('[L0001] 上一层');
+    expect(user.content).not.toContain('上一层');
+    expect(user.content).toContain('目标第一行 ⟦P1⟧\n\n目标第三行 ⟦P2⟧');
+    expect(user.content).not.toContain('[L0001]');
+    expect(messages.some(message => message.content.includes('"position"'))).toBe(true);
+  });
+
+  it('counts context by AI floors, keeps interleaved user floors, and preserves prior image tags', async () => {
+    const ctx = context();
+    ctx.chat = [
+      { name: 'User', is_user: true, is_system: false, mes: '更早用户楼' },
+      {
+        name: 'Char',
+        is_user: false,
+        is_system: false,
+        mes: `<think>隐藏思维</think>
+<bbs_start>上午</bbs_start>
+上一个 AI 楼
+<snow>状态栏</snow>
+<bbi_image>1girl, long silver hair, red eyes<size>portrait</size></bbi_image>
+<bbs_end>中午</bbs_end>
+尾部状态`,
+      },
+      { name: 'User', is_user: true, is_system: false, mes: '中间用户楼' },
+      { name: 'Char', is_user: false, is_system: false, mes: '当前目标楼' },
+    ];
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      useBaiBaiBook: false,
+      renderWorldInfoTemplates: true,
+      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+    };
+
+    const oldTags = [...settings.excludes.customStripTags];
+    const messages = await (async () => {
+      settings.excludes.customStripTags = ['snow'];
+      try {
+        return await buildAutoTagMessages(ctx, 3, options, null);
+      } finally {
+        settings.excludes.customStripTags = oldTags;
+      }
+    })();
+    const user = messages[messages.length - 2];
+    expect(user.content).not.toContain('更早用户楼');
+    expect(user.content).toContain('上一个 AI 楼');
+    expect(user.content).toContain('<bbi_image>1girl, long silver hair, red eyes<size>portrait</size></bbi_image>');
+    expect(user.content).toContain('中间用户楼');
+    expect(user.content).not.toContain('隐藏思维');
+    expect(user.content).not.toContain('状态栏');
+    expect(user.content).not.toContain('尾部状态');
+    expect(user.content).not.toContain('上下文楼层');
+    expect(user.content).toContain('当前目标楼 ⟦P1⟧');
+    expect(user.content).not.toContain('上一个 AI 楼 ⟦P');
   });
 
   it('attaches the built-in thinking checklist and <thinking> prefill by default', async () => {

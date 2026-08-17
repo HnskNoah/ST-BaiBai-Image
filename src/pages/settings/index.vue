@@ -556,7 +556,7 @@ function closeModelMenuSoon() {
         <p class="bbi-field-hint">使用独立请求判断最新 AI 楼层是否需要插图；写入 tag 后是否自动出图由下方开关决定。</p>
 
         <label class="bbi-num-row">
-          <span class="bbi-field-label">携带最近楼层数</span>
+          <span class="bbi-field-label">携带最近 AI 楼数</span>
           <input
             v-model.number="settings.autoTag.contextMessages"
             class="bbi-input bbi-num"
@@ -566,7 +566,7 @@ function closeModelMenuSoon() {
             @change="normalizeAutoTagNumbers"
           />
         </label>
-        <p class="bbi-field-hint">发送目标楼及其之前最近多少层完整正文。所选楼层发送完整正文，不设置字符或 token 截断上限。</p>
+        <p class="bbi-field-hint">按 AI 故事楼计数，目标楼计入数量；中间 user 楼一并携带，并按与柏宝书共用的正文清洗设置处理，不设置字符或 token 截断上限。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">单楼最多图片数</span>

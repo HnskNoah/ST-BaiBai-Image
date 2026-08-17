@@ -1,8 +1,12 @@
 import { normalizeOrientation, type Orientation } from '@/backends/size';
+import type { TargetSegment } from '@/autoTag/clean';
 import type { CharTagHistoryField } from '@/state/charTags';
 
 export interface ImageInsertion {
-  line: number;
+  /** 模型选择的目标正文位置 ID。 */
+  position: string;
+  /** 位置 ID 对应的原始物理行(0-based，仅插件内部使用)。 */
+  sourceLine: number;
   /** danbooru 短 tag 部分(必填)。 */
   tag: string;
   /** 自然语言部分(可空;ComfyUI「生成自然语言」开启时由模型一并输出)。 */
@@ -56,17 +60,6 @@ function sourceLines(source: string): SourceLine[] {
   }
   lines.push({ text: source.slice(start), eol: '' });
   return lines;
-}
-
-/** 给每个源码物理行编号；空行也占一个行号，保证返回数字能无歧义地映射回原文。 */
-export function numberSourceText(source: string): string {
-  const lines = sourceLines(source);
-  const width = Math.max(4, String(lines.length).length);
-  return lines.map((line, index) => `[L${String(index + 1).padStart(width, '0')}] ${line.text}`).join('\n');
-}
-
-export function sourceLineCount(source: string): number {
-  return sourceLines(source).length;
 }
 
 function jsonObjects(raw: string): string[] {
@@ -124,14 +117,26 @@ function sanitizeContent(value: unknown, field: string, index: number): string {
   return text;
 }
 
+function sanitizePosition(value: unknown, index: number): string {
+  const position = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (!position) throw new Error(`images[${index}].position 不能为空`);
+  if (!/^P\d+$/.test(position)) throw new Error(`images[${index}].position 必须是目标正文中的 P编号`);
+  return position;
+}
+
 /**
- * 解析并严格校验模型给出的“源码行号 + 提示词”列表。tag 必填;nl 选填,漏给宽容降级为纯 tag。
+ * 解析并严格校验模型给出的“目标位置 ID + 提示词”列表。tag 必填;nl 选填,漏给宽容降级为纯 tag。
  * size 一律容忍:归一不出就当竖屏——为它抛错会白白吃掉 runner 的重试次数。
  * changes 宽容解析:单条坏就丢弃,不影响 images;整个键缺失 = 无变更。
  */
-export function parseImagePlan(raw: string, lineCount: number, maxImages: number): ImagePlan {
+export function parseImagePlan(
+  raw: string,
+  segments: TargetSegment[],
+  maxImages: number,
+): ImagePlan {
   const parsed = parseObject(raw);
   if (!Array.isArray(parsed.images)) throw new Error('AI 返回的 JSON 缺少 images 数组');
+  const positions = new Map(segments.map(segment => [segment.id, segment.sourceLine]));
 
   const images: ImageInsertion[] = [];
   for (let index = 0; index < parsed.images.length; index += 1) {
@@ -140,10 +145,10 @@ export function parseImagePlan(raw: string, lineCount: number, maxImages: number
       throw new Error(`images[${index}] 必须是对象`);
     }
     const entry = item as Record<string, unknown>;
-    if (!Number.isInteger(entry.line)) throw new Error(`images[${index}].line 必须是整数`);
-    const line = entry.line as number;
-    if (line < 1 || line > lineCount) {
-      throw new Error(`images[${index}].line=${line} 超出目标正文 1-${lineCount} 行的范围`);
+    const position = sanitizePosition(entry.position ?? entry.id, index);
+    const sourceLine = positions.get(position);
+    if (sourceLine === undefined) {
+      throw new Error(`images[${index}].position=${position} 不在目标正文可选位置中`);
     }
     // 兼容模型按旧协议/习惯返回 prompt 键的情况
     const tag = sanitizeContent(entry.tag ?? entry.prompt, 'tag', index);
@@ -151,7 +156,7 @@ export function parseImagePlan(raw: string, lineCount: number, maxImages: number
     const nl = sanitizeContent(entry.nl, 'nl', index);
     // 兼容模型按习惯返回 orientation / aspect 键
     const size = normalizeOrientation(entry.size ?? entry.orientation ?? entry.aspect);
-    images.push({ line, tag, nl, size });
+    images.push({ position, sourceLine, tag, nl, size });
   }
 
   return {
@@ -189,15 +194,19 @@ function parseChanges(raw: unknown): CharChange[] {
   return out;
 }
 
-/** 保持原文及原换行符不变，只在指定源码行之后插入 tag。 */
+/** 保持原文及原换行符不变，只在模型选择的位置 ID 对应源码行之后插入 tag。 */
 export function injectImageTags(source: string, images: ImageInsertion[]): string {
   if (!images.length) return source;
   const lines = sourceLines(source);
   const byLine = new Map<number, ImageInsertion[]>();
   for (const image of images) {
-    const list = byLine.get(image.line) ?? [];
+    if (!Number.isInteger(image.sourceLine) || image.sourceLine < 0 || image.sourceLine >= lines.length) {
+      throw new Error(`位置 ${image.position} 对应的原始物理行已失效`);
+    }
+    const line = image.sourceLine;
+    const list = byLine.get(line) ?? [];
     list.push(image);
-    byLine.set(image.line, list);
+    byLine.set(line, list);
   }
 
   const fallbackEol = lines.find(line => line.eol)?.eol || '\n';
@@ -205,7 +214,7 @@ export function injectImageTags(source: string, images: ImageInsertion[]): strin
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     output += line.text;
-    const inserted = byLine.get(index + 1) ?? [];
+    const inserted = byLine.get(index) ?? [];
     const insertedEol = line.eol || fallbackEol;
     // 标准形态:tag 部分保持裸文本(与存量格式一致),nl 与 size 各包子标签。
     // size 恒写出:生成是延后的(点卡片才出图),方向必须随 tag 持久化在正文里。
