@@ -106,6 +106,7 @@ describe('parseImageTagContent', () => {
     expect(parseImageTagContent('<bbi_image>1girl, moonlight</bbi_image>')).toEqual({
       tag: '1girl, moonlight',
       nl: '',
+      negative: '',
       size: 'portrait',
     });
   });
@@ -114,6 +115,7 @@ describe('parseImageTagContent', () => {
     expect(parseImageTagContent('<bbi_image>1girl<nl>A girl.</nl></bbi_image>')).toEqual({
       tag: '1girl',
       nl: 'A girl.',
+      negative: '',
       size: 'portrait',
     });
   });
@@ -121,13 +123,14 @@ describe('parseImageTagContent', () => {
   it('accepts explicit <tag> and <nl> sub-tags in any order', () => {
     expect(
       parseImageTagContent('<bbi_image><nl>A girl.\nShe smiles.</nl><tag>1girl</tag></bbi_image>'),
-    ).toEqual({ tag: '1girl', nl: 'A girl. She smiles.', size: 'portrait' });
+    ).toEqual({ tag: '1girl', nl: 'A girl. She smiles.', negative: '', size: 'portrait' });
   });
 
   it('merges bare text with explicit <tag> content instead of dropping it', () => {
     expect(parseImageTagContent('<bbi_image>bare_tags<tag>explicit_tags</tag></bbi_image>')).toEqual({
       tag: 'bare_tags, explicit_tags',
       nl: '',
+      negative: '',
       size: 'portrait',
     });
   });
@@ -135,14 +138,27 @@ describe('parseImageTagContent', () => {
   it('strips <size> out of the tag part instead of leaking it into the prompt', () => {
     // 漏剥的话 landscape 这个词会直接混进正向提示词
     expect(parseImageTagContent('<bbi_image>2girls, wide shot<size>landscape</size></bbi_image>')).toEqual(
-      { tag: '2girls, wide shot', nl: '', size: 'landscape' },
+      { tag: '2girls, wide shot', nl: '', negative: '', size: 'landscape' },
     );
   });
 
   it('handles all three sub-tags together (full plugin form)', () => {
     expect(
       parseImageTagContent('<bbi_image>2girls<nl>Two girls.</nl><size>landscape</size></bbi_image>'),
-    ).toEqual({ tag: '2girls', nl: 'Two girls.', size: 'landscape' });
+    ).toEqual({ tag: '2girls', nl: 'Two girls.', negative: '', size: 'landscape' });
+  });
+
+  it('extracts <negative> without leaking it into the positive tag', () => {
+    expect(
+      parseImageTagContent(
+        '<bbi_image>1girl<negative>extra people,\nduplicate</negative><size>portrait</size></bbi_image>',
+      ),
+    ).toEqual({
+      tag: '1girl',
+      nl: '',
+      negative: 'extra people, duplicate',
+      size: 'portrait',
+    });
   });
 
   it('falls back to portrait for legacy tags without <size>', () => {

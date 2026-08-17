@@ -430,11 +430,16 @@
 }
 
 .bbi-card__prompt-nl {
+  display: block;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px dashed var(--bbi-line);
   color: var(--bbi-ink-muted);
   font-family: var(--bbi-font-sans);
+}
+
+.bbi-card__prompt-negative {
+  color: var(--bbi-warning);
 }
 
 /* 窄屏:内边距收一号 */

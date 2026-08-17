@@ -10,6 +10,7 @@ export interface STMessage {
   is_system: boolean;
   mes: string;
   swipes?: string[];
+  swipe_info?: Array<{ extra?: Record<string, unknown> }>;
   swipe_id?: number;
   send_date?: string;
   extra?: Record<string, unknown>;

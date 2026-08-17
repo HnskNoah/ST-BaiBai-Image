@@ -4,9 +4,16 @@ import { applyCharRefs, resolveCharAnchors } from '@/autoTag/charAnchors';
 import { prepareTargetText } from '@/autoTag/clean';
 import { buildAutoTagMessages } from '@/autoTag/prompt';
 import {
-  applyAiChange,
-  charTagLib,
-  createAiEntry,
+  BBI_CHAR_EXTRA_KEY,
+  applyCharTagOps,
+  charTagsBeforeFloor,
+  createCharTagNewOp,
+  createCharTagSetOp,
+  emptyCharFields,
+  makeCharTagFloorDelta,
+  readCharTagFloorDelta,
+  recomputeCharTags,
+  type CharTagAutoOp,
   type CharTagField,
 } from '@/state/charTags';
 import { injectImageTags, parseImagePlan, type ImagePlan } from '@/autoTag/protocol';
@@ -47,8 +54,9 @@ interface RunOptions {
   replace?: boolean;
 }
 
-/** 把 AI 报告的 changes 落库:new = 建档;其余 = 单字段/raw/nl 变更(全部记历史)。 */
-function applyPlanChanges(plan: ImagePlan, floor: number): void {
+/** 把 AI 报告的 changes 转成当前楼层操作;真正写回在正文 CAS 成功时一次完成。 */
+function planChangeOps(plan: ImagePlan): CharTagAutoOp[] {
+  const ops: CharTagAutoOp[] = [];
   for (const change of plan.changes) {
     if (change.field === 'new') {
       // value 可能是结构化字段的 JSON 串(protocol.ts 拼),也可能是整串 tag 文本
@@ -67,17 +75,27 @@ function applyPlanChanges(plan: ImagePlan, floor: number): void {
         }
       }
       if (!fields && change.value) value = change.value;
-      const ok = createAiEntry(
-        { name: change.name, fields: fields ?? undefined, value, nl: change.nl, reason: change.reason },
-        floor,
+      const op = createCharTagNewOp(
+        {
+          name: change.name,
+          fields: { ...emptyCharFields(), ...(fields ?? {}) },
+          raw: value,
+          nl: change.nl ?? '',
+          source: 'ai',
+          desc: '',
+        },
+        change.reason,
       );
-      if (ok) console.info(`[柏宝绘] AI 建档角色「${change.name}」(第 ${floor} 楼)`);
+      if (op) ops.push(op);
     } else if (change.field === 'nl') {
-      applyAiChange(change.name, 'nl', change.value || change.nl || '', change.reason, floor);
+      const op = createCharTagSetOp(change.name, 'nl', change.value || change.nl || '', change.reason);
+      if (op) ops.push(op);
     } else {
-      applyAiChange(change.name, change.field, change.value, change.reason, floor);
+      const op = createCharTagSetOp(change.name, change.field, change.value, change.reason);
+      if (op) ops.push(op);
     }
   }
+  return ops;
 }
 
 async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> {
@@ -122,15 +140,20 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const memory = settings.autoTag.useBaiBaiBook
       ? readBookMemory(floor, context.chat[floor]?.mes ?? '', context.name1)
       : null;
-    // 角色固定外貌库:柏宝书新面孔先入库,然后返回库文本供 AI 判断变更/引用
-    const library = await resolveCharAnchors(memory?.roles ?? [], source, controller.signal);
+    const entriesBefore = charTagsBeforeFloor(floor);
+    // 柏宝书新面孔只暂存为本楼建档操作;请求/写回失败时不会污染角色库。
+    const anchors = await resolveCharAnchors(memory?.roles ?? [], entriesBefore, controller.signal);
+    if (controller.signal.aborted) {
+      processed.delete(identity);
+      return;
+    }
     const messages = await buildAutoTagMessages(
       context,
       floor,
       settings.autoTag,
       memory,
-      source,
-      library,
+      preparedTarget,
+      anchors.text,
     );
     const channel = getTagGenChannel();
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
@@ -171,23 +194,18 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       return;
     }
 
-    // 角色库变更先落库(本楼发生的变化当楼生效),再用最新库替换 @占位符。
-    // 解析成功即落库:外貌变化是剧情事实,与后续图片是否成功无关。
-    applyPlanChanges(plan, floor);
-
-    if (!plan.images.length) {
-      if (opts.manual) toastr.info('模型认为本楼没有值得插图的画面', '柏宝绘');
-      else console.debug(`[柏宝绘] 第 ${floor} 楼无需插图`);
-      return;
-    }
+    const planOps = planChangeOps(plan);
+    const floorOps = [...anchors.ops, ...planOps];
+    const stagedEntries = applyCharTagOps(anchors.entries, planOps, floor);
+    const previousDelta = readCharTagFloorDelta(message);
 
     // @占位符 替换:库里有的换成最新 tag,库里没有的剥掉(nl 部分优先条目的自然语言句)
     const unknownNames = new Set<string>();
     for (const image of plan.images) {
-      const tagRes = applyCharRefs(image.tag, charTagLib.entries, 'tag');
+      const tagRes = applyCharRefs(image.tag, stagedEntries, 'tag');
       if (tagRes.text) image.tag = tagRes.text;
       if (image.nl) {
-        const nlRes = applyCharRefs(image.nl, charTagLib.entries, 'nl');
+        const nlRes = applyCharRefs(image.nl, stagedEntries, 'nl');
         image.nl = nlRes.text;
         for (const n of nlRes.unknown) unknownNames.add(n);
       }
@@ -197,11 +215,18 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       console.warn('[柏宝绘] AI 引用了库里没有的角色占位符,已剥除:', [...unknownNames].join('、'));
     }
 
-    const nextText = injectImageTags(source, plan.images);
+    // 没有图片、没有角色变化、也没有旧楼层变化要清理时,保持原来的无写入早退。
+    if (!plan.images.length && !floorOps.length && !previousDelta) {
+      if (opts.manual) toastr.info('模型认为本楼没有值得插图的画面', '柏宝绘');
+      else console.debug(`[柏宝绘] 第 ${floor} 楼无需插图`);
+      return;
+    }
+
+    const nextText = plan.images.length ? injectImageTags(source, plan.images) : rawSource;
     // 「写入 tag 后自动生成图片」:写回前先给每个新槽位挂标记——applyMessageText 内部会
     // 触发 MESSAGE_EDITED / MESSAGE_UPDATED,卡片水合挂载时消费标记并自动开始生成
     // (见 floor/autoGenerate.ts);写回失败则撤销标记。
-    const marked = settings.autoTag.autoGenerate;
+    const marked = plan.images.length > 0 && settings.autoTag.autoGenerate;
     if (marked) {
       const markSwipeId = message.swipe_id ?? 0;
       for (let seq = 0; seq < plan.images.length; seq++) {
@@ -209,9 +234,27 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       }
     }
     // CAS 的比对基准是楼层当前真实正文(含旧 tag);nextText 从剔除旧 tag 的 source 推出
-    const result = await applyMessageText(floor, rawSource, nextText, chatId, swipeId);
+    const result = await applyMessageText(
+      floor,
+      rawSource,
+      nextText,
+      chatId,
+      swipeId,
+      message,
+      {
+        key: BBI_CHAR_EXTRA_KEY,
+        value: makeCharTagFloorDelta(floorOps, swipeId ?? 0),
+      },
+    );
     if (result === 'saved') {
-      toastr.success(`已在第 ${floor} 楼插入 ${plan.images.length} 个生图 tag`, '柏宝绘');
+      recomputeCharTags();
+      if (plan.images.length) {
+        toastr.success(`已在第 ${floor} 楼插入 ${plan.images.length} 个生图 tag`, '柏宝绘');
+      } else if (opts.manual) {
+        toastr.info('模型认为本楼没有值得插图的画面', '柏宝绘');
+      } else {
+        console.debug(`[柏宝绘] 第 ${floor} 楼无需插图`);
+      }
       return;
     }
     if (marked) clearAutoGenerateForFloor(chatId, floor);

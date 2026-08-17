@@ -17,7 +17,7 @@ describe('auto tag position protocol', () => {
 \`\`\``;
     expect(parseImagePlan(raw, segments, 1)).toEqual({
       images: [
-        { position: 'P1', sourceLine: 0, tag: 'first scene', nl: '', size: 'portrait' },
+        { position: 'P1', sourceLine: 0, tag: 'first scene', nl: '', negative: '', size: 'portrait' },
       ],
       changes: [],
     });
@@ -25,7 +25,7 @@ describe('auto tag position protocol', () => {
 
   it('accepts the legacy prompt key as an alias of tag', () => {
     expect(parseImagePlan('{"images":[{"position":"P1","prompt":"scene"}]}', segments, 1)).toEqual({
-      images: [{ position: 'P1', sourceLine: 0, tag: 'scene', nl: '', size: 'portrait' }],
+      images: [{ position: 'P1', sourceLine: 0, tag: 'scene', nl: '', negative: '', size: 'portrait' }],
       changes: [],
     });
   });
@@ -39,6 +39,7 @@ describe('auto tag position protocol', () => {
           sourceLine: 0,
           tag: '1girl',
           nl: 'A girl. She smiles.',
+          negative: '',
           size: 'portrait',
         },
       ],
@@ -50,7 +51,7 @@ describe('auto tag position protocol', () => {
     const raw = '{"images":[{"position":"P1","tag":"2girls","size":"landscape"}]}';
     expect(parseImagePlan(raw, segments, 1)).toEqual({
       images: [
-        { position: 'P1', sourceLine: 0, tag: '2girls', nl: '', size: 'landscape' },
+        { position: 'P1', sourceLine: 0, tag: '2girls', nl: '', negative: '', size: 'landscape' },
       ],
       changes: [],
     });
@@ -118,11 +119,27 @@ describe('auto tag position protocol', () => {
     ).toThrow('不得包含');
   });
 
+  it('keeps the optional dynamic negative part and accepts negative_prompt as an alias', () => {
+    const raw =
+      '{"images":[{"position":"P1","tag":"1girl","negative_prompt":"extra people, duplicate"}]}';
+    expect(parseImagePlan(raw, segments, 1).images[0].negative).toBe('extra people, duplicate');
+  });
+
+  it('rejects sub-tag literals in the negative part', () => {
+    expect(() =>
+      parseImagePlan(
+        '{"images":[{"position":"P1","tag":"ok","negative":"bad</negative>"}]}',
+        segments,
+        1,
+      ),
+    ).toThrow('不得包含');
+  });
+
   it('inserts multiple tags after the same line in array order', () => {
     expect(
       injectImageTags('第一行\n第二行', [
-        { position: 'P1', sourceLine: 0, tag: 'prompt a', nl: '', size: 'portrait' },
-        { position: 'P1', sourceLine: 0, tag: 'prompt b', nl: '', size: 'landscape' },
+        { position: 'P1', sourceLine: 0, tag: 'prompt a', nl: '', negative: '', size: 'portrait' },
+        { position: 'P1', sourceLine: 0, tag: 'prompt b', nl: '', negative: '', size: 'landscape' },
       ]),
     ).toBe(
       '第一行\n<bbi_image>prompt a<size>portrait</size></bbi_image>\n<bbi_image>prompt b<size>landscape</size></bbi_image>\n第二行',
@@ -137,6 +154,7 @@ describe('auto tag position protocol', () => {
           sourceLine: 0,
           tag: '1girl, moonlight',
           nl: 'A girl in moonlight.',
+          negative: '',
           size: 'portrait',
         },
       ]),
@@ -145,11 +163,28 @@ describe('auto tag position protocol', () => {
     );
   });
 
+  it('wraps the dynamic negative part in a <negative> sub-tag', () => {
+    expect(
+      injectImageTags('第一行', [
+        {
+          position: 'P1',
+          sourceLine: 0,
+          tag: '1girl',
+          nl: '',
+          negative: 'extra people, duplicate character',
+          size: 'portrait',
+        },
+      ]),
+    ).toBe(
+      '第一行\n<bbi_image>1girl<negative>extra people, duplicate character</negative><size>portrait</size></bbi_image>',
+    );
+  });
+
   it('preserves CRLF and appends correctly after the final line', () => {
     expect(
       injectImageTags('第一行\r\n\r\n第三行', [
-        { position: 'P1', sourceLine: 0, tag: 'prompt a', nl: '', size: 'portrait' },
-        { position: 'P2', sourceLine: 2, tag: 'prompt c', nl: '', size: 'portrait' },
+        { position: 'P1', sourceLine: 0, tag: 'prompt a', nl: '', negative: '', size: 'portrait' },
+        { position: 'P2', sourceLine: 2, tag: 'prompt c', nl: '', negative: '', size: 'portrait' },
       ]),
     ).toBe(
       '第一行\r\n<bbi_image>prompt a<size>portrait</size></bbi_image>\r\n\r\n第三行\r\n<bbi_image>prompt c<size>portrait</size></bbi_image>',

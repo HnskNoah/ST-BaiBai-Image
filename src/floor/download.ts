@@ -19,3 +19,13 @@ export function saveImageFile(src: string, filename?: string): void {
   link.click();
   link.remove();
 }
+
+export function imageDownloadFileName(
+  src: string,
+  characterName: string,
+  generationId: string,
+): string {
+  const name = characterName.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') || 'image';
+  const extension = src.match(/\.([a-zA-Z0-9]+)(?:[?#]|$)/)?.[1] || 'png';
+  return `bbi_${name}_${generationId}.${extension}`;
+}

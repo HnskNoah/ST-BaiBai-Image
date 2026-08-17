@@ -143,6 +143,7 @@ export function hydrateMessage(messageId: number, ctx: STContext): void {
     const vnode = h(Card, {
       prompt: content.tag,
       nl: content.nl,
+      negative: content.negative,
       size: content.size,
       tag: tags[seq],
       messageId,

@@ -3,9 +3,10 @@ import type { BookRole } from '@/autoTag/bookMemory';
 import {
   CHAR_TAG_FIELD_LABELS,
   CHAR_TAG_FIELDS,
-  charTagLib,
+  applyCharTagOps,
+  createCharTagNewOp,
   emptyCharFields,
-  upsertCharTag,
+  type CharTagAutoOp,
   type CharTagEntry,
   type CharTagField,
 } from '@/state/charTags';
@@ -15,8 +16,8 @@ import { getTagGenChannel } from '@/state/settings';
  * 角色固定外貌库的「锚定」侧。
  *
  * 生成 tag 前:
- * 1. 柏宝书角色参考里有外貌、库里还没有该角色 → 转换一次入库(柏宝书管「出生」);
- *    条目落库后归 AI 维护(通过输出协议的 changes 报告持久变化),柏宝书变化不再自动覆盖。
+ * 1. 柏宝书角色参考里有外貌、库里还没有该角色 → 转换成当前楼层的建档操作;
+ *    写回成功后才随消息 extra 落盘,楼层删除时自然消失。
  * 2. 库文本(全部条目)拼进请求:AI 看得到每个角色当前的字段值,才能判断需不需要改;
  *    但画面 tag 里它只写 @角色名 占位符,不抄外貌 —— 替换由插件机械完成,杜绝复述漂移。
  *
@@ -63,8 +64,9 @@ const CONVERT_SPEC = `你是外貌 tag 转换器。把给出的角色中文外�
 
 规则:
 1. 只提取固定基础特征;服装、饰品、状态、表情、动作、场景一律不写。
-2. 描述里没提的细节不要脑补,对应字段留空字符串。
-3. 只返回一个 JSON 对象:{"角色名":{"sex":"...","hair":"...","eyes":"...","skin":"...","body":"...","extra":"..."}},键与输入的角色名完全一致;不要 Markdown 代码块、不要解释。`;
+2. hair 与 eyes 是二次元角色身份锚点：描述里只要出现发色、发型/长度或瞳色线索就必须写入对应字段，不得遗漏或塞进 extra；hair 尽量同时保留颜色和长度/发型，eyes 保留颜色。
+3. 描述里没提的细节不要脑补,对应字段留空字符串。
+4. 只返回一个 JSON 对象:{"角色名":{"sex":"...","hair":"...","eyes":"...","skin":"...","body":"...","extra":"..."}},键与输入的角色名完全一致;不要 Markdown 代码块、不要解释。`;
 
 /** 字段值清洗:换行压成空格、剥 bbi_image 系子标签字面量(防止污染注入格式)。 */
 function sanitizeTagValue(value: unknown): string {
@@ -151,14 +153,21 @@ export async function generateCharTags(
  * 已有条目一律不动(AI 维护;手动条目更不动)。失败不阻断 —— 本轮该角色无锚定,模型自由发挥。
  * 返回库文本(拼进请求);空库返回 ''。
  */
+export interface ResolvedCharAnchors {
+  text: string | null;
+  entries: CharTagEntry[];
+  ops: CharTagAutoOp[];
+}
+
 export async function resolveCharAnchors(
   roles: BookRole[],
-  _bodyText: string,
+  entriesBefore: CharTagEntry[],
   signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<ResolvedCharAnchors> {
   // 只给「库中没有」的角色建档;已有条目(无论来源)都不被柏宝书覆盖
-  const known = new Set(charTagLib.entries.map(e => e.name));
+  const known = new Set(entriesBefore.map(entry => entry.name));
   const toGenerate = roles.filter(r => r.name && r.desc && !known.has(r.name));
+  const ops: CharTagAutoOp[] = [];
   if (toGenerate.length) {
     try {
       const generated = await generateCharTags(toGenerate, signal);
@@ -168,23 +177,24 @@ export async function resolveCharAnchors(
           const v = g.fields[f];
           if (v) fields[f] = v;
         }
-        upsertCharTag({
+        const op = createCharTagNewOp({
           name: g.name,
           fields,
           raw: '',
           nl: '',
           source: 'book',
           desc: g.desc,
-          history: [],
-        });
+        }, '柏宝书建档');
+        if (op) ops.push(op);
       }
     } catch (error) {
-      if (signal?.aborted) return null;
+      if (signal?.aborted) return { text: null, entries: entriesBefore, ops: [] };
       console.warn('[柏宝绘] 角色固定外貌 tag 转换失败,本轮不做锚定', error);
     }
   }
-  const text = buildLibraryText(charTagLib.entries);
-  return text || null;
+  const entries = applyCharTagOps(entriesBefore, ops, -1);
+  const text = buildLibraryText(entries);
+  return { text: text || null, entries, ops };
 }
 
 /* ============ @占位符 替换 ============ */

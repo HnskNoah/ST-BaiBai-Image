@@ -1,6 +1,29 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeCharTagStore } from '@/state/charTags';
+import {
+  BBI_CHAR_EXTRA_KEY,
+  createCharTagNewOp,
+  createCharTagSetOp,
+  deriveCharTags,
+  emptyCharFields,
+  normalizeCharTagStore,
+  type CharTagAutoOp,
+} from '@/state/charTags';
+import type { STMessage } from '@/st/context';
+
+function floorMessage(ops: CharTagAutoOp[], swipe = 0, storedSwipe = swipe): STMessage {
+  return {
+    name: 'Char',
+    is_user: false,
+    is_system: false,
+    mes: '正文',
+    swipes: ['正文', '另一页'],
+    swipe_id: swipe,
+    extra: {
+      [BBI_CHAR_EXTRA_KEY]: { v: 1, swipe: storedSwipe, ops },
+    },
+  };
+}
 
 describe('char tags store normalize', () => {
   it('keeps valid structured entries and normalizes fields', () => {
@@ -102,5 +125,55 @@ describe('char tags store normalize', () => {
     expect(normalizeCharTagStore(null)).toEqual([]);
     expect(normalizeCharTagStore({ version: 2 })).toEqual([]);
     expect(normalizeCharTagStore('junk')).toEqual([]);
+  });
+});
+
+describe('floor-owned character changes', () => {
+  it('removes a character when its creation floor is deleted', () => {
+    const create = createCharTagNewOp({
+      name: '小雪',
+      fields: { ...emptyCharFields(), sex: '1girl', hair: 'long black hair' },
+      raw: '',
+      nl: '',
+      source: 'ai',
+      desc: '',
+    })!;
+    const cutHair = createCharTagSetOp('小雪', 'hair', 'short black hair', '剪发')!;
+    const chat = [floorMessage([create]), floorMessage([cutHair])];
+
+    expect(deriveCharTags([], chat)[0].fields.hair).toBe('short black hair');
+    chat.splice(0, 1);
+    expect(deriveCharTags([], chat)).toEqual([]);
+  });
+
+  it('reverts a field when only the later change floor is deleted', () => {
+    const create = createCharTagNewOp({
+      name: '小雪',
+      fields: { ...emptyCharFields(), hair: 'long black hair' },
+      raw: '',
+      nl: '',
+      source: 'book',
+      desc: '黑色长发',
+    })!;
+    const cutHair = createCharTagSetOp('小雪', 'hair', 'short black hair', '剪发')!;
+    const chat = [floorMessage([create]), floorMessage([cutHair])];
+
+    chat.pop();
+    const [entry] = deriveCharTags([], chat);
+    expect(entry.fields.hair).toBe('long black hair');
+    expect(entry.history).toHaveLength(1);
+    expect(entry.history[0].floor).toBe(0);
+  });
+
+  it('ignores changes copied from another swipe', () => {
+    const create = createCharTagNewOp({
+      name: '旧页角色',
+      fields: { ...emptyCharFields(), sex: '1girl' },
+      raw: '',
+      nl: '',
+      source: 'ai',
+      desc: '',
+    })!;
+    expect(deriveCharTags([], [floorMessage([create], 1, 0)])).toEqual([]);
   });
 });

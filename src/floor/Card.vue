@@ -7,7 +7,7 @@ import type { Orientation } from '@/backends/size';
 import Icon from '@/components/Icon.vue';
 import { confirmDialog } from '@/components/confirm';
 import { consumeAutoGenerate } from '@/floor/autoGenerate';
-import { saveImageFile } from '@/floor/download';
+import { imageDownloadFileName, saveImageFile } from '@/floor/download';
 import { acquireNaiSlot } from '@/floor/genQueue';
 import {
   beginGen,
@@ -52,6 +52,8 @@ const props = defineProps<{
   prompt: string;
   /** tag 原文解析出的自然语言部分(无则空串;生成时写入 %nl% 占位符)。 */
   nl: string;
+  /** tag 原文解析出的动态负面部分(无则空串;生成时写入 %negative_prompt% 占位符)。 */
+  negative: string;
   /** 画幅方向(模型判定,随 tag 持久化):决定用渠道配置里的竖屏还是横屏尺寸。 */
   size: Orientation;
   /** tag 原文(含 <bbi_image> 壳):生成提交与 promptHash 的输入。 */
@@ -108,14 +110,25 @@ const configured = computed(() =>
 );
 
 const current = computed(() => props.history[index.value] ?? null);
-/** 提示词全文(tag + 自然语言):复制、灯箱、展开区共用。 */
-const promptText = computed(() => [props.prompt, props.nl].filter(Boolean).join('\n\n'));
+/** 提示词全文:复制、灯箱、展开区共用。 */
+const promptText = computed(() =>
+  [
+    props.prompt,
+    props.nl,
+    props.negative ? `Negative: ${props.negative}` : '',
+  ].filter(Boolean).join('\n\n'),
+);
 /**
  * 当前展示的结果。**刻意不看运行态**:生成失败/重绘中都该继续显示上一张图,
  * 否则「有图 → 点重绘 → 失败」会让图凭空消失(只剩一行报错),看着像把图弄丢了。
  */
 const shownEntry = computed(() => (props.history.length ? current.value : props.staleEntry));
 const imageSrc = computed(() => shownEntry.value?.path ?? '');
+const downloadFileName = (entry: BbiImageEntry): string => {
+  const context = getContext();
+  const characterName = context?.chat[props.messageId]?.name || context?.name2 || '';
+  return imageDownloadFileName(entry.path, characterName, entry.generationId);
+};
 /** 展示的图是否属于旧提示词(有旧结果但当前提示词还没出过图)。 */
 const isStale = computed(() => !props.history.length && !!props.staleEntry);
 /** 生成中/排队中仍显示上一张(若有),避免卡片塌空;骨架叠在其上。 */
@@ -143,6 +156,7 @@ async function generate(): Promise<void> {
     tag: props.tag,
     prompt: props.prompt,
     nl: props.nl,
+    negative: props.negative,
     size: props.size,
   };
   // NAI 需要闸门排队 → 先显示「排队中」;ComfyUI 有服务端队列,直接进 generating
@@ -165,7 +179,13 @@ async function generate(): Promise<void> {
       ? await generateNaiImage(settings.nai, { prompt: job.prompt, seed, size: job.size }, signal)
       : await generateComfyImage(
           settings.comfyui,
-          { prompt: job.prompt, nl: job.nl, seed, size: job.size },
+          {
+            prompt: job.prompt,
+            nl: job.nl,
+            negative_prompt: job.negative,
+            seed,
+            size: job.size,
+          },
           signal,
           { onQueue: ahead => setQueueAhead(slot, token, ahead) },
         );
@@ -207,7 +227,7 @@ function openImage(): void {
   openLightbox({
     src: entry.path,
     prompt: promptText.value,
-    filename: entry.path.split('/').pop() || undefined,
+    filename: downloadFileName(entry),
     onDelete: () => void removeEntry(entry, at),
   });
 }
@@ -264,7 +284,7 @@ async function copyPrompt(): Promise<void> {
 function downloadCurrent(): void {
   const entry = shownEntry.value;
   if (!entry) return;
-  saveImageFile(entry.path);
+  saveImageFile(entry.path, downloadFileName(entry));
 }
 
 onMounted(() => {
@@ -392,7 +412,10 @@ onMounted(() => {
       <!-- 复制按钮在展开区内:头部只留「对当前这张图」的操作,提示词的操作跟着提示词走 -->
       <div v-if="promptOpen && promptText" class="bbi-card__prompt-box">
         <pre class="bbi-card__prompt">{{ prompt
-          }}<span v-if="nl" class="bbi-card__prompt-nl">{{ nl }}</span></pre>
+          }}<span v-if="nl" class="bbi-card__prompt-nl">{{ nl }}</span><span
+            v-if="negative"
+            class="bbi-card__prompt-nl bbi-card__prompt-negative"
+          >Negative: {{ negative }}</span></pre>
         <button class="bbi-btn bbi-btn--icon bbi-card__prompt-copy" type="button" title="复制提示词" @click="copyPrompt">
           <Icon name="copy" :size="14" />
         </button>

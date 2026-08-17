@@ -54,9 +54,16 @@ export type ApplyMessageResult =
   | 'swipe-changed'
   | 'unavailable';
 
+export interface MessageExtraUpdate {
+  key: string;
+  /** undefined = 删除该键。 */
+  value: unknown;
+}
+
 /**
- * 以 compare-and-swap 方式修改消息正文：只有聊天、swipe 和原文都仍与请求开始时一致才落盘。
- * 保存失败时同时回滚 mes 与当前 swipe，避免留下半写状态。
+ * 以 compare-and-swap 方式修改消息正文和一个 extra 键。
+ * 只有聊天、消息对象、swipe 和原文都仍与请求开始时一致才落盘。
+ * 保存失败时同时回滚正文与 extra，避免留下半写状态。
  */
 export async function applyMessageText(
   floor: number,
@@ -64,6 +71,8 @@ export async function applyMessageText(
   nextText: string,
   expectedChatId: string,
   expectedSwipeId: number | null,
+  expectedMessage?: STMessage,
+  extraUpdate?: MessageExtraUpdate,
 ): Promise<ApplyMessageResult> {
   const context = getContext();
   if (!context?.saveChat) return 'unavailable';
@@ -71,18 +80,27 @@ export async function applyMessageText(
 
   const message = context.chat?.[floor];
   if (!message) return 'unavailable';
+  if (expectedMessage && message !== expectedMessage) return 'floor-changed';
   if (currentSwipeId(message) !== expectedSwipeId) return 'swipe-changed';
   if ((activeEditorText(floor) ?? message.mes) !== expectedText) return 'floor-changed';
 
   const previousText = message.mes;
+  const previousExtra = message.extra;
   const swipeId = currentSwipeId(message);
   const previousSwipeText = swipeId !== null ? message.swipes?.[swipeId] : undefined;
   setMessageText(message, nextText);
+  if (extraUpdate) {
+    const nextExtra = { ...(message.extra ?? {}) };
+    if (extraUpdate.value === undefined) delete nextExtra[extraUpdate.key];
+    else nextExtra[extraUpdate.key] = extraUpdate.value;
+    message.extra = nextExtra;
+  }
 
   try {
     await context.saveChat();
   } catch (error) {
     message.mes = previousText;
+    message.extra = previousExtra;
     if (swipeId !== null && message.swipes && swipeId >= 0 && swipeId < message.swipes.length) {
       message.swipes[swipeId] = previousSwipeText ?? previousText;
     }

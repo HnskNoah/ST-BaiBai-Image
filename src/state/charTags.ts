@@ -1,22 +1,18 @@
-import { getContext } from '@/st/context';
+import { getContext, type STMessage } from '@/st/context';
 import { reactive } from 'vue';
 
 /**
- * 角色固定外貌库 —— **仅当前聊天生效**,存进 ST 的 chatMetadata(随聊天存档走,不跨聊天)。
+ * 角色固定外貌库。
  *
- * v2 结构化:外貌按固定字段(sex/hair/eyes/skin/body/extra/outfit)记录,
- * 最终 tag 串由 buildEntryTag 按固定顺序拼出,不依赖模型/用户的书写习惯;
- * 旧版整串数据以 raw 模式兼容(raw 非空且 fields 全空时生效)。
+ * 真源分两层:
+ * - 手动条目/旧版快照:chatMetadata[META_KEY],不随楼层删除。
+ * - 自动建档与变化:目标消息 extra[BBI_CHAR_EXTRA_KEY],随消息/swipe 一起保存和删除。
  *
- * 维护权归生成 tag 的 AI:它通过输出协议的 changes 报告持久变化,插件直接落库并记历史,
- * 不询问用户;柏宝书只负责「出生」——首次建档时可从其外貌记录转换入库,
- * 此后条目归 AI 维护,柏宝书外貌再变也不自动覆盖。
- * 服装、临时状态等会变动的内容不入库(「固定着装」字段除外),仍由模型按正文现场生成。
+ * charTagLib 只是响应式派生缓存:基线 + 按楼层物理顺序重放自动变化。
  */
 
 export type CharTagField = 'sex' | 'hair' | 'eyes' | 'skin' | 'body' | 'extra' | 'outfit';
 
-/** 字段拼接顺序 = 重要度顺序;库文本/界面都按它展示。 */
 export const CHAR_TAG_FIELDS: readonly CharTagField[] = [
   'sex',
   'hair',
@@ -38,64 +34,80 @@ export const CHAR_TAG_FIELD_LABELS: Record<CharTagField, string> = {
 };
 
 export type CharTagSource = 'book' | 'manual' | 'ai';
-
-/** 历史记录可指向的字段:'new' = 建档、'raw' = 整串更新、'nl' = 自然语言句更新。 */
 export type CharTagHistoryField = CharTagField | 'new' | 'raw' | 'nl';
 
-/** 条目的一次变更记录(时间升序,最新在后;上限 50 条)。 */
 export interface CharTagChangeRecord {
   field: CharTagHistoryField;
   from: string;
   to: string;
   reason: string;
-  /** 变更来源楼层;手动编辑/回滚为 -1。 */
+  /** 自动变化在重放时按当前物理楼号生成;手动编辑/回滚为 -1。 */
   floor: number;
-  /** 时间戳(ms)。 */
   at: number;
 }
 
 export interface CharTagEntry {
-  /** 角色名,与柏宝书 npc.name / 正文称呼一致;也是 @占位符 的匹配键。 */
   name: string;
-  /** 结构化固定外貌字段(空串 = 未记录)。 */
   fields: Record<CharTagField, string>;
-  /** 整串模式(旧版数据/手写整串);非空且 fields 全空时拼接生效。 */
   raw: string;
-  /** 一句连贯英文外貌描述(自然语言模式的 @占位符替换内容;可空)。 */
   nl: string;
-  /** 条目来源:book = 柏宝书转换;manual = 手建;ai = AI 变更/建档接管后。 */
   source: CharTagSource;
-  /** 建档依据的柏宝书外貌原文(仅 book 来源用于变化比对;AI 接管或手改后清空)。 */
   desc: string;
   history: CharTagChangeRecord[];
 }
 
-/** chatMetadata 里的存储键与结构(带版本号,便于以后迁移) */
+export interface CharTagNewOp {
+  kind: 'new';
+  name: string;
+  fields: Record<CharTagField, string>;
+  raw: string;
+  nl: string;
+  source: 'book' | 'ai';
+  desc: string;
+  reason: string;
+  at: number;
+}
+
+export interface CharTagSetOp {
+  kind: 'set';
+  name: string;
+  field: CharTagField | 'raw' | 'nl';
+  value: string;
+  reason: string;
+  at: number;
+}
+
+export type CharTagAutoOp = CharTagNewOp | CharTagSetOp;
+
+export interface CharTagFloorDelta {
+  v: 1;
+  swipe: number;
+  ops: CharTagAutoOp[];
+}
+
+export const BBI_CHAR_EXTRA_KEY = 'bbiCharChanges';
 const META_KEY = 'baibai_image_char_tags';
 const HISTORY_CAP = 50;
 
 interface CharTagStore {
-  version: 2;
+  version: 3;
   entries: CharTagEntry[];
 }
 
-/** 当前聊天的条目列表(reactive,页面直接绑定)。切换聊天时由 hydrateCharTags 整体替换。 */
 export const charTagLib = reactive<{ entries: CharTagEntry[] }>({ entries: [] });
-
-/* ============ 纯工具 ============ */
+let baseEntries: CharTagEntry[] = [];
 
 export function emptyCharFields(): Record<CharTagField, string> {
   return { sex: '', hair: '', eyes: '', skin: '', body: '', extra: '', outfit: '' };
 }
 
 export function charFieldsEmpty(fields: Record<CharTagField, string>): boolean {
-  return CHAR_TAG_FIELDS.every(f => !(fields[f] ?? '').trim());
+  return CHAR_TAG_FIELDS.every(field => !(fields[field] ?? '').trim());
 }
 
-/** 条目最终 tag 串:整串模式(raw 且无字段)用 raw;否则按固定顺序拼接非空字段。 */
 export function buildEntryTag(entry: Pick<CharTagEntry, 'fields' | 'raw'>): string {
   if (entry.raw.trim() && charFieldsEmpty(entry.fields)) return entry.raw.trim();
-  return CHAR_TAG_FIELDS.map(f => (entry.fields[f] ?? '').trim())
+  return CHAR_TAG_FIELDS.map(field => (entry.fields[field] ?? '').trim())
     .filter(Boolean)
     .join(', ');
 }
@@ -104,58 +116,68 @@ function isHistoryField(value: string): value is CharTagHistoryField {
   return (CHAR_TAG_FIELDS as readonly string[]).includes(value) || value === 'new' || value === 'raw' || value === 'nl';
 }
 
+function isSetField(value: string): value is CharTagSetOp['field'] {
+  return (CHAR_TAG_FIELDS as readonly string[]).includes(value) || value === 'raw' || value === 'nl';
+}
+
 function normalizeHistory(raw: unknown): CharTagChangeRecord[] {
   if (!Array.isArray(raw)) return [];
   const out: CharTagChangeRecord[] = [];
   for (const item of raw.slice(-HISTORY_CAP)) {
     if (!item || typeof item !== 'object') continue;
-    const o = item as Partial<CharTagChangeRecord>;
-    const field = typeof o.field === 'string' ? o.field : '';
+    const record = item as Partial<CharTagChangeRecord>;
+    const field = typeof record.field === 'string' ? record.field : '';
     if (!isHistoryField(field)) continue;
     out.push({
       field,
-      from: typeof o.from === 'string' ? o.from : '',
-      to: typeof o.to === 'string' ? o.to : '',
-      reason: typeof o.reason === 'string' ? o.reason : '',
-      floor: typeof o.floor === 'number' && Number.isFinite(o.floor) ? o.floor : -1,
-      at: typeof o.at === 'number' && Number.isFinite(o.at) ? o.at : 0,
+      from: typeof record.from === 'string' ? record.from : '',
+      to: typeof record.to === 'string' ? record.to : '',
+      reason: typeof record.reason === 'string' ? record.reason : '',
+      floor: typeof record.floor === 'number' && Number.isFinite(record.floor) ? record.floor : -1,
+      at: typeof record.at === 'number' && Number.isFinite(record.at) ? record.at : 0,
     });
   }
   return out;
 }
 
+function normalizeFields(raw: unknown): Record<CharTagField, string> {
+  const fields = emptyCharFields();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fields;
+  for (const field of CHAR_TAG_FIELDS) {
+    const value = (raw as Record<string, unknown>)[field];
+    if (typeof value === 'string') fields[field] = value.trim();
+  }
+  return fields;
+}
+
 function normalizeEntry(raw: unknown): CharTagEntry | null {
   if (!raw || typeof raw !== 'object') return null;
-  const o = raw as Partial<CharTagEntry> & { tags?: unknown };
-  const name = typeof o.name === 'string' ? o.name.trim() : '';
+  const value = raw as Partial<CharTagEntry> & { tags?: unknown };
+  const name = typeof value.name === 'string' ? value.name.trim() : '';
   if (!name) return null;
-  const fields = emptyCharFields();
-  if (o.fields && typeof o.fields === 'object' && !Array.isArray(o.fields)) {
-    for (const f of CHAR_TAG_FIELDS) {
-      const v = (o.fields as Record<string, unknown>)[f];
-      if (typeof v === 'string') fields[f] = v.trim();
-    }
-  }
-  // 旧版(v1)整串字段 tags → raw 模式兼容
-  const legacyTags = typeof o.tags === 'string' ? o.tags.trim() : '';
-  const rawStr = typeof o.raw === 'string' ? o.raw.trim() : legacyTags;
-  const nl = typeof o.nl === 'string' ? o.nl.trim() : '';
-  // 全空条目没有可用外貌,丢弃
-  if (!rawStr && charFieldsEmpty(fields)) return null;
-  const source: CharTagSource =
-    o.source === 'book' || o.source === 'ai' ? o.source : 'manual';
+  const fields = normalizeFields(value.fields);
+  const legacyTags = typeof value.tags === 'string' ? value.tags.trim() : '';
+  const rawTag = typeof value.raw === 'string' ? value.raw.trim() : legacyTags;
+  if (!rawTag && charFieldsEmpty(fields)) return null;
   return {
     name,
     fields,
-    raw: rawStr,
-    nl,
-    source,
-    desc: typeof o.desc === 'string' ? o.desc : '',
-    history: normalizeHistory(o.history),
+    raw: rawTag,
+    nl: typeof value.nl === 'string' ? value.nl.trim() : '',
+    source: value.source === 'book' || value.source === 'ai' ? value.source : 'manual',
+    desc: typeof value.desc === 'string' ? value.desc : '',
+    history: normalizeHistory(value.history),
   };
 }
 
-/** 容错解析任意来源的库存储(手改坏/旧版本数据 → 尽量救,救不了丢弃该条)。 */
+function cloneEntry(entry: CharTagEntry): CharTagEntry {
+  return {
+    ...entry,
+    fields: { ...entry.fields },
+    history: entry.history.map(record => ({ ...record })),
+  };
+}
+
 export function normalizeCharTagStore(raw: unknown): CharTagEntry[] {
   if (!raw || typeof raw !== 'object') return [];
   const entries = (raw as Partial<CharTagStore>).entries;
@@ -164,7 +186,6 @@ export function normalizeCharTagStore(raw: unknown): CharTagEntry[] {
   const seen = new Set<string>();
   for (const item of entries) {
     const entry = normalizeEntry(item);
-    // 同名去重:保留先出现的(正常数据不会重名,防御手改)
     if (entry && !seen.has(entry.name)) {
       seen.add(entry.name);
       out.push(entry);
@@ -173,50 +194,245 @@ export function normalizeCharTagStore(raw: unknown): CharTagEntry[] {
   return out;
 }
 
-/**
- * 从当前聊天的 chatMetadata 载入库。无聊天/无数据 → 空库。
- * 切换聊天(CHAT_CHANGED)与插件启动时各调一次。
- */
-export function hydrateCharTags(): void {
-  const ctx = getContext();
-  const raw = ctx?.chatMetadata?.[META_KEY];
-  charTagLib.entries = normalizeCharTagStore(raw);
-}
-
-/** 写回 chatMetadata 并防抖落盘(随聊天保存)。无上下文时静默丢弃。 */
-function persist(): void {
-  const ctx = getContext();
-  if (!ctx?.chatMetadata) return;
-  const store: CharTagStore = {
-    version: 2,
-    entries: JSON.parse(JSON.stringify(charTagLib.entries)) as CharTagEntry[],
+function normalizeAutoOp(raw: unknown): CharTagAutoOp | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  const name = typeof value.name === 'string' ? value.name.trim() : '';
+  const at = typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : 0;
+  if (!name) return null;
+  if (value.kind === 'new') {
+    const fields = normalizeFields(value.fields);
+    const rawTag = typeof value.raw === 'string' ? value.raw.trim() : '';
+    if (!rawTag && charFieldsEmpty(fields)) return null;
+    return {
+      kind: 'new',
+      name,
+      fields,
+      raw: rawTag,
+      nl: typeof value.nl === 'string' ? value.nl.trim() : '',
+      source: value.source === 'book' ? 'book' : 'ai',
+      desc: typeof value.desc === 'string' ? value.desc : '',
+      reason: typeof value.reason === 'string' ? value.reason : '',
+      at,
+    };
+  }
+  const field = typeof value.field === 'string' ? value.field : '';
+  const next = typeof value.value === 'string' ? value.value.trim() : '';
+  if (value.kind !== 'set' || !isSetField(field) || !next) return null;
+  return {
+    kind: 'set',
+    name,
+    field,
+    value: next,
+    reason: typeof value.reason === 'string' ? value.reason : '',
+    at,
   };
-  ctx.chatMetadata[META_KEY] = store;
-  ctx.saveMetadataDebounced?.();
 }
 
-/** 按名字查条目(精确匹配;调用方负责保证 name 已 trim)。 */
-export function findCharTag(name: string): CharTagEntry | undefined {
-  return charTagLib.entries.find(e => e.name === name);
+export function readCharTagFloorDelta(message: STMessage | undefined): CharTagFloorDelta | null {
+  const raw = message?.extra?.[BBI_CHAR_EXTRA_KEY];
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Partial<CharTagFloorDelta>;
+  if (value.v !== 1 || !Array.isArray(value.ops)) return null;
+  const swipe = typeof value.swipe === 'number' && Number.isInteger(value.swipe) ? value.swipe : 0;
+  const ops = value.ops.map(normalizeAutoOp).filter((op): op is CharTagAutoOp => !!op);
+  return { v: 1, swipe, ops };
+}
+
+function activeSwipe(message: STMessage): number {
+  return typeof message.swipe_id === 'number' ? message.swipe_id : 0;
 }
 
 function pushHistory(entry: CharTagEntry, record: CharTagChangeRecord): void {
   entry.history.push(record);
-  if (entry.history.length > HISTORY_CAP) {
-    entry.history.splice(0, entry.history.length - HISTORY_CAP);
-  }
+  if (entry.history.length > HISTORY_CAP) entry.history.splice(0, entry.history.length - HISTORY_CAP);
 }
 
-export interface UpsertOptions {
-  /** 覆盖已有条目时,把字段差异记进历史(reason 固定「手动编辑」)。 */
-  recordChanges?: boolean;
+export function createCharTagNewOp(
+  entry: Pick<CharTagEntry, 'name' | 'fields' | 'raw' | 'nl' | 'source' | 'desc'>,
+  reason = '',
+  at = Date.now(),
+): CharTagNewOp | null {
+  const normalized = normalizeEntry({ ...entry, history: [] });
+  if (!normalized) return null;
+  return {
+    kind: 'new',
+    name: normalized.name,
+    fields: normalized.fields,
+    raw: normalized.raw,
+    nl: normalized.nl,
+    source: normalized.source === 'book' ? 'book' : 'ai',
+    desc: normalized.desc,
+    reason,
+    at,
+  };
+}
+
+export function createCharTagSetOp(
+  name: string,
+  field: CharTagSetOp['field'],
+  value: string,
+  reason = '',
+  at = Date.now(),
+): CharTagSetOp | null {
+  const cleanName = name.trim();
+  const cleanValue = value.trim();
+  if (!cleanName || !cleanValue) return null;
+  return { kind: 'set', name: cleanName, field, value: cleanValue, reason, at };
+}
+
+export function applyCharTagOps(
+  entries: CharTagEntry[],
+  ops: CharTagAutoOp[],
+  floor: number,
+): CharTagEntry[] {
+  const out = entries.map(cloneEntry);
+  for (const op of ops) {
+    if (op.kind === 'new') {
+      if (out.some(entry => entry.name === op.name)) continue;
+      const entry: CharTagEntry = {
+        name: op.name,
+        fields: { ...op.fields },
+        raw: op.raw,
+        nl: op.nl,
+        source: op.source,
+        desc: op.desc,
+        history: [],
+      };
+      pushHistory(entry, {
+        field: 'new',
+        from: '',
+        to: buildEntryTag(entry),
+        reason: op.reason,
+        floor,
+        at: op.at,
+      });
+      out.push(entry);
+      continue;
+    }
+
+    const entry = out.find(candidate => candidate.name === op.name);
+    if (!entry) continue;
+    if (op.field !== 'raw' && op.field !== 'nl' && entry.raw.trim() && charFieldsEmpty(entry.fields)) continue;
+    const current = op.field === 'raw' ? entry.raw : op.field === 'nl' ? entry.nl : entry.fields[op.field];
+    if (current === op.value) continue;
+    if (op.field === 'raw') entry.raw = op.value;
+    else if (op.field === 'nl') entry.nl = op.value;
+    else entry.fields[op.field] = op.value;
+    entry.source = 'ai';
+    entry.desc = '';
+    pushHistory(entry, {
+      field: op.field,
+      from: current,
+      to: op.value,
+      reason: op.reason,
+      floor,
+      at: op.at,
+    });
+  }
+  return out;
+}
+
+export function deriveCharTags(
+  seedEntries: CharTagEntry[],
+  chat: STMessage[],
+  upToExclusive = chat.length,
+): CharTagEntry[] {
+  let entries = seedEntries.map(cloneEntry);
+  const end = Math.min(Math.max(0, upToExclusive), chat.length);
+  for (let floor = 0; floor < end; floor += 1) {
+    const message = chat[floor];
+    const delta = readCharTagFloorDelta(message);
+    if (!delta || delta.swipe !== activeSwipe(message)) continue;
+    entries = applyCharTagOps(entries, delta.ops, floor);
+  }
+  return entries;
+}
+
+export function charTagsBeforeFloor(floor: number): CharTagEntry[] {
+  const chat = getContext()?.chat ?? [];
+  return deriveCharTags(baseEntries, chat, floor);
+}
+
+export function makeCharTagFloorDelta(ops: CharTagAutoOp[], swipe: number): CharTagFloorDelta | undefined {
+  return ops.length ? { v: 1, swipe, ops } : undefined;
+}
+
+export function recomputeCharTags(): void {
+  const chat = getContext()?.chat ?? [];
+  charTagLib.entries = deriveCharTags(baseEntries, chat);
+}
+
+export function hydrateCharTags(): void {
+  const raw = getContext()?.chatMetadata?.[META_KEY];
+  // v2 的整库快照无法可靠反推来源楼层,迁移时作为基线保留,避免丢用户现有数据。
+  baseEntries = normalizeCharTagStore(raw);
+  recomputeCharTags();
+}
+
+function persistBase(): void {
+  const context = getContext();
+  if (!context?.chatMetadata) return;
+  const store: CharTagStore = {
+    version: 3,
+    entries: baseEntries.map(cloneEntry),
+  };
+  context.chatMetadata[META_KEY] = store;
+  context.saveMetadataDebounced?.();
+}
+
+function stripOpsFromExtra(extra: Record<string, unknown> | undefined, names: Set<string>): boolean {
+  if (!extra) return false;
+  const raw = extra[BBI_CHAR_EXTRA_KEY];
+  if (!raw || typeof raw !== 'object') return false;
+  const value = raw as Partial<CharTagFloorDelta>;
+  if (value.v !== 1 || !Array.isArray(value.ops)) return false;
+  const nextOps = value.ops
+    .map(normalizeAutoOp)
+    .filter((op): op is CharTagAutoOp => !!op && !names.has(op.name));
+  if (nextOps.length === value.ops.length) return false;
+  if (nextOps.length) {
+    extra[BBI_CHAR_EXTRA_KEY] = {
+      v: 1,
+      swipe: typeof value.swipe === 'number' ? value.swipe : 0,
+      ops: nextOps,
+    } satisfies CharTagFloorDelta;
+  } else {
+    delete extra[BBI_CHAR_EXTRA_KEY];
+  }
+  return true;
 }
 
 /**
- * 新增或覆盖条目(按 name 定位)。name 或拼接结果为空则忽略并返回 false。
- * 改名场景:传 oldName 先删旧条目(oldName 与 name 不同才删)。
- * 传入 history 为空时沿用库中已有条目的历史(recordChanges 时再追加差异记录)。
+ * 手动编辑/删除意味着用户接管当前结果:把该角色过去的自动楼层操作压进手动基线,
+ * 并清掉已有消息里的同名操作。之后的新楼层仍可继续由 AI 变更。
  */
+function detachFromExistingFloors(...rawNames: Array<string | undefined>): void {
+  const names = new Set(rawNames.map(name => name?.trim()).filter((name): name is string => !!name));
+  const context = getContext();
+  if (!names.size || !context?.chat) return;
+  let changed = false;
+  for (const message of context.chat) {
+    changed = stripOpsFromExtra(message.extra, names) || changed;
+    for (const swipeInfo of message.swipe_info ?? []) {
+      changed = stripOpsFromExtra(swipeInfo?.extra, names) || changed;
+    }
+  }
+  if (changed) {
+    void context.saveChat?.().catch(error => {
+      console.warn('[柏宝绘] 手动角色变更已生效,但清理旧楼层角色记录保存失败', error);
+    });
+  }
+}
+
+export function findCharTag(name: string): CharTagEntry | undefined {
+  return charTagLib.entries.find(entry => entry.name === name);
+}
+
+export interface UpsertOptions {
+  recordChanges?: boolean;
+}
+
 export function upsertCharTag(
   entry: CharTagEntry,
   oldName?: string,
@@ -224,160 +440,99 @@ export function upsertCharTag(
 ): boolean {
   const name = entry.name.trim();
   if (!name || !buildEntryTag(entry)) return false;
-  if (oldName && oldName !== name) {
-    const oldIdx = charTagLib.entries.findIndex(e => e.name === oldName);
-    if (oldIdx >= 0) charTagLib.entries.splice(oldIdx, 1);
-  }
-  const idx = charTagLib.entries.findIndex(e => e.name === name);
-  const prev = idx >= 0 ? charTagLib.entries[idx] : null;
+  const previous = findCharTag(oldName ?? name);
   const next: CharTagEntry = {
     name,
-    fields: emptyCharFields(),
+    fields: normalizeFields(entry.fields),
     raw: entry.raw.trim(),
     nl: entry.nl.trim(),
     source: entry.source,
     desc: entry.desc,
-    history: entry.history.length ? entry.history : (prev?.history ?? []),
+    history: entry.history.length
+      ? entry.history.map(record => ({ ...record }))
+      : (previous?.history.map(record => ({ ...record })) ?? []),
   };
-  for (const f of CHAR_TAG_FIELDS) next.fields[f] = (entry.fields[f] ?? '').trim();
-  if (opts.recordChanges && prev) {
+  if (opts.recordChanges && previous) {
     const at = Date.now();
-    for (const f of CHAR_TAG_FIELDS) {
-      if (prev.fields[f] !== next.fields[f]) {
-        pushHistory(next, { field: f, from: prev.fields[f], to: next.fields[f], reason: '手动编辑', floor: -1, at });
+    for (const field of CHAR_TAG_FIELDS) {
+      if (previous.fields[field] !== next.fields[field]) {
+        pushHistory(next, {
+          field,
+          from: previous.fields[field],
+          to: next.fields[field],
+          reason: '手动编辑',
+          floor: -1,
+          at,
+        });
       }
     }
-    if (prev.raw !== next.raw && (prev.raw || next.raw)) {
-      pushHistory(next, { field: 'raw', from: prev.raw, to: next.raw, reason: '手动编辑', floor: -1, at });
+    if (previous.raw !== next.raw && (previous.raw || next.raw)) {
+      pushHistory(next, { field: 'raw', from: previous.raw, to: next.raw, reason: '手动编辑', floor: -1, at });
     }
-    if (prev.nl !== next.nl && (prev.nl || next.nl)) {
-      pushHistory(next, { field: 'nl', from: prev.nl, to: next.nl, reason: '手动编辑', floor: -1, at });
+    if (previous.nl !== next.nl && (previous.nl || next.nl)) {
+      pushHistory(next, { field: 'nl', from: previous.nl, to: next.nl, reason: '手动编辑', floor: -1, at });
     }
   }
-  if (idx >= 0) charTagLib.entries[idx] = next;
-  else charTagLib.entries.push(next);
-  persist();
+
+  detachFromExistingFloors(oldName, name);
+  if (oldName && oldName !== name) {
+    const oldIndex = baseEntries.findIndex(candidate => candidate.name === oldName);
+    if (oldIndex >= 0) baseEntries.splice(oldIndex, 1);
+  }
+  const index = baseEntries.findIndex(candidate => candidate.name === name);
+  if (index >= 0) baseEntries[index] = next;
+  else baseEntries.push(next);
+  persistBase();
+  recomputeCharTags();
   return true;
 }
 
-/** 删除条目;不存在则返回 false。 */
 export function removeCharTag(name: string): boolean {
-  const idx = charTagLib.entries.findIndex(e => e.name === name);
-  if (idx < 0) return false;
-  charTagLib.entries.splice(idx, 1);
-  persist();
+  const cleanName = name.trim();
+  if (!cleanName || !findCharTag(cleanName)) return false;
+  detachFromExistingFloors(cleanName);
+  const index = baseEntries.findIndex(entry => entry.name === cleanName);
+  if (index >= 0) baseEntries.splice(index, 1);
+  persistBase();
+  recomputeCharTags();
   return true;
 }
 
-/* ============ AI 变更落库 ============ */
-
-/** AI 建档请求的宽松形状(protocol.ts 解析产物的一部分)。 */
-export interface AiEntryInput {
-  name: string;
-  /** 结构化字段(部分给出即可)。 */
-  fields?: Partial<Record<CharTagField, string>>;
-  /** 没给 fields 时的整串 fallback。 */
-  value?: string;
-  nl?: string;
-  reason?: string;
-}
-
-/**
- * AI 新建条目(field=new)。同名条目已存在时拒绝(调用方应改走字段合并)。
- * fields 与 value 都拿不出内容 → 拒绝。
- */
-export function createAiEntry(change: AiEntryInput, floor: number): boolean {
-  const name = change.name.trim();
-  if (!name || findCharTag(name)) return false;
-  const fields = emptyCharFields();
-  let hasFields = false;
-  if (change.fields) {
-    for (const f of CHAR_TAG_FIELDS) {
-      const v = change.fields[f]?.trim();
-      if (v) {
-        fields[f] = v;
-        hasFields = true;
-      }
-    }
-  }
-  const raw = hasFields ? '' : (change.value ?? '').trim();
-  const nl = (change.nl ?? '').trim();
-  if (!hasFields && !raw) return false;
-  const entry: CharTagEntry = {
-    name,
-    fields,
-    raw,
-    nl,
-    source: 'ai',
-    desc: '',
-    history: [],
-  };
-  pushHistory(entry, {
-    field: 'new',
-    from: '',
-    to: buildEntryTag(entry),
-    reason: change.reason ?? '',
-    floor,
+export function rollbackCharTag(name: string, record: CharTagChangeRecord): boolean {
+  const current = findCharTag(name);
+  if (!current) return false;
+  if (record.field === 'new') return removeCharTag(name);
+  const next = cloneEntry(current);
+  if (record.field === 'raw') next.raw = record.from;
+  else if (record.field === 'nl') next.nl = record.from;
+  else next.fields[record.field] = record.from;
+  next.source = 'manual';
+  next.desc = '';
+  pushHistory(next, {
+    field: record.field,
+    from: record.to,
+    to: record.from,
+    reason: '手动回滚',
+    floor: -1,
     at: Date.now(),
   });
-  charTagLib.entries.push(entry);
-  persist();
-  return true;
-}
-
-/**
- * AI 单字段变更落库(记录历史)。条目不存在 / 新值为空 / 与当前值相同 → 跳过返回 false。
- * 字段式更新落在整串模式条目上没有可见效果(拼接优先 raw)→ 跳过并告警,防脏数据。
- * 任何成功变更都把条目接管为 ai 来源(柏宝书此后不再自动重转)。
- */
-export function applyAiChange(
-  name: string,
-  field: CharTagField | 'raw' | 'nl',
-  value: string,
-  reason: string,
-  floor: number,
-): boolean {
-  const entry = findCharTag(name.trim());
-  if (!entry) return false;
-  const next = value.trim();
-  if (!next) return false;
-  const current = field === 'raw' ? entry.raw : field === 'nl' ? entry.nl : entry.fields[field];
-  if (current === next) return false;
-  if (field !== 'raw' && field !== 'nl' && entry.raw.trim() && charFieldsEmpty(entry.fields)) {
-    console.warn(`[柏宝绘] 角色「${entry.name}」是整串模式,AI 的 ${field} 字段变更被忽略(应更新 raw)`);
-    return false;
-  }
-  if (field === 'raw') entry.raw = next;
-  else if (field === 'nl') entry.nl = next;
-  else entry.fields[field] = next;
-  entry.source = 'ai';
-  entry.desc = '';
-  pushHistory(entry, { field, from: current, to: next, reason, floor, at: Date.now() });
-  persist();
-  return true;
-}
-
-/** 回滚一条历史记录:字段回到 from;建档记录的回滚 = 删除条目。回滚动作本身也入历史。 */
-export function rollbackCharTag(name: string, record: CharTagChangeRecord): boolean {
-  const entry = findCharTag(name);
-  if (!entry) return false;
-  if (record.field === 'new') return removeCharTag(name);
-  if (record.field === 'raw') entry.raw = record.from;
-  else if (record.field === 'nl') entry.nl = record.from;
-  else entry.fields[record.field] = record.from;
-  pushHistory(entry, { field: record.field, from: record.to, to: record.from, reason: '手动回滚', floor: -1, at: Date.now() });
-  persist();
-  return true;
+  return upsertCharTag(next, name);
 }
 
 let bound = false;
 
-/** 绑定聊天切换重载 + 启动时首次载入。可安全重复调用。 */
 export function bindCharTagSync(): void {
   if (bound) return;
-  const ctx = getContext();
-  if (!ctx?.eventSource || !ctx.eventTypes?.CHAT_CHANGED) return;
+  const context = getContext();
+  if (!context?.eventSource || !context.eventTypes?.CHAT_CHANGED) return;
   bound = true;
-  ctx.eventSource.on(ctx.eventTypes.CHAT_CHANGED, () => hydrateCharTags());
+  context.eventSource.on(context.eventTypes.CHAT_CHANGED, hydrateCharTags);
+  const recomputeLater = () => setTimeout(recomputeCharTags, 0);
+  if (context.eventTypes.MESSAGE_DELETED) {
+    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, recomputeLater);
+  }
+  if (context.eventTypes.MESSAGE_SWIPED) {
+    context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, recomputeLater);
+  }
   hydrateCharTags();
 }

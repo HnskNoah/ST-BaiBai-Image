@@ -120,6 +120,18 @@ describe('renderWorkflowTemplate with %nl%', () => {
   });
 });
 
+describe('renderWorkflowTemplate with %negative_prompt%', () => {
+  it('writes the per-image negative prompt into the workflow template', () => {
+    const workflow = renderWorkflowTemplate(TEMPLATE, {
+      prompt: '1girl',
+      negative_prompt: 'extra people, duplicate character',
+      seed: 1,
+    });
+    const inputs = (workflow['3'] as { inputs: { neg: unknown } }).inputs;
+    expect(inputs.neg).toBe('extra people, duplicate character');
+  });
+});
+
 describe('renderWorkflowTemplate with %width% / %height%', () => {
   const SIZED = JSON.stringify({
     '3': { class_type: 'CLIPTextEncode', inputs: { text: '%prompt%' } },

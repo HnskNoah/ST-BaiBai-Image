@@ -89,4 +89,75 @@ describe('safe message editing', () => {
     ).resolves.toBe('swipe-changed');
     expect(saveChat).not.toHaveBeenCalled();
   });
+
+  it('writes message extra together with the text and rejects a replaced floor object', async () => {
+    const original = {
+      name: 'Char',
+      is_user: false,
+      is_system: false,
+      mes: '原文',
+      swipes: ['原文'],
+      swipe_id: 0,
+      extra: {},
+    };
+    const replacement = { ...original, extra: {} };
+    const context = {
+      chat: [replacement],
+      getCurrentChatId: () => 'chat-a',
+      saveChat: vi.fn(async () => undefined),
+      eventSource: {},
+      eventTypes: {},
+    };
+    installContext(context);
+
+    await expect(
+      applyMessageText(
+        0,
+        '原文',
+        '新正文',
+        'chat-a',
+        0,
+        original,
+        { key: 'bbiCharChanges', value: { v: 1, swipe: 0, ops: [] } },
+      ),
+    ).resolves.toBe('floor-changed');
+    expect(replacement.mes).toBe('原文');
+    expect(replacement.extra).toEqual({});
+    expect(context.saveChat).not.toHaveBeenCalled();
+  });
+
+  it('rolls back message extra when saving fails', async () => {
+    const message = {
+      name: 'Char',
+      is_user: false,
+      is_system: false,
+      mes: '原文',
+      swipes: ['原文'],
+      swipe_id: 0,
+      extra: { keep: true },
+    };
+    installContext({
+      chat: [message],
+      getCurrentChatId: () => 'chat-a',
+      saveChat: vi.fn(async () => {
+        throw new Error('save failed');
+      }),
+      eventSource: {},
+      eventTypes: {},
+    });
+
+    await expect(
+      applyMessageText(
+        0,
+        '原文',
+        '新正文',
+        'chat-a',
+        0,
+        message,
+        { key: 'bbiCharChanges', value: { v: 1, swipe: 0, ops: [] } },
+      ),
+    ).rejects.toThrow('save failed');
+    expect(message.mes).toBe('原文');
+    expect(message.extra).toEqual({ keep: true });
+  });
 });

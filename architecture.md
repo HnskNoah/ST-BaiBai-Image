@@ -31,7 +31,7 @@ src/
 ├── state/             # 全局状态与持久化
 │   ├── settings.ts    # ★ 设置模型 + hydrate/persist/迁移 + 跨插件共享渠道存储
 │   ├── ui.ts          # 窗口开关/主题/导航/悬浮球;activePage 存 localStorage
-│   └── charTags.ts    # 角色固定外貌库(字段式,仅当前聊天,存 chatMetadata;含变更历史)
+│   └── charTags.ts    # 角色固定外貌库 v3:手动基线(chatMetadata)+ AI 楼层增量(消息 extra)两层
 ├── api/
 │   └── client.ts      # LLM 请求:副 API 走 ST 服务端代理 / 跟随主 API 走 generateRaw
 ├── autoTag/           # ★ 链路 A:自动生 tag(独立 LLM 请求 → 协议校验 → 注入正文)
@@ -44,6 +44,7 @@ src/
 │   └── charAnchors.ts # 角色库:柏宝书建档/库文本注入 → @占位符替换(AI 报名不抄外貌)
 ├── backends/          # 出图后端(链路 B 的生成端)+ 共享尺寸工具
 │   ├── comfyui.ts     # ComfyUI:工作流模板 %占位符% 渲染、浏览器直连/ST 转发自动回退
+│   ├── comfyWorkflowAssistant.ts # AI 自动定位工作流节点(片段 ID 协议,不复制原文)
 │   ├── nai.ts         # NovelAI:参数构造、vibe 编码/叠加、.naiv4vibe 导入导出
 │   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe
 │   └── size.ts        # 画幅方向归一 / 尺寸解析 / 按方向取配置(刻意不 import settings)
@@ -97,7 +98,7 @@ src/
 | `extensionSettings['baibai_image']` | state/settings.ts | 本插件设置(全局,跨设备同步) |
 | `extensionSettings['baibai_api_channels']` | state/settings.ts | 跨「柏宝」插件共享的副 API 渠道(revision + 广播事件同步) |
 | `extensionSettings.regex` | st/imageTagRegex.ts | 托管两条正则(固定 id,幂等注册/覆盖) |
-| `chatMetadata['baibai_image_char_tags']` | state/charTags.ts | 角色固定外貌库(仅当前聊天) |
+| `chatMetadata['baibai_image_char_tags']` | state/charTags.ts | 角色库**手动基线**(仅当前聊天);AI 自动变化存各消息 extra `bbiCharChanges` |
 | ST 事件 | 各 bind 处 | `CHARACTER_MESSAGE_RENDERED / USER_MESSAGE_RENDERED / MESSAGE_UPDATED / MESSAGE_SWIPED / MESSAGE_DELETED / CHAT_CHANGED` |
 | `generateRaw` | api/client.ts | 跟随主 API 的一次性补全(ST 稳定 API) |
 | `getWorldInfoPrompt` / 动态 import `checkWorldInfo` | autoTag/context.ts | 世界书激活(后者拿条目对象可逐条渲染;取不到自动降级前者) |
@@ -122,17 +123,21 @@ runForFloor(floor, opts)
   3. 每楼一个 AbortController:同楼新任务 abort 旧任务;CHAT_CHANGED 全量取消
   4. 装配上下文(并行):
      - bookMemory.readBookMemory  → 柏宝书角色参考块(可 null)
-     - charAnchors.resolveCharAnchors → 柏宝书新角色入库 → 库文本(给 AI 判断变更/引用;失败降级 null)
+     - charAnchors.resolveCharAnchors → 柏宝书新角色转本楼建档 ops(不入库)→ 库文本
+       (给 AI 判断变更/引用;失败降级 null;返回 {text, entries, ops})
      - prompt.buildAutoTagMessages → 消息数组(见下)
   5. 请求:getTagGenChannel() 有指派渠道 → requestCompletion(服务端代理);
      否则 requestViaMainApi(generateRaw)
   6. 重试循环:retryCount 次(请求异常 / 解析抛错都重试;abort 不消耗;「无画面」不算失败)
   7. protocol.parseImagePlan 严格校验(JSON 结构/目标位置 ID/禁含子标签/size 宽容降级竖屏)
-  8. changes 落库(先于引用:本楼变化当楼生效;建档/字段变更记历史,不询问用户)
-  9. @占位符替换:applyCharRefs 把 tag/nl 里的 @角色名 换成最新库 tag(nl 优先条目自然语言句),未知占位符剥除并告警
- 10. protocol.injectImageTags 按位置 ID 映射在原始物理行后插入 <bbi_image>tag<nl>…</nl><size>…</size></bbi_image>
+  8. changes 与柏宝书建档一起转成楼层增量 ops(extra 的 bbiCharChanges),不提前落库
+  9. @占位符替换:applyCharRefs 把 tag/nl 里的 @角色名 换成「基线 + 本楼 ops 重放」后的
+     最新库 tag(nl 优先条目自然语言句),未知占位符剥除并告警
+ 10. protocol.injectImageTags 按位置 ID 映射在原始物理行后插入
+     <bbi_image>tag<nl>…</nl><negative>…</negative><size>…</size></bbi_image>
  11. 若 autoGenerate 开:先 markForAutoGenerate 每个新槽位(见链路 B 握手)
- 12. messageEdit.applyMessageText CAS 写回(正文/swipe/聊天任一变化即放弃,并撤销标记)
+ 12. messageEdit.applyMessageText CAS 写回(正文 + extra 增量一体;swipe/聊天任一变化即放弃,
+     成功才 recomputeCharTags;失败撤销标记;仅 changes 无图片也走写回)
 ```
 
 消息顺序(prompt.ts 固定):破限 system → 角色卡 system → persona system → 世界书 system →
@@ -244,13 +249,20 @@ runForFloor(floor, opts)
   共享存储创建时播种默认条目名规则 `\[mvu[\s\S]*?\]`(只发一次,删了不补回)。
 - **ui(本机 + 同步)**:窗口开关/当前页(activePage 存 localStorage)是纯本机态;
   主题/导航/悬浮球属真设置,写入 `settings.ui` 走跨设备同步。
-- **charTags(仅当前聊天)**:存 `chatMetadata['baibai_image_char_tags']`(version 2),
-  `CHAT_CHANGED` 时重载。外貌按字段(sex/hair/eyes/skin/body/extra/outfit)记录,
-  拼接顺序即最终 tag;旧版整串数据以 raw 模式兼容。
-  维护权归 AI:输出协议 changes 直接落库并记历史(reason + 楼层),不询问用户;
-  柏宝书只负责首次建档(book 来源),此后条目归 AI 维护,柏宝书外貌再变不自动覆盖;
-  手动改动同样可被 AI 继续更新。页面提供历史查看与逐条回滚(建档记录回滚 = 删条目)。
-  AI 引用走 @角色名 占位符,由 applyCharRefs 在注入前机械替换,杜绝复述漂移。
+- **charTags(仅当前聊天,version 3,两层真源)**:
+  - **手动基线**:存 `chatMetadata['baibai_image_char_tags']`,手动编辑/回滚/旧版快照落这里,
+    不随楼层删除。
+  - **AI 楼层增量**:自动建档与 changes 写进目标消息 `extra['bbiCharChanges']`
+    (CharTagFloorDelta: v/swipe/ops;op 分 new/set 两种),与正文同一 CAS 写回成功才落盘,
+    楼层/swipe 删除时自然失效(增量带 swipe 匹配)。
+  - `charTagLib` 只是响应式派生缓存:基线 + 按楼层物理顺序重放增量(deriveCharTags);
+    `charTagsBeforeFloor(floor)` 取楼层时刻快照;MESSAGE_DELETED/MESSAGE_SWIPED 后重算。
+  - 手动编辑/删除 = 用户接管:detachFromExistingFloors 清掉该角色在旧楼层里的同名操作
+    (压进手动基线),之后新楼层仍可继续被 AI 变更。
+  - 柏宝书只负责首次建档(转成当前楼层 ops),此后条目归 AI 维护;外貌按字段
+    (sex/hair/eyes/skin/body/extra/outfit)记录,拼接顺序即最终 tag;旧整串以 raw 兼容。
+  - AI 引用走 @角色名 占位符,由 applyCharRefs 在注入前机械替换,杜绝复述漂移;
+    页面提供历史查看与逐条回滚(建档记录回滚 = 删条目)。
 
 ## 8. 贯穿全项目的约定
 
@@ -275,10 +287,11 @@ runForFloor(floor, opts)
 | LLM 输出协议(JSON 形状/位置 ID/tag 格式) | src/autoTag/protocol.ts |
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
 | 柏宝书状态读取 | src/autoTag/bookMemory.ts |
-| 角色库(建档/@占位符/changes 落库/历史回滚) | src/autoTag/charAnchors.ts + src/state/charTags.ts + src/autoTag/runner.ts |
+| 角色库 v3(基线+楼层增量/changes ops/@占位符/历史回滚) | src/autoTag/charAnchors.ts + src/state/charTags.ts + src/autoTag/runner.ts |
 | 副 API 请求(代理/SSE/超时/测试) | src/api/client.ts |
 | 跟随主 API | src/api/client.ts 的 requestViaMainApi |
 | ComfyUI 工作流 / 出图 / 通道回退 | src/backends/comfyui.ts |
+| 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe | src/backends/nai.ts(+ chatu8Vibe.ts 导入) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |
