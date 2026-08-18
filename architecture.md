@@ -41,12 +41,13 @@ src/
 │   ├── clean.ts       # 历史/目标正文清洗(共享排除标签;历史保留 bbi_image)
 │   ├── context.ts     # 世界书激活(条目级渲染:展宏+EJS)、角色卡、user 人设
 │   ├── bookMemory.ts  # 读「柏宝书」全局 API,解析成角色参考块
-│   └── charAnchors.ts # 角色库:库文本注入 → @占位符替换(AI 报名不抄外貌)
+│   └── charAnchors.ts # 角色库:库文本注入 → 兜底替换残留 @占位符(AI 照抄字段值,不用占位符)
 ├── backends/          # 出图后端(链路 B 的生成端)+ 共享尺寸工具
 │   ├── comfyui.ts     # ComfyUI:工作流模板 %占位符% 渲染、浏览器直连/ST 转发自动回退
 │   ├── comfyWorkflowAssistant.ts # AI 自动定位工作流节点(片段 ID 协议,不复制原文)
 │   ├── nai.ts         # NovelAI:参数构造、vibe 编码/叠加、.naiv4vibe 导入导出
 │   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe
+│   ├── vibeGroups.ts  # Vibe 分组纯逻辑(装箱 key/归拢/搜索/启用集合判定)
 │   └── size.ts        # 画幅方向归一 / 尺寸解析 / 按方向取配置(刻意不 import settings)
 ├── floor/             # ★ 链路 B:楼层生图卡片
 │   ├── hydrate.ts     # 渲染事件 → 锚点×tag 配对 → 每锚点 attachShadow → Vue 卡片挂载(幂等)
@@ -138,10 +139,11 @@ runForFloor(floor, opts)
      changes 全程宽容:单条坏只丢这条,绝不连累 images —— 漏一个角色档案只是它本轮没锚定,
      为它作废整次输出会连图一起没有
   8. changes 与柏宝书建档一起转成楼层增量 ops(extra 的 bbiCharChanges),不提前落库
-  9. @占位符替换:applyPositionedCharRefs 把 tag/nl 里的 @角色名 换成「基线 + 本楼 ops 重放」
-     后的库 tag(nl 优先条目自然语言句)。**建档(new)全楼生效**——新角色的固定外貌是本楼
-     全程成立的事实,位置更靠前的图片也可能有他在场;**永久变化(set)才按位置门控**,
-     染发之前的图片用旧档。未知占位符剥除并 toast 告警(= 模型认为是角色却没建档)
+  9. @占位符兜底替换:applyPositionedCharRefs 把 tag/nl 里残留的 @角色名 换成「基线 + 本楼
+     ops 重放」后的库 tag。**建档(new)全楼生效**——新角色的固定外貌是本楼全程成立的事实;
+     **永久变化(set)才按位置门控**,染发之前的图片用旧档。未知占位符剥除并 toast 告警。
+     (v0.1.2 起主路径已撤:AI 改为直接照抄库中字段值,见 §7 角色库段——多角色多次展开
+     会重复外貌导致重叠躯干,tag 预算也无法执行;applyCharRefs 系函数保留为兜底)
  10. protocol.injectImageTags 按位置 ID 映射在原始物理行后插入
      <bbi_image>tag<nl>…</nl><negative>…</negative><size>…</size></bbi_image>
  11. 若 autoGenerate 开:先 markForAutoGenerate 每个新槽位(见链路 B 握手)
@@ -234,6 +236,8 @@ runForFloor(floor, opts)
 - `comfyui.ts`:API 格式工作流模板,支持 `%prompt% %negative_prompt% %seed% %nl% %width% %height%`
   占位符(不支持即报错);请求通道自动选择 —— **浏览器直连优先,仅网络级失败(CORS/拒连)回退 ST
   服务端转发**;排队拿到 prompt_id 后轮询失败不重发(避免重复生图)。
+  入参类型是收窄后的 `ComfyRunConn`(url + 单套工作流 + 横竖尺寸),**不认整个 `ComfyUISettings`**——
+  后端层只该知道「这一次出图用什么」,不该知道用户存了几套。
 - `nai.ts`:协议与官方一致(浏览器直连,url 可指第三方兼容站,自动补 `/ai` 前缀);v4 系走
   `v4_prompt` 结构 + vibe 编码缓存;NAI3 直接发参考原图;质量词/负面词按模型给默认值,
   渠道页可见可覆盖(存空串 = 跟随模型官方词);
@@ -249,6 +253,18 @@ runForFloor(floor, opts)
   (**normalize 逐字段容错 + 存量迁移**,如 resolution→横竖两格、webui 隐藏迁移);
   `ready` 守门标志防默认值覆盖服务器设置;deep watch → 防抖 `saveSettingsDebounced()`。
   订阅者用 `onSettingsReady(cb)` 等 hydrate 完成(如 ui.ts 回灌主题)。
+- **ComfyUI 工作流库**:`settings.comfyui.workflows`(`ComfyWorkflowPreset[]`)+ `activeWorkflowId`。
+  - 一条预设 = 名字 + 工作流 JSON + `naturalLanguage` + 横竖尺寸。这三项跟着工作流走而非留在渠道级,
+    因为它们是**底模的属性**(Illustrious 要短 tag + 832×1216,Flux 要自然语言 + 1024 方图);
+    留在渠道级的话每次切工作流还得手改两处。`url` 反过来仍是渠道级(一台服务器跑所有工作流)。
+  - **不变式:`workflows` 恒非空**。`comfyDefaults()` 出生即带一条空预设(只用一套的人感觉不到「库」的存在),
+    `normalizeComfyUI()` 收尾再兜一次;`activeWorkflowId` 悬空时回落第一条。
+    消费方一律走 `activeComfyPreset()` / `effectiveComfyConn()`,不直接摸数组,故无需到处判空。
+  - **存量迁移**:老配置的平铺 `workflow` / `naturalLanguage` 加渠道级横竖尺寸,由 `foldLegacyWorkflow()`
+    原样折成第一条「默认工作流」(口径同 `foldLegacyNegative` / `migrateSize`:用户特意设过的值绝不被默认值顶掉);
+    `workflow` 为空串也照样建这一条。靠字段有无判断,无 schemaVersion。
+  - 工作流 JSON 随设置整体进 `settings.json`(单套数 KB–数十 KB)。刻意**没有**像 Vibe 那样搬去 `user/files`:
+    量级差两个数量级。若日后设置保存变慢,这里是第一嫌疑人。
 - **Vibe 大文件**:
   - `extensionSettings['baibai_image'].nai.vibes`:仅存 `NaiVibe` 小型索引，不存原图、缩略图 dataURL 或编码正文;
   - `user/files/bbi-vibe-*.json`:原图与各模型编码正文;
@@ -260,6 +276,13 @@ runForFloor(floor, opts)
   已成功条目不会退回大对象，下次刷新继续重试。
 - **智绘姬迁移**:`chatu8Vibe.ts` 顺序读取并立即调用 `vibeStore.ts` 落盘，不在内存或设置中积累整库大对象;
   导入项默认不启用，避免生成时一次读取全部 Vibe 正文。
+- **Vibe 分组**:`NaiVibe.group` 是扁平字符串(空串 = 未分组),无独立 groups 数组——组只是
+  「一起启用/一起折叠」的标签,没有自身属性,改名/删组都是对成员 group 字段的批量赋值,
+  不会产生悬空引用。`backends/vibeGroups.ts` 纯逻辑:组名一律 `g:` 前缀装箱(防与
+  「未分组/新建」哨兵撞名)、`groupVibes` 归拢 + 搜索、`isGroupActive` 启用集合判定
+  (等于组内全部成员才生效,搜索期间仍按全量成员算)。出图只看每条 enabled,
+  组的批量动作本质是对成员 enabled 的批量赋值,不引入第二套真相。
+  智绘姬迁移时若旧名带「组名 · 原名」前缀(`planPrefixGroups`),还原成分组并去掉前缀。
 - **副 API 渠道(跨插件共享)**:真身存 `extensionSettings['baibai_api_channels']`(带 revision),
   本插件设置里只是镜像;写入后广播 `st-baibai-api-channels:changed`,他端监听重读。
   与柏宝书共用,任一端增删改实时同步。
@@ -287,7 +310,13 @@ runForFloor(floor, opts)
     旧整串以 raw 兼容。建档必须带 hair 与 eyes(二次元身份锚点),缺任一项该条丢弃。
     柏宝书的中文外貌随角色参考块发给主请求作依据;角色管理页另有「按柏宝书最新外貌
     生成」按钮(generateCharTags),那是用户主动点的一次性转换,不在自动流程里。
-  - AI 引用走 @角色名 占位符,由 applyCharRefs 在注入前机械替换,杜绝复述漂移;
+  - AI 引用走**直接照抄**(v0.1.2 起):提示词要求把库中字段值一字不改写进 tag/nl(库里写
+    long black hair 就写 long black hair),不用 @角色名 占位符。撤回原因:同一角色被引用
+    多次时逐次展开,一张图里出现多份完整外貌 + 多个 1boy,模型据此画出重叠躯干;且
+    「40 tag 以内」的预算无法执行(AI 数 @小雪 是 1 个,展开成 6 个);库脏数据也会被
+    无条件放大。库文本本就在同一上下文里,照抄可见文本比凭记忆复述可靠。
+    applyCharRefs 系函数保留为兜底:模型偶发写出 @名字 时仍会被替换,不至于把字面量
+    送进生图。同一角色的固定外貌一张图里只写一遍,再次提到用简短指代承接。
     页面提供历史查看与逐条回滚(建档记录回滚 = 删条目)。
 
 ## 8. 贯穿全项目的约定
@@ -313,10 +342,12 @@ runForFloor(floor, opts)
 | LLM 输出协议(JSON 形状/位置 ID/tag 格式) | src/autoTag/protocol.ts |
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
 | 柏宝书状态读取 | src/autoTag/bookMemory.ts |
-| 角色库 v3(基线+楼层增量/changes ops/@占位符/历史回滚) | src/autoTag/charAnchors.ts + src/state/charTags.ts + src/autoTag/runner.ts |
+| 角色库 v3(基线+楼层增量/changes ops/@占位符兜底/历史回滚) | src/autoTag/charAnchors.ts + src/state/charTags.ts + src/autoTag/runner.ts |
+| Vibe 分组 / 搜索 / 启用集合判定 | src/backends/vibeGroups.ts(纯逻辑)+ NaiPanel.vue(交互) |
 | 副 API 请求(代理/SSE/超时/测试) | src/api/client.ts |
 | 跟随主 API | src/api/client.ts 的 requestViaMainApi |
 | ComfyUI 工作流 / 出图 / 通道回退 | src/backends/comfyui.ts |
+| ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe | src/backends/nai.ts + vibeStore.ts(+ chatu8Vibe.ts 导入) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |

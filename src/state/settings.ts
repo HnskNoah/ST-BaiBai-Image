@@ -1,5 +1,5 @@
 import { naiDefaultUndesired } from '@/backends/nai';
-import { parseSize } from '@/backends/size';
+import { parseSize, type SizePair } from '@/backends/size';
 import { saveVibeFiles, vibeFingerprint, vibeMetaFromData } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
 import { reactive, watch } from 'vue';
@@ -29,19 +29,49 @@ export interface BackendConn {
   negativePrompt: string;
   /** 分辨率,如 832×1216。webui 骨架期仅存值;comfyui/nai 已改用下面的横竖两格。 */
   resolution: string;
-  /** 竖屏尺寸,如 832×1216。模型判定为竖屏(单人/特写/立绘)的画面用它。 */
+  /** 竖屏尺寸,如 832×1216。模型判定为竖屏(单人/特写/立绘)的画面用它。
+   *  comfyui 已下沉到单套工作流(见 ComfyWorkflowPreset),这里只留作存量迁移来源。 */
   portraitSize: string;
-  /** 横屏尺寸,如 1216×832。模型判定为横屏(群像/远景/全景)的画面用它。 */
+  /** 横屏尺寸,如 1216×832。模型判定为横屏(群像/远景/全景)的画面用它。
+   *  comfyui 同上,只留作存量迁移来源。 */
   landscapeSize: string;
 }
 
-/** ComfyUI 连接与 API 格式工作流模板。 */
-export interface ComfyUISettings extends BackendConn {
+/**
+ * 一套具名工作流。除 JSON 外还带着「这套底模要什么」——切过去即全套生效。
+ *
+ * 为什么自然语言开关与横竖尺寸归预设而非渠道:它们本质是底模的属性。
+ * Illustrious/Pony 吃 danbooru 短 tag、832×1216;Flux/SD3.5 吃自然语言、1024 方图。
+ * 留在渠道级的话,每次切工作流都得再手改两处,「切换」这件事就只做了一半。
+ * url 反过来仍是渠道级(一台 ComfyUI 服务器跑所有工作流)。
+ */
+export interface ComfyWorkflowPreset extends SizePair {
+  id: string;
+  /** 显示名(下拉列表与切换用;允许重名,以 id 为键)。 */
+  name: string;
   /** Save (API Format) 导出的 JSON；动态值用 %prompt% 等占位符标记。 */
   workflow: string;
-  /** 生成自然语言:开=自动 tag 以连贯短句写正向提示词(Flux/SD3.5 等);关=逗号分隔 tag。
-   *  当前仅 UI/存值,对 autoTag 请求的注入逻辑后续再接。 */
+  /** 生成自然语言:开=自动 tag 以连贯短句写正向提示词(Flux/SD3.5 等);关=逗号分隔 tag。 */
   naturalLanguage: boolean;
+}
+
+/**
+ * 出图/测试连接实际需要的字段:渠道级 url + 当前预设派生(见 effectiveComfyConn)。
+ *
+ * backends/comfyui.ts 只认这个收窄后的形状,不认整个 ComfyUISettings——
+ * 后端层拿到的应该是「这一次出图用什么」,而不是「用户存了几套工作流」。
+ */
+export interface ComfyRunConn extends SizePair {
+  url: string;
+  workflow: string;
+}
+
+/** ComfyUI 连接与工作流库。 */
+export interface ComfyUISettings extends BackendConn {
+  /** 工作流库。**不变式:恒非空**(至少一条,见 normalizeComfyUI 收尾兜底)。 */
+  workflows: ComfyWorkflowPreset[];
+  /** 当前使用的工作流 id;指向已删条目时由 normalize 回落到第一条。 */
+  activeWorkflowId: string;
 }
 
 /** NAI 生图模型。 */
@@ -91,6 +121,17 @@ export interface NaiVibe {
   strength: number;
   /** 生成时是否叠加此 vibe。 */
   enabled: boolean;
+  /**
+   * 所属分组名(空串 = 未分组)。
+   *
+   * 刻意用扁平字符串而非独立的 groups 数组:组只是「一起启用/一起折叠」的标签,
+   * 没有自身属性,存成引用就得额外维护「组删了成员怎么办」。改名/删组都是对
+   * 本字段的批量赋值,天然不会产生悬空引用。
+   *
+   * 代价:一条 vibe 只属于一个组,且同一张图无法在两组里用不同强度
+   * (strength 挂在 vibe 上而非成员关系上)。现状本就如此,真有需要再升级。
+   */
+  group: string;
 }
 
 /** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */
@@ -258,7 +299,7 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
 
 多人画面（两人及以上）额外规则：
 - 人数 tag 必须明确（2girls、1boy 1girl 等）；缺了模型会漏画或多画。
-- 构图词（medium shot、upper body 等）紧跟人数 tag 写在前面，把画面主体锁在角色身上。
+- 构图词（medium shot、full body 等，只写一个）紧跟人数 tag 写在前面，把画面主体锁在角色身上。
 - 每个角色的硬特征（发色/瞳色/体型）并列写出，不要编号（girl1/girl2 模型不认识）。
 - 角色各自的颜色/服装/物件必须绑定到该角色的特征词上——模型靠相邻关系配对：写 "white dress on green hair girl, black dress on blue hair girl"，不要写成 "a white dress and a black dress" 这种无法分配的一堆。
 - 多人共有的特征只写一次（如都是长发：一个 long hair 即可，不要每人复制一遍）。
@@ -266,8 +307,8 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
 - 场景词 1~2 个即可，多了会抢角色主体；背景不重要时用 blurred background 类词压住。
 
 多人 tag 示例（对照上面的规则看写法）：
-2girls, medium shot, upper body, long hair, black hair, blue eyes, silver hair, red eyes, white dress on black hair girl, red dress on silver hair girl, black hair girl waving, silver hair girl eating dango, park, sunset
-（构图紧跟人数；long hair 是共有特征只写一次；裙子和动作都各自绑定到发色词上——white dress 和 waving 归黑发，red dress 和 eating dango 归银发）
+2girls, medium shot, long hair, black hair, blue eyes, silver hair, red eyes, white dress on black hair girl, red dress on silver hair girl, black hair girl waving, silver hair girl eating dango, park, sunset
+（构图紧跟人数，且只写一个景别词；long hair 是共有特征只写一次；裙子和动作都各自绑定到发色词上——white dress 和 waving 归黑发，red dress 和 eating dango 归银发）
 
 {{nl}}
 
@@ -281,7 +322,9 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
    光线与时间（soft sunlight、candlelight、moonlight、backlighting、golden hour 等）、
    氛围色调（warm colors、cold colors、muted colors、high contrast 等）。
    这些由你按情绪与场景自行决定，正文没写不是不写的理由。
+   ⚠ 景别只能写一个：close-up / upper body / medium shot / full body / wide shot 之间互相冲突，同时写两个（如 medium shot, upper body）会让模型不知道画到哪里，把人截断或拼错。
    ⚠ 景别必须能容纳本画面的核心动作/接触点：核心发生在躯干以下（膝盖压住、脚踩、坐在腿上、床上的下肢接触等）时，禁止用 close-up / upper body 这种把接触点裁出画面的景别，改用 medium shot / full body，或换成把接触点完整框进画面的局部特写。
+   ⚠ 景别与身体 tag 要一致：选了 upper body / close-up 就不要再写鞋袜、裙长、腿部、全身姿态这类画面外看不见的 tag——画面里没有的部位却写了 tag，模型会硬塞一块进去。
 
 2. 时代与世界观（服饰体系、建筑、器物、环境风格）——**先判断，再写最少且可见的时代锚点**。
    依据按优先级取：世界设定（世界书）> 角色设定/主角设定 > 正文与上下文的用词器物。
@@ -290,7 +333,8 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
    wuxia 等所有相关词机械堆进每张图。证据不足时不要擅自断言具体文明，使用与正文不冲突的中性可见描述。
 
 3. 角色的固定事实（性别、发色发型、瞳色、体型、标志性特征）——**严格按给定信息，不得发挥**。
-   出现在【角色固定外貌库】里的角色，tag/nl 中一律写 @角色名 占位（如 "@小雪, white dress"），不要直接描写其固定外貌——系统会替换成库中最新 tag；未建档角色按角色参考/角色设定写，都没有才可少量补基础特征。
+   出现在【角色固定外貌库】里的角色，直接照抄库中该角色的字段值写进 tag/nl，用词一字不改（库里写 long black hair 就写 long black hair，不要换成 black long hair 或自行加词）；未建档角色按角色参考/角色设定写，都没有才可少量补基础特征。
+   同一角色的固定外貌在一张图里只写一遍：后续再提到他时用简短指代（the boy、the silver-haired girl）承接，不要把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成好几块。
 
 4. 剧情事实（在场人物、动作、事件、关键道具）——**严格以正文为准，不得编造**。
    不得加入正文未发生的人物、动作或情节；人数必须与正文一致。
@@ -312,9 +356,10 @@ A girl with long black hair in a school uniform sits by the classroom window, wa
 nl 与 tag 描述的是同一画面：tag 覆盖实体与属性关键词，nl 写连贯叙述，先主体动作、再环境氛围。
 核心动作要写到「谁的身体部位 + 接触点」的具体程度（如 her knee pressing against the tented blanket），姿态词（kneeling、sitting）只是辅助，不得拿姿态替代核心动作。
 多人画面按三段组织：先一句总起（人数 + as the main focus + 构图，把主体锁在角色上）→ 再每人一句分述，先主动方后被动方 → 最后一句环境氛围，以 blurred in the background 收尾。
-每句分述都要完整重复该角色的特征词（the green-haired girl with green eyes ...）——模型不跨句记忆，用 she/they 这类指代会丢失配对；tag 里的绑定写法（谁穿什么颜色、谁在做什么动作）在这里用完整句子再写一遍，即使 tag 被重排也能兜底。
+每句分述都要带上该角色的**区分性称谓**（the green-haired girl with green eyes ...）——模型不跨句记忆，用 she/they 这类指代会丢失配对；tag 里的绑定写法（谁穿什么颜色、谁在做什么动作）在这里用完整句子再写一遍，即使 tag 被重排也能兜底。
+区分性称谓 = 足以把此人和同框其他人分开的最短说法（发色 + 瞳色通常就够），不是把他的整串固定外貌重新念一遍：写 the black-haired girl with blue eyes，不要写 1girl, long black hair, blue eyes, pale skin, petite, white dress 这种把 tag 串塞进句子的写法——那会让模型以为画面里有多个同样的人。
 多人 nl 示例（与上面 tag 示例是同一画面）：
-Two girls as the main focus, medium shot, upper body, in a park at sunset. The black-haired girl with blue eyes wears a white dress and waves at the viewer. The silver-haired girl with red eyes wears a red dress and eats a skewer of dango. Warm sunset light across the park, the trees softly blurred in the background.`;
+Two girls as the main focus, medium shot, in a park at sunset. The black-haired girl with blue eyes wears a white dress and waves at the viewer. The silver-haired girl with red eyes wears a red dress and eats a skewer of dango. Warm sunset light across the park, the trees softly blurred in the background.`;
 
 /** NAI 规范内置默认:与 ComfyUI 规范同构,danbooru 短 tag;质量词由后端按模型自动附加,故禁写。 */
 export const DEFAULT_NAI_SPEC = `【NovelAI 提示词规范】
@@ -336,7 +381,9 @@ NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag�
    光线与时间（soft sunlight、candlelight、moonlight、backlighting、golden hour 等）、
    氛围色调（warm colors、cold colors、muted colors、high contrast 等）。
    这些由你按情绪与场景自行决定，正文没写不是不写的理由。
+   ⚠ 景别只能写一个：close-up / upper body / medium shot / full body / wide shot 之间互相冲突，同时写两个（如 medium shot, upper body）会让模型不知道画到哪里，把人截断或拼错。
    ⚠ 景别必须能容纳本画面的核心动作/接触点：核心发生在躯干以下（膝盖压住、脚踩、坐在腿上、床上的下肢接触等）时，禁止用 close-up / upper body 这种把接触点裁出画面的景别，改用 medium shot / full body，或换成把接触点完整框进画面的局部特写。
+   ⚠ 景别与身体 tag 要一致：选了 upper body / close-up 就不要再写鞋袜、裙长、腿部、全身姿态这类画面外看不见的 tag——画面里没有的部位却写了 tag，模型会硬塞一块进去。
 
 2. 时代与世界观（服饰体系、建筑、器物、环境风格）——**先判断，再写最少且可见的时代锚点**。
    依据按优先级取：世界设定（世界书）> 角色设定/主角设定 > 正文与上下文的用词器物。
@@ -345,7 +392,8 @@ NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag�
    wuxia 等所有相关词机械堆进每张图。证据不足时不要擅自断言具体文明，使用与正文不冲突的中性可见描述。
 
 3. 角色的固定事实（性别、发色发型、瞳色、体型、标志性特征）——**严格按给定信息，不得发挥**。
-   出现在【角色固定外貌库】里的角色，tag/nl 中一律写 @角色名 占位（如 "@小雪, white dress"），不要直接描写其固定外貌——系统会替换成库中最新 tag；未建档角色按角色参考/角色设定写，都没有才可少量补基础特征。
+   出现在【角色固定外貌库】里的角色，直接照抄库中该角色的字段值写进 tag/nl，用词一字不改（库里写 long black hair 就写 long black hair，不要换成 black long hair 或自行加词）；未建档角色按角色参考/角色设定写，都没有才可少量补基础特征。
+   同一角色的固定外貌在一张图里只写一遍：后续再提到他时用简短指代（the boy、the silver-haired girl）承接，不要把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成好几块。
 
 4. 剧情事实（在场人物、动作、事件、关键道具）——**严格以正文为准，不得编造**。
    不得加入正文未发生的人物、动作或情节；人数必须与正文一致。
@@ -375,7 +423,8 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 通读目标正文，逐个列出实际在场且有名有姓的角色。不能只看最终入选图片里的人，也不能漏掉世界书、角色卡或柏宝书为其给出了设定的角色。
    - 逐个对照【角色固定外貌库】：库里没有、但属于正式角色（有设定或持续参与剧情）的，首次出场就用 field:"new" 建档，不论他是否入选本次图片；明确的一次性无名路人不建。
    - 新建档优先采用目标正文与人设明确给出的当前外貌；明确写了发色/瞳色就原样转换。缺少颜色时，根据世界观、种族、身份、性格和其余角色设定一次性补全，hair 与 eyes 都不得留空。
-   - 建档在本楼全程有效：确立后，本楼任意位置的图片都直接写 @角色名，不要再散写他的固定外貌。
+   - 建档字段只放长期不变的身体特征与固定招牌着装；动作、姿势、所在场景、临时状态（lying on carpet、standing、unzipped、湿身、伤势等）一律不写进档案——档案会在之后每张图里被照抄。
+   - 建档在本楼全程有效：确立后，本楼任意位置的图片都直接照抄该角色的字段值，不要在同一楼里对同一角色给出两套不同外貌。
    - 对照角色库检查永久变化：染发、剪发、永久变身等写入 changes；假发、美瞳、湿发、光照变色等临时状态不写 changes。静态初始人设不得覆盖角色库中的后期状态。
    - 永久变化要检查 position：变化前的图片沿用旧档，变化位置及之后使用新档；同楼多次变化按正文顺序处理。
    - 即使 images 为空也不能跳过建档与 changes 检查。
@@ -390,7 +439,7 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 选择目标正文中让这些事实刚刚完整成立、且尚未切换到下一场景的 P编号。
 
 5. 再决定怎么画：
-   - 库角色只写 @角色名；本次新建档角色在本楼任意位置也立即写 @角色名，不要在同一回复里重新散写其固定外貌。多人各自的服装、颜色、物件和动作必须明确绑定。
+   - 库中角色（含本轮新建档的）照抄库里的字段值，用词不改；同一角色的固定外貌一张图里只写一遍，再次提到用简短指代承接。多人各自的服装、颜色、物件和动作必须明确绑定。
    - 先判断时代与世界观，再只补画面实际可见的最少时代锚点；有明确设定时必须体现，证据不足时不擅自断言具体文明。
    - 主动确定镜头距离、构图、光线来源、色调和氛围；景别必须完整容纳核心动作与接触点。
    - 最后依据实际景别和主体空间分布决定 size。人数只是参考：群像、远景、宽阔或横向互动通常 landscape；单人、纵向构图、特写及双人近距离可 portrait。
@@ -399,7 +448,7 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 每个剧情 tag 都能追溯到正文/设定，每个补充 tag 都只属于允许发挥的镜头、光线、氛围或时代锚点。
    - 每张图是单一瞬间；多张图彼此不重复；人数、角色绑定、连续状态、核心动作、景别、size 和 P编号一致。
    - 没有衣物穿脱、湿身/污损、伤势、饰品或手持物的无依据复原；没有把临时状态误写进 changes。
-   - 目标正文里每个有设定的正式角色都已建档或已在库中；已建档和同轮新建档角色都正确使用 @占位符；永久变化都有合法 P编号，且图片使用了该位置应有的新旧档案；tag 是英文正面短 tag、无质量词负面词；张数不超上限；要求 nl 时与 tag 描述同一画面。
+   - 目标正文里每个有设定的正式角色都已建档或已在库中；库中角色的外貌都照抄了字段值且每张图只写一遍；永久变化都有合法 P编号，且图片使用了该位置应有的新旧档案；tag 是英文正面短 tag、无质量词负面词；张数不超上限；要求 nl 时与 tag 描述同一画面。
    - 没有值得画的画面时 images 为空，但仍保留应有的建档与 changes。`;
 
 /** 预填充内置默认:以 <thinking> 开头,引导模型先过思考清单再输出 JSON。 */
@@ -473,8 +522,39 @@ function backendDefaults(url: string): BackendConn {
   };
 }
 
+/** 新预设的默认名(迁移与建库都用它,保持一致口径)。 */
+const DEFAULT_WORKFLOW_NAME = '默认工作流';
+/** 默认横竖尺寸(与 backendDefaults 同值;预设级尺寸独立于渠道级,故单列一份)。 */
+const DEFAULT_PORTRAIT_SIZE = '832×1216';
+const DEFAULT_LANDSCAPE_SIZE = '1216×832';
+
+let workflowSeq = 0;
+
+/** 新建一条空工作流预设(id 生成口径同 newChannel)。 */
+export function newComfyWorkflow(name = DEFAULT_WORKFLOW_NAME): ComfyWorkflowPreset {
+  workflowSeq += 1;
+  return {
+    id: `wf_${Date.now()}_${workflowSeq}`,
+    name,
+    workflow: '',
+    naturalLanguage: false,
+    portraitSize: DEFAULT_PORTRAIT_SIZE,
+    landscapeSize: DEFAULT_LANDSCAPE_SIZE,
+  };
+}
+
+/**
+ * 新装即带一条空预设,而不是空库。
+ * 只用一套工作流的人不该被迫先「新建」才有地方粘 JSON——手感与改造前的单文本框完全一致,
+ * 「库」这个概念对他们保持隐形。也顺带让 workflows 恒非空的不变式从出生起就成立。
+ */
 function comfyDefaults(): ComfyUISettings {
-  return { ...backendDefaults('http://127.0.0.1:8188'), workflow: '', naturalLanguage: false };
+  const preset = newComfyWorkflow();
+  return {
+    ...backendDefaults('http://127.0.0.1:8188'),
+    workflows: [preset],
+    activeWorkflowId: preset.id,
+  };
 }
 
 function naiDefaults(): NaiSettings {
@@ -528,7 +608,7 @@ function defaults(): ImageSettings {
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     },
     excludes: excludesDefaults(),
-    storage: { saveAsJpeg: false },
+    storage: { saveAsJpeg: true },
   };
 }
 
@@ -581,6 +661,33 @@ export function getTagGenChannel(): ApiChannel | null {
 }
 
 /**
+ * 当前使用的工作流预设。
+ *
+ * 不返回 null:workflows 恒非空(comfyDefaults 出生即带一条、normalizeComfyUI 收尾兜底),
+ * activeWorkflowId 悬空时也在 normalize 阶段回落过。这里再取一次 [0] 兜底,是为了
+ * 「UI 运行中把库改坏」这种时序,让调用方不必到处判空。
+ * 刻意只读不写:本函数在 computed 里被调用,写 settings 会引起递归求值。
+ */
+export function activeComfyPreset(): ComfyWorkflowPreset {
+  const list = settings.comfyui.workflows;
+  return list.find(w => w.id === settings.comfyui.activeWorkflowId) ?? list[0] ?? newComfyWorkflow();
+}
+
+/**
+ * 出图/测试连接用的 conn:渠道级 url + 当前预设的工作流与横竖尺寸。
+ * backends/comfyui.ts 只吃这个形状,不关心库里还有几套。
+ */
+export function effectiveComfyConn(): ComfyRunConn {
+  const preset = activeComfyPreset();
+  return {
+    url: settings.comfyui.url,
+    workflow: preset.workflow,
+    portraitSize: preset.portraitSize,
+    landscapeSize: preset.landscapeSize,
+  };
+}
+
+/**
  * 存量迁移:老配置只有单一 resolution(NAI 默认竖版 832×1216)。
  * 升级后按宽高关系把它归进对应那一格,另一格用默认值——
  * 用户之前特意调过的尺寸不会被默认值悄悄顶掉。
@@ -609,15 +716,59 @@ function normalizeBackend(raw: unknown, def: BackendConn): BackendConn {
   };
 }
 
+/** 单条预设清洗:缺字段/类型不符逐项回退,尺寸空串按默认补(工作流用了 %width% 时要有值可用)。 */
+function normalizeWorkflowPreset(raw: unknown, seq: number): ComfyWorkflowPreset {
+  const o = (raw ?? {}) as Partial<ComfyWorkflowPreset>;
+  const size = (value: unknown, def: string) =>
+    typeof value === 'string' && value.trim() ? value : def;
+  return {
+    id: typeof o.id === 'string' && o.id ? o.id : `wf_${Date.now()}_${seq}`,
+    name: typeof o.name === 'string' && o.name ? o.name : DEFAULT_WORKFLOW_NAME,
+    workflow: typeof o.workflow === 'string' ? o.workflow : '',
+    naturalLanguage: typeof o.naturalLanguage === 'boolean' ? o.naturalLanguage : false,
+    portraitSize: size(o.portraitSize, DEFAULT_PORTRAIT_SIZE),
+    landscapeSize: size(o.landscapeSize, DEFAULT_LANDSCAPE_SIZE),
+  };
+}
+
+/**
+ * 存量迁移:老配置的 comfyui 是「单套工作流」——workflow / naturalLanguage 两个平铺字段
+ * 加渠道级的横竖尺寸。升级后把这四项原样折成库里的第一条预设(与 foldLegacyNegative、
+ * migrateSize 同口径:用户特意设过的值绝不被默认值悄悄顶掉)。
+ *
+ * workflow 为空串也照样建这一条:那正是用户当前面对的空槽位,不是垃圾数据——
+ * 何况 workflows 恒非空的不变式要求库里至少有一条。
+ */
+function foldLegacyWorkflow(o: Partial<ComfyUISettings>, conn: BackendConn): ComfyWorkflowPreset {
+  const legacy = o as Partial<{ workflow: unknown; naturalLanguage: unknown }>;
+  const preset = newComfyWorkflow();
+  return {
+    ...preset,
+    workflow: typeof legacy.workflow === 'string' ? legacy.workflow : '',
+    naturalLanguage: typeof legacy.naturalLanguage === 'boolean' ? legacy.naturalLanguage : false,
+    // 渠道级横竖尺寸下沉进预设;normalizeBackend 已做过 resolution→横竖两格的老迁移
+    portraitSize: conn.portraitSize.trim() || preset.portraitSize,
+    landscapeSize: conn.landscapeSize.trim() || preset.landscapeSize,
+  };
+}
+
 function normalizeComfyUI(raw: unknown, def: ComfyUISettings): ComfyUISettings {
   const conn = normalizeBackend(raw, def);
   const o = (raw ?? {}) as Partial<ComfyUISettings>;
-  return {
-    ...conn,
-    workflow: typeof o.workflow === 'string' ? o.workflow : def.workflow,
-    naturalLanguage:
-      typeof o.naturalLanguage === 'boolean' ? o.naturalLanguage : def.naturalLanguage,
-  };
+
+  const workflows = Array.isArray(o.workflows)
+    ? o.workflows.map(normalizeWorkflowPreset)
+    : [foldLegacyWorkflow(o, conn)];
+  // 不变式兜底:脏数据把库清空了也要留一条,否则面板与出图门槛全得处理 undefined
+  if (!workflows.length) workflows.push(newComfyWorkflow());
+
+  // 指向已删条目(或压根没存)时回落第一条:悬空 id 会让面板显示空白、出图取不到工作流
+  const activeWorkflowId =
+    typeof o.activeWorkflowId === 'string' && workflows.some(w => w.id === o.activeWorkflowId)
+      ? o.activeWorkflowId
+      : workflows[0].id;
+
+  return { ...conn, workflows, activeWorkflowId };
 }
 
 const NAI_MODEL_VALUES = new Set<string>(NAI_MODELS.map(m => m.value));
@@ -675,6 +826,7 @@ function normalizeVibe(raw: unknown, seq: number): NaiVibe | null {
       typeof o.fingerprint === 'string' && o.fingerprint ? o.fingerprint : vibeFingerprint(encodings),
     strength: clampNumber(o.strength, 0.6, 0, 1),
     enabled: typeof o.enabled === 'boolean' ? o.enabled : false,
+    group: typeof o.group === 'string' ? o.group.trim() : '',
   };
 }
 
@@ -706,6 +858,7 @@ async function migrateLegacyVibesInPlace(
         data,
         normalized.strength,
         normalized.enabled,
+        normalized.group,
       );
       migrated++;
       console.info(`[柏宝绘] 旧版 Vibe 自动搬迁 ${migrated}/${total}`);
@@ -883,7 +1036,7 @@ function normalize(raw: unknown): ImageSettings {
   // 存储行为:嵌套对象逐字段兜底(老数据无 storage 键 → 默认关)
   const rs = (r.storage ?? {}) as Partial<StoragePrefs>;
   merged.storage = {
-    saveAsJpeg: typeof rs.saveAsJpeg === 'boolean' ? rs.saveAsJpeg : false,
+    saveAsJpeg: typeof rs.saveAsJpeg === 'boolean' ? rs.saveAsJpeg : d.storage.saveAsJpeg,
   };
   return merged;
 }

@@ -55,6 +55,7 @@ function vibe(overrides: Partial<NaiVibe> = {}): NaiVibe {
     fingerprint: 'v4-5full:ZW5jb2Rpbmc=',
     strength: 0.6,
     enabled: true,
+    group: '',
     ...overrides,
   };
 }

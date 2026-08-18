@@ -1,6 +1,6 @@
 import { parseSize, pickSize, type Orientation } from '@/backends/size';
 import { getContext } from '@/st/context';
-import { type ComfyUISettings } from '@/state/settings';
+import { type ComfyRunConn } from '@/state/settings';
 
 type JsonObject = Record<string, unknown>;
 export type ComfyWorkflow = Record<string, JsonObject>;
@@ -183,7 +183,7 @@ export interface ComfyTestResult {
   mode: 'browser' | 'server';
 }
 
-export async function testComfyConnection(conn: ComfyUISettings, signal?: AbortSignal): Promise<ComfyTestResult> {
+export async function testComfyConnection(conn: ComfyRunConn, signal?: AbortSignal): Promise<ComfyTestResult> {
   if (!conn.url.trim()) throw new ComfyUIError('请先填写 ComfyUI 服务地址');
 
   // 浏览器直连优先;仅网络级失败(CORS/拒连)才回退 ST 后端转发
@@ -270,7 +270,7 @@ function fileFormat(filename: string, mime = ''): string {
 }
 
 async function generateViaServer(
-  conn: ComfyUISettings,
+  conn: ComfyRunConn,
   workflow: ComfyWorkflow,
   signal?: AbortSignal,
 ): Promise<ComfyImageResult> {
@@ -298,7 +298,7 @@ async function generateViaServer(
 }
 
 async function queueDirect(
-  conn: ComfyUISettings,
+  conn: ComfyRunConn,
   workflow: ComfyWorkflow,
   signal?: AbortSignal,
 ): Promise<string> {
@@ -338,7 +338,7 @@ function isQueueEntry(value: unknown): value is QueueEntry {
  * queue_pending 是堆结构的原始快照,列表顺序不等于执行顺序。
  */
 async function fetchQueuePosition(
-  conn: ComfyUISettings,
+  conn: ComfyRunConn,
   promptId: string,
   signal?: AbortSignal,
 ): Promise<QueuePosition | null> {
@@ -382,7 +382,7 @@ async function fetchQueuePosition(
  * 带上 prompt_id 让新版免疫;旧版无法从客户端根治(没有「按 id 中断」的接口),
  * 故只在确认自己在跑时才发 interrupt,把窗口压到最小。
  */
-async function cancelPrompt(conn: ComfyUISettings, promptId: string): Promise<void> {
+async function cancelPrompt(conn: ComfyRunConn, promptId: string): Promise<void> {
   // 此处不传 signal:调用方的 signal 正是「已取消」本身,带上会让清理请求当场夭折。
   const position = await fetchQueuePosition(conn, promptId);
   const post = (path: string, body: JsonObject) =>
@@ -418,7 +418,7 @@ export interface ComfyProgressHooks {
 }
 
 async function pollDirectResult(
-  conn: ComfyUISettings,
+  conn: ComfyRunConn,
   promptId: string,
   signal?: AbortSignal,
   hooks?: ComfyProgressHooks,
@@ -475,7 +475,7 @@ async function pollDirectResult(
 }
 
 export async function generateComfyImage(
-  conn: ComfyUISettings,
+  conn: ComfyRunConn,
   values: ComfyTemplateValues,
   signal?: AbortSignal,
   hooks?: ComfyProgressHooks,

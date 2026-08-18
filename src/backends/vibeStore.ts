@@ -108,6 +108,7 @@ export function vibeMetaFromData(
   data: NaiVibeData,
   strength: number,
   enabled: boolean,
+  group = '',
 ): NaiVibe {
   return {
     id,
@@ -119,6 +120,7 @@ export function vibeMetaFromData(
     fingerprint: vibeFingerprint(data.encodings),
     strength,
     enabled,
+    group,
   };
 }
 

@@ -178,6 +178,39 @@ export function detectChatu8Vibes(chatu8: unknown): Chatu8DetectInfo {
   };
 }
 
+/** 旧版迁移把组名拼进了显示名,分隔符是「 · 」。 */
+const LEGACY_GROUP_SEPARATOR = ' · ';
+
+export interface PrefixGroupPlan {
+  id: string;
+  /** 从名字前缀识别出的组名。 */
+  group: string;
+  /** 去掉前缀后的显示名。 */
+  name: string;
+}
+
+/**
+ * 为「已经迁移过」的库补分组:旧版把组名拼成了「组名 · 原名」,这里把前缀还原成 group。
+ *
+ * 只动 group 为空的条目(不覆盖用户已手工分好的组),且前缀与余名都非空才算。
+ * 纯函数、只返回需要改动的条目,调用方决定是否落盘——用户点按钮前要能看到「将整理 N 个」。
+ */
+export function planPrefixGroups(
+  vibes: readonly Pick<NaiVibe, 'id' | 'name' | 'group'>[],
+): PrefixGroupPlan[] {
+  const plans: PrefixGroupPlan[] = [];
+  for (const vibe of vibes) {
+    if (vibe.group.trim()) continue;
+    const at = vibe.name.indexOf(LEGACY_GROUP_SEPARATOR);
+    if (at <= 0) continue;
+    const group = vibe.name.slice(0, at).trim();
+    const name = vibe.name.slice(at + LEGACY_GROUP_SEPARATOR.length).trim();
+    if (!group || !name) continue;
+    plans.push({ id: vibe.id, group, name });
+  }
+  return plans;
+}
+
 export interface Chatu8ImportResult {
   /** 是否检测到 chatu8 设置。 */
   found: boolean;
@@ -244,13 +277,16 @@ export async function importVibesFromChatu8(
       result.vibes.push(
         vibeMetaFromData(
           id,
-          // 预设用预设名(用户起的);组内条目无名,用「组名 · vibe文件原名」
-          ref.kind === 'preset' ? ref.source : `${ref.source} · ${parsed.name}`,
+          // 预设用预设名(用户起的);组内条目无名,用 vibe 文件原名(组名已进 group 字段,
+          // 不再拼进显示名——那会变成「组名 · 组名 · xxx」的重复)
+          ref.kind === 'preset' ? ref.source : parsed.name,
           paths.dataPath,
           paths.thumbnailPath,
           data,
           ref.strength,
           false,
+          // 智绘姬的组结构原样保留;预设不属于任何组
+          ref.kind === 'group' ? ref.source : '',
         ),
       );
       result.imported++;

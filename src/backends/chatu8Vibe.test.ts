@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { collectChatu8VibeRefs, detectChatu8Vibes, vibeFingerprint } from '@/backends/chatu8Vibe';
+import {
+  collectChatu8VibeRefs,
+  detectChatu8Vibes,
+  planPrefixGroups,
+  vibeFingerprint,
+} from '@/backends/chatu8Vibe';
 
 describe('collectChatu8VibeRefs', () => {
   it('收集预设与组内的 vibe 引用', () => {
@@ -63,6 +68,41 @@ describe('detectChatu8Vibes', () => {
   it('有设置但没 vibe → found=true,total=0', () => {
     const info = detectChatu8Vibes({ someOtherSetting: 1 });
     expect(info).toEqual({ found: true, total: 0, presets: 0, groups: 0 });
+  });
+});
+
+describe('planPrefixGroups', () => {
+  const vibe = (id: string, name: string, group = '') => ({ id, name, group });
+
+  it('把「组名 · 原名」前缀还原成分组', () => {
+    const plans = planPrefixGroups([
+      vibe('1', '战斗组 · 剑光'),
+      vibe('2', '战斗组 · 火焰'),
+      vibe('3', '日常组 · 咖啡'),
+    ]);
+    expect(plans).toEqual([
+      { id: '1', group: '战斗组', name: '剑光' },
+      { id: '2', group: '战斗组', name: '火焰' },
+      { id: '3', group: '日常组', name: '咖啡' },
+    ]);
+  });
+
+  it('不动已分好组的条目', () => {
+    expect(planPrefixGroups([vibe('1', '战斗组 · 剑光', '我的组')])).toEqual([]);
+  });
+
+  it('没有前缀的条目不参与', () => {
+    expect(planPrefixGroups([vibe('1', '剑光'), vibe('2', '一个·没有空格的名字')])).toEqual([]);
+  });
+
+  it('前缀或余名为空时跳过,不产出空组名', () => {
+    expect(planPrefixGroups([vibe('1', ' · 剑光'), vibe('2', '战斗组 · ')])).toEqual([]);
+  });
+
+  it('只取第一个分隔符,余下的分隔符留在名字里', () => {
+    expect(planPrefixGroups([vibe('1', '战斗组 · 剑光 · 二段')])).toEqual([
+      { id: '1', group: '战斗组', name: '剑光 · 二段' },
+    ]);
   });
 });
 

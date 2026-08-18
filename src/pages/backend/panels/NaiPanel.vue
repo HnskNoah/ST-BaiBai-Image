@@ -3,6 +3,7 @@ import {
   CHATU8_SETTINGS_KEY,
   detectChatu8Vibes,
   importVibesFromChatu8,
+  planPrefixGroups,
   type Chatu8DetectInfo,
 } from '@/backends/chatu8Vibe';
 import {
@@ -23,7 +24,18 @@ import {
   vibeFingerprint,
   vibeMetaFromData,
 } from '@/backends/vibeStore';
+import {
+  groupKey,
+  groupVibes,
+  isGroupActive,
+  matchVibe,
+  GROUP_PREFIX,
+  NEW_GROUP,
+  UNGROUPED,
+  type VibeGroup,
+} from '@/backends/vibeGroups';
 import Collapsible from '@/components/Collapsible.vue';
+import BbiSelect from '@/components/BbiSelect.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
@@ -187,6 +199,129 @@ async function reencodeVibe(vibe: NaiVibe) {
   } finally {
     vibeEncoding.value = false;
   }
+}
+
+/* ============ Vibe 分组 ============ */
+
+/** 归拢/搜索/生效判定的纯逻辑在 backends/vibeGroups.ts,此处只做交互与落盘。 */
+const vibeSearch = ref('');
+/** 收起的组 key 集合(默认全展开;只存「收起」的,新建组自然是展开的)。 */
+const collapsedGroups = ref<Set<string>>(new Set());
+
+const vibeGroups = computed(() => groupVibes(settings.nai.vibes, vibeSearch.value));
+
+/** 搜索命中总数:用于「没有匹配」空态,不必再算一遍列表。 */
+const matchedCount = computed(() =>
+  settings.nai.vibes.reduce((n, v) => n + (matchVibe(v, vibeSearch.value) ? 1 : 0), 0),
+);
+
+/** 库里已有的组名(去重,给「移到分组」下拉用;基于全库而非搜索结果)。 */
+const groupNames = computed(() => {
+  const names = new Set<string>();
+  for (const vibe of settings.nai.vibes) {
+    const name = vibe.group.trim();
+    if (name) names.add(name);
+  }
+  return [...names];
+});
+
+/** 单条 vibe 的「所属分组」下拉项:未分组 + 已有组 + 新建(组名装箱,避免与哨兵撞名)。 */
+const groupOptions = computed(() => [
+  { value: UNGROUPED, label: '未分组' },
+  ...groupNames.value.map(name => ({ value: `${GROUP_PREFIX}${name}`, label: name })),
+  { value: NEW_GROUP, label: '＋ 新建分组…' },
+]);
+
+/** 选「新建分组」时就地问一个名字;取消或空名则维持原值(下拉是受控的,得回写)。 */
+function onGroupPick(vibe: NaiVibe, value: string) {
+  if (value === UNGROUPED) {
+    vibe.group = '';
+    return;
+  }
+  if (value.startsWith(GROUP_PREFIX)) {
+    vibe.group = value.slice(GROUP_PREFIX.length);
+    return;
+  }
+  const name = window.prompt('新分组名称')?.trim();
+  if (name) vibe.group = name;
+}
+
+function isGroupCollapsed(key: string): boolean {
+  return collapsedGroups.value.has(key);
+}
+
+function toggleGroup(key: string) {
+  const next = new Set(collapsedGroups.value);
+  if (!next.delete(key)) next.add(key);
+  collapsedGroups.value = next;
+}
+
+function groupActive(group: VibeGroup): boolean {
+  return isGroupActive(group, settings.nai.vibes);
+}
+
+/** 只开这组:清掉组外的勾选并开启本组。解决「换一套搭配」要逐条点的痛点。 */
+function soloGroup(group: VibeGroup) {
+  const ids = new Set(group.all.map(v => v.id));
+  for (const vibe of settings.nai.vibes) vibe.enabled = ids.has(vibe.id);
+}
+
+/** 全开/全关只动本组,组外不碰——想叠加两组就各点一次「全开」。 */
+function setGroupEnabled(group: VibeGroup, enabled: boolean) {
+  for (const vibe of group.all) vibe.enabled = enabled;
+}
+
+const enabledCount = computed(() => settings.nai.vibes.filter(v => v.enabled).length);
+
+function groupEnabledCount(group: VibeGroup): number {
+  return group.all.filter(v => v.enabled).length;
+}
+
+/** 重命名整组:对成员 group 字段批量赋值,不存在悬空引用。 */
+function renameGroup(group: VibeGroup) {
+  if (!group.name) return;
+  const name = window.prompt('重命名分组', group.name)?.trim();
+  if (!name || name === group.name) return;
+  for (const vibe of settings.nai.vibes) {
+    if (vibe.group.trim() === group.name) vibe.group = name;
+  }
+  // 收起状态跟着改名走(集合里存的是装箱 key),否则改完名字会莫名展开
+  const from = groupKey(group.name);
+  if (collapsedGroups.value.has(from)) {
+    const next = new Set(collapsedGroups.value);
+    next.delete(from);
+    next.add(groupKey(name));
+    collapsedGroups.value = next;
+  }
+}
+
+/** 解散分组:只清 group 字段,vibe 本体与启用状态都不动(不是删除)。 */
+function dissolveGroup(group: VibeGroup) {
+  if (!group.name) return;
+  for (const vibe of settings.nai.vibes) {
+    if (vibe.group.trim() === group.name) vibe.group = '';
+  }
+}
+
+/**
+ * 旧版从智绘姬迁移时把组名拼进了显示名(「组名 · 原名」),分组结构因此丢失。
+ * 这里按前缀还原:只动未分组的条目,不覆盖用户已手工分好的组。
+ * 按钮仅在真有可整理的条目时出现——没得整理时摆一颗点不出反应的按钮不如不摆。
+ */
+const prefixGroupPlans = computed(() => planPrefixGroups(settings.nai.vibes));
+
+function applyPrefixGroups() {
+  const plans = prefixGroupPlans.value;
+  if (!plans.length) return;
+  const byId = new Map(settings.nai.vibes.map(v => [v.id, v]));
+  for (const plan of plans) {
+    const vibe = byId.get(plan.id);
+    if (!vibe) continue;
+    vibe.group = plan.group;
+    vibe.name = plan.name;
+  }
+  const groups = new Set(plans.map(p => p.group)).size;
+  toastr.success(`已把 ${plans.length} 个 Vibe 整理进 ${groups} 个分组`, 'Vibe');
 }
 
 /* ============ 从智绘姬迁移 ============ */
@@ -539,44 +674,167 @@ async function removeVibe(vibe: NaiVibe) {
 
         <p v-if="!settings.nai.vibes.length" class="bbi-field-hint">还没有 vibe;上传一张参考图开始。</p>
 
-        <div v-for="vibe in settings.nai.vibes" :key="vibe.id" class="vibe-item">
-          <img v-if="vibe.thumbnailPath" class="vibe-thumb" :src="vibe.thumbnailPath" :alt="vibe.name" />
-          <div v-else class="vibe-thumb vibe-thumb--empty"><Icon name="generate" /></div>
-          <div class="vibe-main">
-            <div class="vibe-head">
-              <input class="bbi-input vibe-name" type="text" v-model="vibe.name" spellcheck="false" />
-              <label class="vibe-enable" title="生成时叠加此 vibe">
-                <input v-model="vibe.enabled" type="checkbox" class="bbi-checkbox" />
-                启用
-              </label>
-            </div>
-            <div class="vibe-strength">
-              <span class="vibe-strength-label">强度 {{ vibe.strength.toFixed(2) }}</span>
-              <input type="range" min="0" max="1" step="0.05" v-model.number="vibe.strength" />
-            </div>
-            <div class="vibe-ops">
+        <template v-else>
+          <div class="vibe-toolbar">
+            <input
+              class="bbi-input vibe-search"
+              type="search"
+              v-model="vibeSearch"
+              placeholder="搜索名称或分组…"
+              spellcheck="false"
+              aria-label="搜索 Vibe"
+            />
+            <span class="vibe-count">
+              共 {{ settings.nai.vibes.length }} 个 · 已启用 {{ enabledCount }}
+            </span>
+            <button
+              v-if="prefixGroupPlans.length"
+              class="bbi-btn bbi-btn-sm"
+              type="button"
+              title="旧版迁移把组名拼进了名字,点此还原成真正的分组"
+              @click="applyPrefixGroups"
+            >
+              <Icon name="checklist" :size="12" />
+              按名称整理分组({{ prefixGroupPlans.length }})
+            </button>
+          </div>
+
+          <p v-if="!matchedCount" class="bbi-field-hint">没有匹配「{{ vibeSearch }}」的 Vibe。</p>
+
+          <div v-for="group in vibeGroups" :key="group.key" class="vibe-group">
+            <div class="vibe-group-head">
               <button
-                v-if="!vibe.modelKeys.includes(currentVibeKey) && vibe.hasImage"
-                class="bbi-btn bbi-btn-sm"
+                class="vibe-group-toggle"
                 type="button"
-                :disabled="vibeEncoding"
-                title="该 vibe 缺当前模型的编码,生成时会被跳过;点击按当前模型补编码"
-                @click="reencodeVibe(vibe)"
+                :aria-expanded="!isGroupCollapsed(group.key)"
+                @click="toggleGroup(group.key)"
               >
-                <Icon name="refresh" :size="12" /> 补当前模型编码
+                <Icon
+                  name="chevron"
+                  :size="14"
+                  class="vibe-group-chevron"
+                  :class="{ 'is-collapsed': isGroupCollapsed(group.key) }"
+                />
+                <span class="vibe-group-name">{{ group.label }}</span>
+                <span class="vibe-group-meta">
+                  {{ groupEnabledCount(group) }}/{{ group.all.length }}
+                  <template v-if="group.items.length !== group.all.length">
+                    · 显示 {{ group.items.length }}
+                  </template>
+                </span>
+                <span v-if="groupActive(group)" class="bbi-prompt-state vibe-group-active">
+                  生效中
+                </span>
               </button>
-              <span v-else-if="!vibe.modelKeys.includes(currentVibeKey)" class="vibe-missing">
-                缺当前模型编码且无原图,无法使用
+              <span class="vibe-group-ops">
+                <button
+                  class="bbi-btn bbi-btn-sm bbi-btn-primary"
+                  type="button"
+                  title="只叠加这一组:关掉组外全部勾选,开启本组"
+                  @click="soloGroup(group)"
+                >
+                  只开这组
+                </button>
+                <button
+                  class="bbi-btn bbi-btn-sm"
+                  type="button"
+                  title="开启本组,不影响其它组(用来叠加多组)"
+                  @click="setGroupEnabled(group, true)"
+                >
+                  全开
+                </button>
+                <button
+                  class="bbi-btn bbi-btn-sm"
+                  type="button"
+                  title="关闭本组"
+                  @click="setGroupEnabled(group, false)"
+                >
+                  全关
+                </button>
+                <button
+                  v-if="group.name"
+                  class="bbi-icon-mini"
+                  type="button"
+                  title="重命名分组"
+                  aria-label="重命名分组"
+                  @click="renameGroup(group)"
+                >
+                  <Icon name="edit" :size="12" />
+                </button>
+                <button
+                  v-if="group.name"
+                  class="bbi-icon-mini"
+                  type="button"
+                  title="解散分组(只取消归类,不删除 Vibe)"
+                  aria-label="解散分组"
+                  @click="dissolveGroup(group)"
+                >
+                  <Icon name="close" :size="12" />
+                </button>
               </span>
-              <button class="bbi-btn bbi-btn-sm" type="button" title="导出 .naiv4vibe" @click="exportVibe(vibe)">
-                <Icon name="upload" :size="12" /> 导出
-              </button>
-              <button class="bbi-btn bbi-btn-sm" type="button" title="删除" @click="removeVibe(vibe)">
-                <Icon name="trash" :size="12" /> 删除
-              </button>
+            </div>
+
+            <div v-show="!isGroupCollapsed(group.key)" class="vibe-group-body">
+              <div v-for="vibe in group.items" :key="vibe.id" class="vibe-item">
+                <img
+                  v-if="vibe.thumbnailPath"
+                  class="vibe-thumb"
+                  :src="vibe.thumbnailPath"
+                  :alt="vibe.name"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <div v-else class="vibe-thumb vibe-thumb--empty"><Icon name="generate" /></div>
+                <div class="vibe-main">
+                  <div class="vibe-head">
+                    <input class="bbi-input vibe-name" type="text" v-model="vibe.name" spellcheck="false" />
+                    <label class="vibe-enable" title="生成时叠加此 vibe">
+                      <input v-model="vibe.enabled" type="checkbox" class="bbi-checkbox" />
+                      启用
+                    </label>
+                  </div>
+                  <div class="vibe-strength">
+                    <span class="vibe-strength-label">强度 {{ vibe.strength.toFixed(2) }}</span>
+                    <input type="range" min="0" max="1" step="0.05" v-model.number="vibe.strength" />
+                  </div>
+                  <div class="vibe-ops">
+                    <BbiSelect
+                      class="vibe-group-select"
+                      :model-value="groupKey(vibe.group)"
+                      :options="groupOptions"
+                      aria-label="所属分组"
+                      @update:model-value="onGroupPick(vibe, $event)"
+                    />
+                    <button
+                      v-if="!vibe.modelKeys.includes(currentVibeKey) && vibe.hasImage"
+                      class="bbi-btn bbi-btn-sm"
+                      type="button"
+                      :disabled="vibeEncoding"
+                      title="该 vibe 缺当前模型的编码,生成时会被跳过;点击按当前模型补编码"
+                      @click="reencodeVibe(vibe)"
+                    >
+                      <Icon name="refresh" :size="12" /> 补当前模型编码
+                    </button>
+                    <span v-else-if="!vibe.modelKeys.includes(currentVibeKey)" class="vibe-missing">
+                      缺当前模型编码且无原图,无法使用
+                    </span>
+                    <button
+                      class="bbi-btn bbi-btn-sm"
+                      type="button"
+                      title="导出 .naiv4vibe"
+                      @click="exportVibe(vibe)"
+                    >
+                      <Icon name="upload" :size="12" /> 导出
+                    </button>
+                    <button class="bbi-btn bbi-btn-sm" type="button" title="删除" @click="removeVibe(vibe)">
+                      <Icon name="trash" :size="12" /> 删除
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
+        </template>
       </Collapsible>
 
       <Collapsible title="从智绘姬迁移" :open="false">
@@ -762,5 +1020,131 @@ async function removeVibe(vibe: NaiVibe) {
 .vibe-missing {
   font-size: 12px;
   color: #c44747;
+}
+
+/* —— 分组 —— */
+/* 工具条:搜索框吃满,计数与「整理分组」靠右。长列表口径与设置页排除弹窗一致
+   (搜索 + 子串匹配收敛渲染量),故不做分页——vibe 靠缩略图认人,翻页只会
+   把「我那张图在第几页」变成新的记忆负担。 */
+.vibe-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.vibe-search {
+  flex: 1 1 160px;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.vibe-count {
+  font-size: 12px;
+  color: var(--bbi-ink-muted);
+  white-space: nowrap;
+}
+/* 组头:整块浅底,把「组」和组内条目在视觉上分层;粘顶让长组滚动时组名不丢 */
+.vibe-group {
+  margin-top: 10px;
+}
+.vibe-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-radius: var(--bbi-radius-sm);
+  background: var(--bbi-surface-2);
+}
+/* 组名区整体可点(折叠):按钮撑满剩余宽度,点空白处也能收起 */
+.vibe-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--bbi-ink);
+  font-family: var(--bbi-font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.vibe-group-chevron {
+  flex: 0 0 auto;
+  color: var(--bbi-ink-muted);
+  transition: transform var(--bbi-dur) var(--bbi-ease);
+}
+/* 展开态朝下(与 Collapsible 同口径:收起时回到未旋转的朝右/朝上) */
+.vibe-group-chevron.is-collapsed {
+  transform: rotate(-90deg);
+}
+.vibe-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vibe-group-meta {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--bbi-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* 「生效中」复用状态药丸基样式,上色口径与 wf-state.is-ok 一致 */
+.vibe-group-active {
+  color: var(--bbi-accent);
+  background: var(--bbi-accent-soft);
+  border-color: transparent;
+}
+.vibe-group-ops {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+/* 组内条目左缩进一格,读得出层级 */
+.vibe-group-body {
+  padding-left: 10px;
+}
+/* 组头本身就是一条分界,组内首条不再画上边线(否则紧贴组头是两道线) */
+.vibe-group-body > .vibe-item:first-child {
+  border-top: 0;
+}
+.vibe-group-select {
+  width: 130px;
+}
+/* 组头操作里的小图标钮:.bbi-icon-mini 只在其它页的 scoped 块里声明,此处补一份 */
+.bbi-icon-mini {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--bbi-line-strong);
+  border-radius: var(--bbi-radius-sm);
+  background: var(--bbi-surface);
+  color: var(--bbi-ink-soft);
+  cursor: pointer;
+  font-size: 12px;
+}
+.bbi-icon-mini:hover {
+  color: var(--bbi-accent);
+  border-color: var(--bbi-accent);
+}
+@media (max-width: 640px) {
+  /* 窄屏:组头两行——组名一行,操作另起一行靠右,避免按钮把组名挤成一条缝 */
+  .vibe-group-ops {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .vibe-group-body {
+    padding-left: 0;
+  }
 }
 </style>

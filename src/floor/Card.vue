@@ -29,7 +29,7 @@ import {
   saveImageResult,
   type BbiImageEntry,
 } from '@/floor/storage';
-import { settings } from '@/state/settings';
+import { activeComfyPreset, effectiveComfyConn, settings } from '@/state/settings';
 import { getContext } from '@/st/context';
 
 /**
@@ -103,7 +103,7 @@ const comfyActive = computed(() => settings.defaultBackend === 'comfyui');
 const naiActive = computed(() => settings.defaultBackend === 'nai');
 const configured = computed(() =>
   comfyActive.value
-    ? !!settings.comfyui.url.trim() && !!settings.comfyui.workflow.trim()
+    ? !!settings.comfyui.url.trim() && !!activeComfyPreset().workflow.trim()
     : naiActive.value
       ? !!settings.nai.url.trim() && !!settings.nai.key.trim()
       : false,
@@ -178,7 +178,7 @@ async function generate(): Promise<void> {
     const result = naiActive.value
       ? await generateNaiImage(settings.nai, { prompt: job.prompt, seed, size: job.size }, signal)
       : await generateComfyImage(
-          settings.comfyui,
+          effectiveComfyConn(),
           {
             prompt: job.prompt,
             nl: job.nl,

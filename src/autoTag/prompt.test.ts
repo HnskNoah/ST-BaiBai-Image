@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildAutoTagMessages } from '@/autoTag/prompt';
-import { settings, type AutoTagSettings } from '@/state/settings';
+import { activeComfyPreset, settings, type AutoTagSettings } from '@/state/settings';
 import type { STContext } from '@/st/context';
 
 function context(): STContext {
@@ -195,7 +195,7 @@ describe('auto tag prompt', () => {
     expect(messages[messages.length - 1].content).toBe('custom>');
   });
 
-  it('uses character placeholders only when a fixed appearance library is present', async () => {
+  it('has the library dictate copied field values instead of @ placeholders', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
@@ -207,9 +207,30 @@ describe('auto tag prompt', () => {
     const library = '【角色固定外貌库(系统维护)】\n小雪: 1girl, long silver hair';
     const messages = await buildAutoTagMessages(context(), 1, options, null, undefined, library);
 
-    expect(messages.some(message => message.content.includes('"tag":"@小雪, white dress"'))).toBe(true);
-    expect(messages.some(message => message.content.includes('系统会替换成库中最新 tag'))).toBe(true);
+    // 示例改用实际外貌串;@占位符已撤回(见 charAnchors.ts 文件头)
+    expect(messages.some(m => m.content.includes('"tag":"1girl, long silver hair, red eyes, white dress"'))).toBe(true);
+    expect(messages.some(m => m.content.includes('@小雪'))).toBe(false);
+    expect(messages.some(m => m.content.includes('系统会替换成库中最新 tag'))).toBe(false);
+    // 照抄库中字段 + 一张图只写一遍,是本次回退的两条核心措辞
+    expect(messages.some(m => m.content.includes('照抄库中/刚建档的字段值'))).toBe(true);
+    expect(messages.some(m => m.content.includes('只写一遍'))).toBe(true);
     expect(messages[messages.length - 2].content).toContain(library);
+  });
+
+  it('forbids poses and scenes from entering the appearance profile', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+    };
+    const messages = await buildAutoTagMessages(context(), 1, options, null);
+
+    // 档案会在之后每张图被照抄,姿势/场景混进字段会让角色永远保持那个姿势
+    expect(messages.some(m => m.content.includes('lying on carpet'))).toBe(true);
+    expect(messages.some(m => m.content.includes('长期不变的身体特征'))).toBe(true);
   });
 
   it('keeps first-appearance profiling enabled when BaiBai Book memory exists', async () => {
@@ -246,10 +267,12 @@ describe('auto tag prompt', () => {
       prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const oldBackend = settings.defaultBackend;
-    const oldWorkflow = settings.comfyui.workflow;
+    // 工作流改由「当前预设」承载(见 settings.ts 工作流库);默认值恒有一条,直接改它
+    const preset = activeComfyPreset();
+    const oldWorkflow = preset.workflow;
     try {
       settings.defaultBackend = 'comfyui';
-      settings.comfyui.workflow = JSON.stringify({
+      preset.workflow = JSON.stringify({
         '6': {
           class_type: 'CLIPTextEncode',
           inputs: { text: '%prompt%', negative: '%negative_prompt%' },
@@ -264,7 +287,7 @@ describe('auto tag prompt', () => {
       expect(messages.some(message => message.content.includes('不得使用 @角色占位符'))).toBe(true);
     } finally {
       settings.defaultBackend = oldBackend;
-      settings.comfyui.workflow = oldWorkflow;
+      preset.workflow = oldWorkflow;
     }
   });
 });
