@@ -73,6 +73,7 @@ src/
 ├── menu.ts           # 魔杖菜单入口注入(轮询等懒加载)
 ├── topbar.ts         # ST 顶栏快速打开按钮(受 ui.showTopBar 开关控制)
 └── version.ts        # 版本号(__BBI_VERSION__)+ 带 ver 的资源 URL
+└── update.ts         # 更新检测:远端 manifest 版本对比 + /api/extensions/update 自动更新
 ```
 
 ## 3. 启动与挂载(读 index.ts)
@@ -83,7 +84,8 @@ src/
 2. `$(() => ...)`:挂载应用、注入魔杖菜单入口、按开关同步顶栏按钮。
 3. `hydrateWhenReady()`:轮询 `window.SillyTavern.getContext`(最多 ~20s),就绪后依次:
    `hydrateSettings()` → `bindCharTagSync()` → `ensureImageTagRegexRegistered()` →
-   `bindAutoTagging()` → `bindFloorHydration()` → `bindTagActionButtons()`。
+   `bindAutoTagging()` → `bindFloorHydration()` → `bindTagActionButtons()` → `checkForUpdate()`
+   (每会话只查一次远端版本,不阻塞其余初始化)。
    各 bind 函数均**幂等**(内部 `bound` 标志),可安全重复调用。
 
 新增「启动时要做的绑定」→ 在 `hydrateWhenReady` 里加一行,并让绑定函数幂等。
@@ -105,6 +107,7 @@ src/
 | `globalThis.EjsTemplate`(ST-Prompt-Template) | autoTag/context.ts | 世界书条目 EJS 执行(未装则降级) |
 | `globalThis.STBaiBaiBook` | autoTag/bookMemory.ts | 柏宝书角色状态(apiVersion 1;不可用返回 null 降级) |
 | HTTP 代理 | api/client.ts、backends/comfyui.ts、floor/upload.ts | `/api/backends/chat-completions/generate`、`/api/backends/chat-completions/status`、`/api/sd/comfy/*`、`/api/files/upload|delete` |
+| 扩展更新 API | src/update.ts | `GET /api/extensions/discover`(查类型)+ `POST /api/extensions/update`(自动更新);远端版本读 GitHub raw manifest.json(8s 超时,失败静默) |
 | 注入 DOM | menu.ts、topbar.ts、floor/actionButton.ts | 魔杖菜单 / 顶栏按钮 / 楼层按钮(不进 shadow) |
 
 注意:三处 UI 的隔离层次不同,样式约定各不一样 ——
@@ -329,7 +332,8 @@ runForFloor(floor, opts)
 | 主题 | src/styles/theme.css + state/ui.ts 的 THEMES |
 | 图标 | src/components/Icon.vue(新增图标 + PATHS) |
 | 新增页面 | src/pages/<id>/index.vue + pages/registry.ts 注册 + Icon.vue 加图标 |
-| 版本号 | package.json(build 自动同步到 manifest.json) |
+| 版本号 | package.json(build 自动同步到 manifest.json;更新对比源 = 远端 GitHub manifest.json 的 version) |
+| 更新检测 / 自动更新 | src/update.ts(红点/按钮在 NavBar.vue + settings/index.vue;仅 `isNewer` 有单测) |
 
 ## 10. 测试与构建
 

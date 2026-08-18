@@ -2,8 +2,13 @@
 import Icon from '@/components/Icon.vue';
 import { PAGES } from '@/pages/registry';
 import { closePanel, ui } from '@/state/ui';
+import { updateState } from '@/update';
 
 const props = defineProps<{ placement: 'top' | 'bottom'; narrow?: boolean }>();
+
+function showUpdateDot(id: string): boolean {
+  return id === 'settings' && updateState.available;
+}
 
 // 移动端:再点一下当前页的导航按钮即关闭整窗(省得去够右上角的 ×);非当前页正常切页。
 // 受 ui.navTapClose 开关控制(默认开,怕误触的用户可在设置里关)。
@@ -31,6 +36,7 @@ function onNavClick(id: string) {
     >
       <span class="bbi-nav-icon-wrap">
         <Icon :name="p.id" class="bbi-nav-icon" />
+        <span v-if="showUpdateDot(p.id)" class="bbi-nav-dot" aria-label="有可用更新"></span>
       </span>
       <!-- 顶部带文字;但窄屏(移动端)顶部也只放图标,否则一排带字胶囊横向放不下,会把后面的项挤出屏幕 -->
       <span v-if="placement === 'top' && !narrow" class="bbi-nav-label">{{ p.label }}</span>
@@ -138,6 +144,24 @@ function onNavClick(id: string) {
   outline: 2px solid var(--bbi-accent);
   outline-offset: 2px;
   border-radius: var(--bbi-radius-sm);
+}
+
+.bbi-nav-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.bbi-nav-dot {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--bbi-radius-pill);
+  background: var(--bbi-danger);
+  box-shadow: 0 0 0 1.5px var(--bbi-surface);
+  pointer-events: none;
 }
 
 </style>

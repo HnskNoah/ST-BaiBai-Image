@@ -9,6 +9,7 @@ import { ui } from '@/state/ui';
 import { guardEditableArrowKeys } from '@/st/keyboard';
 import { ensureImageTagRegexRegistered } from '@/st/imageTagRegex';
 import { syncTopBarButton } from '@/topbar';
+import { checkForUpdate } from '@/update';
 import { versionedAssetUrl } from '@/version';
 // 这两行让 Vite 把全局样式打进 dist/index.css(随后注入 shadow root)
 import '@/styles/base.css';
@@ -98,6 +99,7 @@ async function hydrateWhenReady(attempt = 0) {
       bindAutoTagging();
       bindFloorHydration();
       bindTagActionButtons();
+      void checkForUpdate();
       console.log(`[柏宝绘] 已加载 v${__BBI_VERSION__},设置已同步`);
     } catch (e) {
       console.error('[柏宝绘] 设置载入失败', e);
