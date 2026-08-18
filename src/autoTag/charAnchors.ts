@@ -1,11 +1,8 @@
 import { requestCompletion, requestViaMainApi, type ChatMsg } from '@/api/client';
-import type { BookRole } from '@/autoTag/bookMemory';
 import {
   CHAR_TAG_FIELD_LABELS,
   CHAR_TAG_FIELDS,
   applyCharTagOps,
-  createCharTagNewOp,
-  emptyCharFields,
   type CharTagAutoOp,
   type CharTagEntry,
   type CharTagField,
@@ -15,11 +12,13 @@ import { getTagGenChannel } from '@/state/settings';
 /**
  * 角色固定外貌库的「锚定」侧。
  *
- * 生成 tag 前:
- * 1. 柏宝书角色参考里有外貌、库里还没有该角色 → 转换成当前楼层的建档操作;
- *    写回成功后才随消息 extra 落盘,楼层删除时自然消失。
- * 2. 库文本(全部条目)拼进请求:AI 看得到每个角色当前的字段值,才能判断需不需要改;
- *    但画面 tag 里它只写 @角色名 占位符,不抄外貌 —— 替换由插件机械完成,杜绝复述漂移。
+ * 生成 tag 前把库文本(全部条目)拼进请求:AI 看得到每个角色当前的字段值,才能判断
+ * 需不需要改;但画面 tag 里它只写 @角色名 占位符,不抄外貌 —— 替换由插件机械完成,
+ * 杜绝复述漂移。
+ *
+ * 建档由主请求在同一次输出里完成(changes 的 field="new"):柏宝书的中文外貌本来就
+ * 随角色参考块发给了主请求,它还额外有世界书、角色卡与目标正文佐证,比独立的转换
+ * 请求判断得更准。建档与用档同属一次推理,后续 tag 才能围绕刚确立的外貌协调。
  *
  * 主流程顺序:先落 changes(本楼发生的变化当楼生效) → 再用最新库替换 @占位符。
  */
@@ -120,6 +119,9 @@ export interface ConvertedChar {
  * 批量把中文外貌转成结构化字段。一次请求转换所有待办角色。
  * 渠道与自动 tag 主流程同口径:指派渠道优先,未指派跟随主 API。
  * 返回成功转换的条目;整体失败(请求异常)向上抛,调用方 catch 后降级。
+ *
+ * 只服务角色管理页的「按柏宝书最新外貌生成」按钮 —— 那是用户主动点的一次性动作。
+ * 自动 tag 主流程不再调它:建档由主请求在同一次输出里完成(见文件头)。
  */
 export async function generateCharTags(
   chars: Array<{ name: string; desc: string }>,
@@ -149,52 +151,20 @@ export async function generateCharTags(
 /* ============ 主流程入口 ============ */
 
 /**
- * 生成前的库准备:柏宝书角色参考里有外貌、库里没有的角色 → 批量转换入库(book 来源)。
- * 已有条目一律不动(AI 维护;手动条目更不动)。失败不阻断 —— 本轮该角色无锚定,模型自由发挥。
- * 返回库文本(拼进请求);空库返回 ''。
+ * 生成前的库准备:把当前库渲染成请求里的库文本。
+ *
+ * 纯函数、无请求 —— 建档已交给主请求(见文件头)。保留这层是因为调用方还需要
+ * 「库文本 + 库条目」这对组合,且 @占位符替换要以同一份 entries 为基线。
+ * 空库返回 text=null,调用方据此不启用 @占位符。
  */
 export interface ResolvedCharAnchors {
   text: string | null;
   entries: CharTagEntry[];
-  ops: CharTagAutoOp[];
 }
 
-export async function resolveCharAnchors(
-  roles: BookRole[],
-  entriesBefore: CharTagEntry[],
-  signal?: AbortSignal,
-): Promise<ResolvedCharAnchors> {
-  // 只给「库中没有」的角色建档;已有条目(无论来源)都不被柏宝书覆盖
-  const known = new Set(entriesBefore.map(entry => entry.name));
-  const toGenerate = roles.filter(r => r.name && r.desc && !known.has(r.name));
-  const ops: CharTagAutoOp[] = [];
-  if (toGenerate.length) {
-    try {
-      const generated = await generateCharTags(toGenerate, signal);
-      for (const g of generated) {
-        const fields = emptyCharFields();
-        for (const f of CHAR_TAG_FIELDS) {
-          const v = g.fields[f];
-          if (v) fields[f] = v;
-        }
-        const op = createCharTagNewOp({
-          name: g.name,
-          fields,
-          raw: '',
-          nl: '',
-          source: 'book',
-          desc: g.desc,
-        }, '柏宝书建档');
-        if (op) ops.push(op);
-      }
-    } catch (error) {
-      if (signal?.aborted) return { text: null, entries: entriesBefore, ops: [] };
-      console.warn('[柏宝绘] 角色固定外貌 tag 转换失败,本轮不做锚定', error);
-    }
-  }
-  const entries = applyCharTagOps(entriesBefore, ops, -1);
-  const text = buildLibraryText(entries);
-  return { text: text || null, entries, ops };
+export function resolveCharAnchors(entriesBefore: CharTagEntry[]): ResolvedCharAnchors {
+  const text = buildLibraryText(entriesBefore);
+  return { text: text || null, entries: entriesBefore };
 }
 
 /* ============ @占位符 替换 ============ */
@@ -248,4 +218,30 @@ export function applyCharRefs(
     return '';
   });
   return { text: tidySeparators(replaced), unknown };
+}
+
+export interface PositionedCharOp {
+  op: CharTagAutoOp;
+  sourceLine: number;
+}
+
+/**
+ * 按图片位置解析 @占位符。
+ *
+ * 建档(new)全楼生效:新角色的固定外貌是本楼**全程成立的事实**,不是「从某处开始」的
+ * 变化——同一楼里位置更靠前的图片也可能有这个角色在场。若按位置门控,那些图片的
+ * @占位符会查不到条目而被整个剥掉,角色变成没有外貌。
+ * 永久变化(set)才按位置门控:染发之前的图片必须用旧档案。
+ */
+export function applyPositionedCharRefs(
+  text: string,
+  entries: CharTagEntry[],
+  ops: PositionedCharOp[],
+  sourceLine: number,
+  mode: 'tag' | 'nl' = 'tag',
+): { text: string; unknown: string[] } {
+  const activeOps = ops
+    .filter(item => item.op.kind === 'new' || item.sourceLine <= sourceLine)
+    .map(item => item.op);
+  return applyCharRefs(text, applyCharTagOps(entries, activeOps, -1), mode);
 }

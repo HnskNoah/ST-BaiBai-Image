@@ -41,7 +41,7 @@ src/
 │   ├── clean.ts       # 历史/目标正文清洗(共享排除标签;历史保留 bbi_image)
 │   ├── context.ts     # 世界书激活(条目级渲染:展宏+EJS)、角色卡、user 人设
 │   ├── bookMemory.ts  # 读「柏宝书」全局 API,解析成角色参考块
-│   └── charAnchors.ts # 角色库:柏宝书建档/库文本注入 → @占位符替换(AI 报名不抄外貌)
+│   └── charAnchors.ts # 角色库:库文本注入 → @占位符替换(AI 报名不抄外貌)
 ├── backends/          # 出图后端(链路 B 的生成端)+ 共享尺寸工具
 │   ├── comfyui.ts     # ComfyUI:工作流模板 %占位符% 渲染、浏览器直连/ST 转发自动回退
 │   ├── comfyWorkflowAssistant.ts # AI 自动定位工作流节点(片段 ID 协议,不复制原文)
@@ -121,18 +121,24 @@ runForFloor(floor, opts)
   1. 过滤:仅 AI 故事楼;已有 <bbi_image> 且非手动 replace 则跳过
   2. 身份去重:chatId\0floor\0swipeId\0textHash → processed Set;手动(manual)绕过
   3. 每楼一个 AbortController:同楼新任务 abort 旧任务;CHAT_CHANGED 全量取消
-  4. 装配上下文(并行):
+  4. 装配上下文:
      - bookMemory.readBookMemory  → 柏宝书角色参考块(可 null)
-     - charAnchors.resolveCharAnchors → 柏宝书新角色转本楼建档 ops(不入库)→ 库文本
-       (给 AI 判断变更/引用;失败降级 null;返回 {text, entries, ops})
+     - charAnchors.resolveCharAnchors → 库文本(纯本地渲染,无请求;空库返回 text=null)
      - prompt.buildAutoTagMessages → 消息数组(见下)
   5. 请求:getTagGenChannel() 有指派渠道 → requestCompletion(服务端代理);
-     否则 requestViaMainApi(generateRaw)
+     否则 requestViaMainApi(generateRaw)。**每楼只此一次请求** —— 建档与选图同属一次
+     推理:先在 changes 里确立新角色外貌,再在同一次输出的 tag 里 @引用它并围绕它补
+     其余 tag。(旧版另有一次「中文外貌 → 字段」转换请求,已删:柏宝书的中文 desc 本就
+     随角色参考块发给主请求,主请求还多了世界书/角色卡/正文佐证,判断更准。)
   6. 重试循环:retryCount 次(请求异常 / 解析抛错都重试;abort 不消耗;「无画面」不算失败)
-  7. protocol.parseImagePlan 严格校验(JSON 结构/目标位置 ID/禁含子标签/size 宽容降级竖屏)
+  7. protocol.parseImagePlan 严格校验(JSON 结构/目标位置 ID/禁含子标签/size 宽容降级竖屏);
+     changes 全程宽容:单条坏只丢这条,绝不连累 images —— 漏一个角色档案只是它本轮没锚定,
+     为它作废整次输出会连图一起没有
   8. changes 与柏宝书建档一起转成楼层增量 ops(extra 的 bbiCharChanges),不提前落库
-  9. @占位符替换:applyCharRefs 把 tag/nl 里的 @角色名 换成「基线 + 本楼 ops 重放」后的
-     最新库 tag(nl 优先条目自然语言句),未知占位符剥除并告警
+  9. @占位符替换:applyPositionedCharRefs 把 tag/nl 里的 @角色名 换成「基线 + 本楼 ops 重放」
+     后的库 tag(nl 优先条目自然语言句)。**建档(new)全楼生效**——新角色的固定外貌是本楼
+     全程成立的事实,位置更靠前的图片也可能有他在场;**永久变化(set)才按位置门控**,
+     染发之前的图片用旧档。未知占位符剥除并 toast 告警(= 模型认为是角色却没建档)
  10. protocol.injectImageTags 按位置 ID 映射在原始物理行后插入
      <bbi_image>tag<nl>…</nl><negative>…</negative><size>…</size></bbi_image>
  11. 若 autoGenerate 开:先 markForAutoGenerate 每个新槽位(见链路 B 握手)
@@ -142,7 +148,7 @@ runForFloor(floor, opts)
 
 消息顺序(prompt.ts 固定):破限 system → 角色卡 system → persona system → 世界书 system →
 后端规范 system(ComfyUI/NAI 内置 spec,`{{nl}}` 宏按「生成自然语言」开关展开)→ 固定协议
-(输出 JSON 契约:images + changes)→ 思维链 system → user(角色参考 + 角色库 + 清洗后的最近 N 个 AI 故事楼及其间 user 楼 + 带段尾位置 ID 的目标正文)
+(身份定义 + 输出契约:一个 `<thinking>` 块和一个 JSON 对象,JSON 含 images + changes)→ 思维链 system → user(角色参考 + 角色库 + 清洗后的最近 N 个 AI 故事楼及其间 user 楼 + 带段尾位置 ID 的目标正文)
 → assistant 预填充(`<thinking>`,渠道关闭 prefill 时由 client 丢弃)。
 
 全部可编辑提示词(破限/规范/思维链/预填充)在 `state/settings.ts` 有内置默认常量
@@ -226,7 +232,8 @@ runForFloor(floor, opts)
   占位符(不支持即报错);请求通道自动选择 —— **浏览器直连优先,仅网络级失败(CORS/拒连)回退 ST
   服务端转发**;排队拿到 prompt_id 后轮询失败不重发(避免重复生图)。
 - `nai.ts`:协议与官方一致(浏览器直连,url 可指第三方兼容站,自动补 `/ai` 前缀);v4 系走
-  `v4_prompt` 结构 + vibe 编码缓存;NAI3 直接发参考原图;质量词/负面预设按模型查内置表;
+  `v4_prompt` 结构 + vibe 编码缓存;NAI3 直接发参考原图;质量词/负面词按模型给默认值,
+  渠道页可见可覆盖(存空串 = 跟随模型官方词);
   `.naiv4vibe` 导入导出与官方互通。
 - `chatu8Vibe.ts`:只读智绘姬的 extension_settings + IndexedDB,逐条导入 vibe(内容指纹去重、读取超时、迁移进度)。
 - `vibeStore.ts`:Vibe 原图/编码正文与缩略图分文件存 ST `user/files`，文件存储不可用时回退本机 IndexedDB。
@@ -272,8 +279,11 @@ runForFloor(floor, opts)
     `charTagsBeforeFloor(floor)` 取楼层时刻快照;MESSAGE_DELETED/MESSAGE_SWIPED 后重算。
   - 手动编辑/删除 = 用户接管:detachFromExistingFloors 清掉该角色在旧楼层里的同名操作
     (压进手动基线),之后新楼层仍可继续被 AI 变更。
-  - 柏宝书只负责首次建档(转成当前楼层 ops),此后条目归 AI 维护;外貌按字段
-    (sex/hair/eyes/skin/body/extra/outfit)记录,拼接顺序即最终 tag;旧整串以 raw 兼容。
+  - 建档与后续维护都归主请求(changes 的 field="new"/字段更新),与选图同属一次推理;
+    外貌按字段(sex/hair/eyes/skin/body/extra/outfit)记录,拼接顺序即最终 tag;
+    旧整串以 raw 兼容。建档必须带 hair 与 eyes(二次元身份锚点),缺任一项该条丢弃。
+    柏宝书的中文外貌随角色参考块发给主请求作依据;角色管理页另有「按柏宝书最新外貌
+    生成」按钮(generateCharTags),那是用户主动点的一次性转换,不在自动流程里。
   - AI 引用走 @角色名 占位符,由 applyCharRefs 在注入前机械替换,杜绝复述漂移;
     页面提供历史查看与逐条回滚(建档记录回滚 = 删条目)。
 

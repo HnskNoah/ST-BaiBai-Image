@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  injectImageTags,
-  parseImagePlan,
-} from '@/autoTag/protocol';
+import { injectImageTags, parseImagePlan } from '@/autoTag/protocol';
 
 const segments = [
   { id: 'P1', sourceLine: 0, text: '第一幕结束' },
@@ -195,37 +192,97 @@ describe('auto tag position protocol', () => {
 describe('changes parsing', () => {
   it('parses valid character changes alongside images', () => {
     const raw =
-      '{"images":[{"position":"P1","tag":"@小雪"}],"changes":[{"name":"小雪","field":"hair","value":"short black hair","reason":"剪了短发"}]}';
+      '{"images":[{"position":"P1","tag":"@小雪"}],"changes":[{"name":"小雪","field":"hair","value":"short black hair","position":"P2","reason":"剪了短发"}]}';
     expect(parseImagePlan(raw, segments, 1).changes).toEqual([
-      { name: '小雪', field: 'hair', value: 'short black hair', nl: undefined, reason: '剪了短发' },
-    ]);
-  });
-
-  it('accepts new-entry changes with value or structured fields', () => {
-    const raw =
-      '{"images":[],"changes":[{"name":"新角色","field":"new","value":"1girl, red eyes","reason":"建档"},{"name":"结构角色","field":"new","fields":{"sex":"1girl","hair":"blonde"},"reason":"建档"}]}';
-    expect(parseImagePlan(raw, segments, 1).changes).toEqual([
-      { name: '新角色', field: 'new', value: '1girl, red eyes', nl: undefined, reason: '建档' },
       {
-        name: '结构角色',
-        field: 'new',
-        value: '{"sex":"1girl","hair":"blonde"}',
+        name: '小雪',
+        field: 'hair',
+        value: 'short black hair',
         nl: undefined,
-        reason: '建档',
+        reason: '剪了短发',
+        position: 'P2',
+        sourceLine: 2,
       },
     ]);
   });
 
+  it('accepts structured new-entry changes with required identity fields', () => {
+    const raw =
+      '{"images":[],"changes":[{"name":"结构角色","field":"new","fields":{"sex":"1girl","hair":"long blonde hair","eyes":"blue eyes","bogus":"drop"},"position":"P1","reason":"建档"}]}';
+    expect(parseImagePlan(raw, segments, 1).changes).toEqual([
+      {
+        name: '结构角色',
+        field: 'new',
+        value: '{"sex":"1girl","hair":"long blonde hair","eyes":"blue eyes"}',
+        nl: undefined,
+        reason: '建档',
+        position: 'P1',
+        sourceLine: 0,
+      },
+    ]);
+  });
+
+  it('drops unusable new profiles without failing the whole plan', () => {
+    // 建档坏一条只该丢这条:为它作废整次输出会连图一起没有,那是更坏的结果
+    const raw =
+      '{"images":[{"position":"P1","tag":"a"}],"changes":[{"name":"旧格式","field":"new","value":"1girl, red eyes","position":"P1"},{"name":"缺瞳色","field":"new","fields":{"hair":"long black hair"},"position":"P1"}]}';
+    const plan = parseImagePlan(raw, segments, 1);
+    expect(plan.changes).toEqual([]);
+    expect(plan.images).toHaveLength(1);
+  });
+
+  it('treats a new profile as floor-wide, defaulting a missing or unknown position', () => {
+    // 建档不是「从某处开始」的变化,位置只作记录 —— 缺了/坏了都不该丢掉这条档案
+    const raw =
+      '{"images":[],"changes":[{"name":"无位置","field":"new","fields":{"hair":"silver hair","eyes":"red eyes"}},{"name":"坏位置","field":"new","fields":{"hair":"black hair","eyes":"blue eyes"},"position":"P9"}]}';
+    expect(parseImagePlan(raw, segments, 1).changes).toMatchObject([
+      { name: '无位置', field: 'new', position: 'P1', sourceLine: 0 },
+      { name: '坏位置', field: 'new', position: 'P1', sourceLine: 0 },
+    ]);
+  });
+
+  it('drops permanent changes without a valid effective position', () => {
+    // 永久变化必须知道从哪一格开始生效,位置坏 = 无法定位 = 丢弃(但不连累 images)
+    const raw =
+      '{"images":[{"position":"P1","tag":"a"}],"changes":[{"name":"小雪","field":"hair","value":"red hair"},{"name":"小雪","field":"eyes","value":"red eyes","position":"P9"}]}';
+    const plan = parseImagePlan(raw, segments, 1);
+    expect(plan.changes).toEqual([]);
+    expect(plan.images).toHaveLength(1);
+  });
+
   it('drops invalid change records but keeps the rest', () => {
     const raw =
-      '{"images":[],"changes":[{"name":"","field":"hair","value":"x"},{"name":"A","field":"bogus","value":"x"},{"name":"B","field":"hair","value":"ok","reason":"r"},"junk",{"name":"C","field":"nl","nl":"a girl with long hair"}]}';
+      '{"images":[],"changes":[{"name":"","field":"hair","value":"x"},{"name":"A","field":"bogus","value":"x"},{"name":"B","field":"hair","value":"ok","position":"P1","reason":"r"},"junk",{"name":"C","field":"nl","nl":"a girl with long hair","position":"P2"}]}';
     expect(parseImagePlan(raw, segments, 1).changes).toEqual([
-      { name: 'B', field: 'hair', value: 'ok', nl: undefined, reason: 'r' },
-      { name: 'C', field: 'nl', value: '', nl: 'a girl with long hair', reason: '' },
+      {
+        name: 'B',
+        field: 'hair',
+        value: 'ok',
+        nl: undefined,
+        reason: 'r',
+        position: 'P1',
+        sourceLine: 0,
+      },
+      {
+        name: 'C',
+        field: 'nl',
+        value: '',
+        nl: 'a girl with long hair',
+        reason: '',
+        position: 'P2',
+        sourceLine: 2,
+      },
     ]);
   });
 
   it('missing changes key yields an empty array', () => {
     expect(parseImagePlan('{"images":[{"position":"P1","tag":"a"}]}', segments, 1).changes).toEqual([]);
+  });
+
+  it('no longer requires a character audit array', () => {
+    expect(parseImagePlan('{"images":[],"changes":[]}', segments, 1)).toEqual({
+      images: [],
+      changes: [],
+    });
   });
 });

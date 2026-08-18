@@ -2,12 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyCharRefs,
+  applyPositionedCharRefs,
   buildLibraryText,
   formatEntryForPrompt,
   parseConvertedTags,
+  resolveCharAnchors,
 } from '@/autoTag/charAnchors';
-import type { BookRole } from '@/autoTag/bookMemory';
-import { emptyCharFields, type CharTagEntry } from '@/state/charTags';
+import {
+  createCharTagNewOp,
+  createCharTagSetOp,
+  emptyCharFields,
+  type CharTagEntry,
+} from '@/state/charTags';
 
 function entry(name: string, fields: Partial<Record<string, string>>, source: CharTagEntry['source'] = 'ai'): CharTagEntry {
   return {
@@ -110,5 +116,50 @@ describe('parseConvertedTags', () => {
     expect(parseConvertedTags(raw)).toEqual({ 串: { hair: 'ok' }, 阿黛尔: { hair: 'long black' } });
     expect(parseConvertedTags('{"阿黛尔":"plain string"}')).toEqual({});
     expect(parseConvertedTags('no json')).toEqual({});
+  });
+});
+
+describe('positioned character state', () => {
+  it('renders the library without firing any request', () => {
+    // 建档已交给主请求:这层只做本地渲染,不再发外貌转换请求
+    const entries = [entry('小雪', { sex: '1girl', hair: 'long black hair', eyes: 'blue eyes' })];
+    const resolved = resolveCharAnchors(entries);
+    expect(resolved.entries).toBe(entries);
+    expect(resolved.text).toContain('- 小雪: 性别=1girl');
+    expect(resolveCharAnchors([]).text).toBeNull();
+  });
+
+  it('uses the old profile before a permanent change and the new profile after it', () => {
+    const base = [entry('小雪', { sex: '1girl', hair: 'long black hair', eyes: 'blue eyes' })];
+    const dyeHair = createCharTagSetOp('小雪', 'hair', 'long red hair', '染发')!;
+    const ops = [{ op: dyeHair, sourceLine: 2 }];
+
+    expect(applyPositionedCharRefs('@小雪, smiling', base, ops, 0).text).toBe(
+      '1girl, long black hair, blue eyes, smiling',
+    );
+    expect(applyPositionedCharRefs('@小雪, smiling', base, ops, 2).text).toBe(
+      '1girl, long red hair, blue eyes, smiling',
+    );
+  });
+
+  it('makes a same-response new profile available across the whole floor', () => {
+    // 新角色的固定外貌是本楼全程成立的事实,不是「从某处开始」的变化:
+    // 按位置门控会让建档位置之前的图片查不到条目,@占位符被整个剥掉 = 角色没有外貌。
+    const profile = createCharTagNewOp({
+      name: '阿黛尔',
+      fields: { ...emptyCharFields(), sex: '1girl', hair: 'short silver hair', eyes: 'red eyes' },
+      raw: '',
+      nl: '',
+      source: 'ai',
+      desc: '',
+    })!;
+    const ops = [{ op: profile, sourceLine: 2 }];
+    const expected = '1girl, short silver hair, red eyes, standing';
+
+    expect(applyPositionedCharRefs('@阿黛尔, standing', [], ops, 0)).toEqual({
+      text: expected,
+      unknown: [],
+    });
+    expect(applyPositionedCharRefs('@阿黛尔, standing', [], ops, 2).text).toBe(expected);
   });
 });

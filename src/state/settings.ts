@@ -1,3 +1,4 @@
+import { naiDefaultUndesired } from '@/backends/nai';
 import { parseSize } from '@/backends/size';
 import { saveVibeFiles, vibeFingerprint, vibeMetaFromData } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
@@ -21,9 +22,10 @@ export const BACKENDS: { value: BackendId; label: string }[] = [
 export interface BackendConn {
   /** 服务地址,如 http://127.0.0.1:7860 */
   url: string;
-  /** 正面质量词:未来拼到正向提示词前面。骨架期仅存值,未生效。 */
+  /** 正面质量词。语义按后端各自解释:webui 骨架期仅存值未生效;
+   *  nai 视为覆盖值——留空则按模型取官方质量词(见 nai.ts naiDefaultQualityTags)。 */
   qualityTags: string;
-  /** 负面提示词。骨架期仅存值,未生效。 */
+  /** 负面提示词。webui 骨架期仅存值未生效;nai 已并入 undesiredContent,只留作存量迁移来源。 */
   negativePrompt: string;
   /** 分辨率,如 832×1216。webui 骨架期仅存值;comfyui/nai 已改用下面的横竖两格。 */
   resolution: string;
@@ -96,6 +98,8 @@ export interface NaiSettings extends BackendConn {
   /** API Key(与副 API 渠道同口径,随设置落盘)。 */
   key: string;
   model: NaiModel;
+  /** 负面提示词覆盖值;留空 = 按模型取官方负面词(见 nai.ts naiDefaultUndesired)。 */
+  undesiredContent: string;
   sampler: string;
   steps: number;
   /** 提示词相关性(CFG scale)。 */
@@ -106,10 +110,6 @@ export interface NaiSettings extends BackendConn {
   noiseSchedule: string;
   /** 固定种子;0 = 每次随机。 */
   seed: number;
-  /** 负面预设名(Heavy/Light/Human Focus/Furry Focus/无);按模型取内置负面词。 */
-  ucPreset: string;
-  /** 质量词开关:开=qualityTags 为空时按模型附加内置质量词。 */
-  qualityToggle: boolean;
   /** Variety Boost(skip_cfg_above_sigma,按尺寸与模型自动算 magic 值)。 */
   varietyBoost: boolean;
   /** 参考强度归一化:多个 vibe 强度总和超过 1 时按比例压回 1。 */
@@ -372,9 +372,13 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 没有明确穿回、整理、换装、解除状态、时间跳跃或场景切换时，不得把临时状态恢复成角色默认值。
 
 2. 先处理角色状态，再决定是否出图：
-   - 对照【角色固定外貌库】检查永久变化，按任务规则写入 changes；临时状态不写 changes。
-   - 柏宝书未提供且同一未建档角色在现有上下文中明确反复出场时，可按任务规则用 field:"new" 建档；一次性路人不建。
-   - 即使 images 为空也不能跳过 changes 检查。
+   - 通读目标正文，逐个列出实际在场且有名有姓的角色。不能只看最终入选图片里的人，也不能漏掉世界书、角色卡或柏宝书为其给出了设定的角色。
+   - 逐个对照【角色固定外貌库】：库里没有、但属于正式角色（有设定或持续参与剧情）的，首次出场就用 field:"new" 建档，不论他是否入选本次图片；明确的一次性无名路人不建。
+   - 新建档优先采用目标正文与人设明确给出的当前外貌；明确写了发色/瞳色就原样转换。缺少颜色时，根据世界观、种族、身份、性格和其余角色设定一次性补全，hair 与 eyes 都不得留空。
+   - 建档在本楼全程有效：确立后，本楼任意位置的图片都直接写 @角色名，不要再散写他的固定外貌。
+   - 对照角色库检查永久变化：染发、剪发、永久变身等写入 changes；假发、美瞳、湿发、光照变色等临时状态不写 changes。静态初始人设不得覆盖角色库中的后期状态。
+   - 永久变化要检查 position：变化前的图片沿用旧档，变化位置及之后使用新档；同楼多次变化按正文顺序处理。
+   - 即使 images 为空也不能跳过建档与 changes 检查。
 
 3. 枚举并筛选候选画面：
    - 候选必须是一个可见瞬间，有明确主体、动作或视觉状态和场景。纯对话只有在伴随值得画的表情、肢体动作、人物关系或环境变化时才保留；只跳过没有视觉变化的对话、纯心理和过渡。
@@ -386,7 +390,7 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 选择目标正文中让这些事实刚刚完整成立、且尚未切换到下一场景的 P编号。
 
 5. 再决定怎么画：
-   - 库角色只写 @角色名；未建档角色按角色参考与正文写基础外貌。多人各自的服装、颜色、物件和动作必须明确绑定。
+   - 库角色只写 @角色名；本次新建档角色在本楼任意位置也立即写 @角色名，不要在同一回复里重新散写其固定外貌。多人各自的服装、颜色、物件和动作必须明确绑定。
    - 先判断时代与世界观，再只补画面实际可见的最少时代锚点；有明确设定时必须体现，证据不足时不擅自断言具体文明。
    - 主动确定镜头距离、构图、光线来源、色调和氛围；景别必须完整容纳核心动作与接触点。
    - 最后依据实际景别和主体空间分布决定 size。人数只是参考：群像、远景、宽阔或横向互动通常 landscape；单人、纵向构图、特写及双人近距离可 portrait。
@@ -395,8 +399,8 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 每个剧情 tag 都能追溯到正文/设定，每个补充 tag 都只属于允许发挥的镜头、光线、氛围或时代锚点。
    - 每张图是单一瞬间；多张图彼此不重复；人数、角色绑定、连续状态、核心动作、景别、size 和 P编号一致。
    - 没有衣物穿脱、湿身/污损、伤势、饰品或手持物的无依据复原；没有把临时状态误写进 changes。
-   - 库角色使用 @占位符；tag 是英文正面短 tag、无质量词负面词；张数不超上限；要求 nl 时与 tag 描述同一画面。
-   - 没有值得画的画面时 images 为空，但仍保留应有的 changes。`;
+   - 目标正文里每个有设定的正式角色都已建档或已在库中；已建档和同轮新建档角色都正确使用 @占位符；永久变化都有合法 P编号，且图片使用了该位置应有的新旧档案；tag 是英文正面短 tag、无质量词负面词；张数不超上限；要求 nl 时与 tag 描述同一画面。
+   - 没有值得画的画面时 images 为空，但仍保留应有的建档与 changes。`;
 
 /** 预填充内置默认:以 <thinking> 开头,引导模型先过思考清单再输出 JSON。 */
 export const DEFAULT_PREFILL_PROMPT = '<thinking>';
@@ -479,14 +483,13 @@ function naiDefaults(): NaiSettings {
     resolution: '832×1216',
     key: '',
     model: 'nai-diffusion-4-5-full',
+    undesiredContent: '',
     sampler: 'k_euler',
     steps: 28,
     scale: 5,
     cfgRescale: 0,
     noiseSchedule: 'karras',
     seed: 0,
-    ucPreset: 'Heavy',
-    qualityToggle: true,
     varietyBoost: true,
     normalizeRefStrength: true,
     concurrency: 1,
@@ -719,13 +722,31 @@ async function migrateLegacyVibesInPlace(
   return { migrated, error: null };
 }
 
+/**
+ * 存量迁移:早先负面词分「附加负面(negativePrompt)」+ 官方基线两段拼,现在合成
+ * undesiredContent 一个框。老配置里的附加负面若不搬,升级后会静默失效(用户排除的
+ * 内容悄悄回来了),故按当年的拼接顺序折进去:附加在前 + 该模型官方词在后。
+ */
+function foldLegacyNegative(o: Partial<NaiSettings>, model: NaiModel, def: string): string {
+  if (typeof o.undesiredContent === 'string') return o.undesiredContent;
+  const legacy = typeof o.negativePrompt === 'string' ? o.negativePrompt.trim() : '';
+  if (!legacy) return def;
+  return [legacy, naiDefaultUndesired(model)].filter(Boolean).join(', ');
+}
+
 function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   const conn = normalizeBackend(raw, def);
   const o = (raw ?? {}) as Partial<NaiSettings>;
+  const model =
+    typeof o.model === 'string' && NAI_MODEL_VALUES.has(o.model) ? (o.model as NaiModel) : def.model;
   return {
     ...conn,
+    // 「附加负面」已并入 undesiredContent 一个框,存量值折进去(见 foldLegacyNegative)
+    negativePrompt: '',
     key: typeof o.key === 'string' ? o.key : def.key,
-    model: typeof o.model === 'string' && NAI_MODEL_VALUES.has(o.model) ? (o.model as NaiModel) : def.model,
+    model,
+    // 覆盖值:空串是有意义的存储值(=跟随模型官方词),故不能用 `&& o.x` 那种把 '' 吞掉的守卫
+    undesiredContent: foldLegacyNegative(o, model, def.undesiredContent),
     sampler: typeof o.sampler === 'string' && o.sampler ? o.sampler : def.sampler,
     steps: Math.round(clampNumber(o.steps, def.steps, 1, 50)),
     scale: clampNumber(o.scale, def.scale, 0, 35),
@@ -733,8 +754,6 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
     noiseSchedule:
       typeof o.noiseSchedule === 'string' && o.noiseSchedule ? o.noiseSchedule : def.noiseSchedule,
     seed: Math.round(clampNumber(o.seed, def.seed, 0, 4294967295)),
-    ucPreset: typeof o.ucPreset === 'string' ? o.ucPreset : def.ucPreset,
-    qualityToggle: typeof o.qualityToggle === 'boolean' ? o.qualityToggle : def.qualityToggle,
     varietyBoost: typeof o.varietyBoost === 'boolean' ? o.varietyBoost : def.varietyBoost,
     normalizeRefStrength:
       typeof o.normalizeRefStrength === 'boolean' ? o.normalizeRefStrength : def.normalizeRefStrength,

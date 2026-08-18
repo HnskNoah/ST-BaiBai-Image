@@ -1,6 +1,10 @@
 import { normalizeOrientation, type Orientation } from '@/backends/size';
 import type { TargetSegment } from '@/autoTag/clean';
-import type { CharTagHistoryField } from '@/state/charTags';
+import {
+  CHAR_TAG_FIELDS,
+  type CharTagField,
+  type CharTagHistoryField,
+} from '@/state/charTags';
 
 export interface ImageInsertion {
   /** 模型选择的目标正文位置 ID。 */
@@ -32,6 +36,13 @@ export interface CharChange {
   /** 自然语言外貌句(new 建档时可附带)。 */
   nl?: string;
   reason: string;
+  /**
+   * 永久变化开始生效的位置。建档(new)不受此约束——角色的固定外貌是本楼全程
+   * 成立的事实,不是「从某处开始」的变化,这里只作记录与排序用。
+   */
+  position: string;
+  /** position 对应的原始物理行(0-based,仅插件内部使用)。 */
+  sourceLine: number;
 }
 
 const HISTORY_FIELDS: ReadonlySet<string> = new Set([
@@ -129,7 +140,8 @@ function sanitizePosition(value: unknown, index: number): string {
 /**
  * 解析并严格校验模型给出的“目标位置 ID + 提示词”列表。tag 必填;nl/negative 选填。
  * size 一律容忍:归一不出就当竖屏——为它抛错会白白吃掉 runner 的重试次数。
- * changes 宽容解析:单条坏就丢弃,不影响 images;整个键缺失 = 无变更。
+ * changes 全程宽容:单条坏就丢弃,绝不连累 images——角色档案漏一条只是这个角色本轮
+ * 没锚定,为它作废整次输出会连图一起没有,那是更坏的结果。
  */
 export function parseImagePlan(
   raw: string,
@@ -164,11 +176,43 @@ export function parseImagePlan(
 
   return {
     images: images.slice(0, Math.max(0, Math.floor(maxImages))),
-    changes: parseChanges(parsed.changes),
+    changes: parseChanges(parsed.changes, positions),
   };
 }
 
-function parseChanges(raw: unknown): CharChange[] {
+/**
+ * 解析变化生效位置。建档(new)缺位置不是错——它本就全楼生效;
+ * 解析不出时回落到首个位置,只用于排序。
+ */
+function parsePosition(
+  value: unknown,
+  positions: Map<string, number>,
+): { position: string; sourceLine: number } | null {
+  const position = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (!/^P\d+$/.test(position)) return null;
+  const sourceLine = positions.get(position);
+  if (sourceLine === undefined) return null;
+  return { position, sourceLine };
+}
+
+function firstPosition(positions: Map<string, number>): { position: string; sourceLine: number } {
+  for (const [position, sourceLine] of positions) return { position, sourceLine };
+  return { position: '', sourceLine: 0 };
+}
+
+/** 建档字段:hair 与 eyes 是二次元身份锚点,缺任一条则该条建档不可用(调用方丢弃)。 */
+function parseNewFields(raw: Record<string, unknown>): string | null {
+  const fields: Partial<Record<CharTagField, string>> = {};
+  for (const field of CHAR_TAG_FIELDS) {
+    const value = raw[field];
+    const text = typeof value === 'string' ? value.trim().replace(/[\r\n]+/g, ' ') : '';
+    if (text) fields[field] = text;
+  }
+  if (!fields.hair || !fields.eyes) return null;
+  return JSON.stringify(fields);
+}
+
+function parseChanges(raw: unknown, positions: Map<string, number>): CharChange[] {
   if (!Array.isArray(raw)) return [];
   const out: CharChange[] = [];
   for (const item of raw) {
@@ -178,21 +222,24 @@ function parseChanges(raw: unknown): CharChange[] {
     const fieldRaw = typeof o.field === 'string' ? o.field.trim() : '';
     if (!name || !HISTORY_FIELDS.has(fieldRaw)) continue;
     const field = fieldRaw as CharTagHistoryField;
-    // 'new' 建档:value 可与 fields 对象二选一(模型习惯给其一)
+    const parsedPosition = parsePosition(o.position ?? o.at, positions);
+    // 建档全楼生效,位置只作记录,缺失就回落首位;永久变化必须知道从哪生效,位置坏 = 丢弃
+    if (!parsedPosition && field !== 'new') continue;
+    const { position, sourceLine } = parsedPosition ?? firstPosition(positions);
     let value = typeof o.value === 'string' ? o.value.trim() : '';
     const fields =
       o.fields && typeof o.fields === 'object' && !Array.isArray(o.fields)
         ? (o.fields as Record<string, unknown>)
         : null;
-    if (field === 'new' && fields) {
-      // 结构化建档:拼回字段 map,由 state 层拆开
-      value = JSON.stringify(fields);
+    if (field === 'new') {
+      const parsedFields = fields ? parseNewFields(fields) : null;
+      if (!parsedFields) continue;
+      value = parsedFields;
     }
     const nl = typeof o.nl === 'string' ? o.nl.trim() : '';
     const reason = typeof o.reason === 'string' ? o.reason.trim() : '';
-    if (!value && !nl && field !== 'new') continue;
-    if (field === 'new' && !value && !nl) continue;
-    out.push({ name, field, value, nl: nl || undefined, reason });
+    if (!value && !nl) continue;
+    out.push({ name, field, value, nl: nl || undefined, reason, position, sourceLine });
   }
   return out;
 }

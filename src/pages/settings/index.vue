@@ -1384,22 +1384,7 @@ function closeModelMenuSoon() {
   font-size: 13px;
   font-weight: 600;
 }
-/* 状态药丸:默认 muted,已自定义转金强调 */
-.bbi-prompt-state {
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 9px;
-  border-radius: var(--bbi-radius-pill);
-  color: var(--bbi-ink-muted);
-  background: var(--bbi-surface);
-  border: 1px solid var(--bbi-line);
-}
-.bbi-prompt-state.is-custom {
-  color: var(--bbi-accent);
-  background: var(--bbi-accent-soft);
-  border-color: transparent;
-}
+/* 状态药丸(.bbi-prompt-state / .is-custom)已提到 base.css 全局:渠道页也用它 */
 .bbi-prompt-edit {
   flex: 0 0 auto;
   font-size: 16px;

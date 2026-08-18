@@ -1,11 +1,15 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { readBookMemory } from '@/autoTag/bookMemory';
-import { applyCharRefs, resolveCharAnchors } from '@/autoTag/charAnchors';
+import {
+  applyPositionedCharRefs,
+  resolveCharAnchors,
+  type PositionedCharOp,
+} from '@/autoTag/charAnchors';
 import { prepareTargetText } from '@/autoTag/clean';
 import { buildAutoTagMessages } from '@/autoTag/prompt';
 import {
   BBI_CHAR_EXTRA_KEY,
-  applyCharTagOps,
+  CHAR_TAG_FIELDS,
   charTagsBeforeFloor,
   createCharTagNewOp,
   createCharTagSetOp,
@@ -55,9 +59,10 @@ interface RunOptions {
 }
 
 /** 把 AI 报告的 changes 转成当前楼层操作;真正写回在正文 CAS 成功时一次完成。 */
-function planChangeOps(plan: ImagePlan): CharTagAutoOp[] {
-  const ops: CharTagAutoOp[] = [];
+function planChangeOps(plan: ImagePlan): PositionedCharOp[] {
+  const ops: PositionedCharOp[] = [];
   for (const change of plan.changes) {
+    let op: CharTagAutoOp | null = null;
     if (change.field === 'new') {
       // value 可能是结构化字段的 JSON 串(protocol.ts 拼),也可能是整串 tag 文本
       let fields: Partial<Record<CharTagField, string>> | null = null;
@@ -66,8 +71,9 @@ function planChangeOps(plan: ImagePlan): CharTagAutoOp[] {
         try {
           const parsed = JSON.parse(change.value) as Record<string, unknown>;
           const picked: Partial<Record<CharTagField, string>> = {};
-          for (const [k, v] of Object.entries(parsed)) {
-            if (typeof v === 'string' && v.trim()) picked[k as CharTagField] = v.trim();
+          for (const field of CHAR_TAG_FIELDS) {
+            const value = parsed[field];
+            if (typeof value === 'string' && value.trim()) picked[field] = value.trim();
           }
           if (Object.keys(picked).length) fields = picked;
         } catch {
@@ -75,7 +81,7 @@ function planChangeOps(plan: ImagePlan): CharTagAutoOp[] {
         }
       }
       if (!fields && change.value) value = change.value;
-      const op = createCharTagNewOp(
+      op = createCharTagNewOp(
         {
           name: change.name,
           fields: { ...emptyCharFields(), ...(fields ?? {}) },
@@ -86,16 +92,14 @@ function planChangeOps(plan: ImagePlan): CharTagAutoOp[] {
         },
         change.reason,
       );
-      if (op) ops.push(op);
     } else if (change.field === 'nl') {
-      const op = createCharTagSetOp(change.name, 'nl', change.value || change.nl || '', change.reason);
-      if (op) ops.push(op);
+      op = createCharTagSetOp(change.name, 'nl', change.value || change.nl || '', change.reason);
     } else {
-      const op = createCharTagSetOp(change.name, change.field, change.value, change.reason);
-      if (op) ops.push(op);
+      op = createCharTagSetOp(change.name, change.field, change.value, change.reason);
     }
+    if (op) ops.push({ op, sourceLine: change.sourceLine });
   }
-  return ops;
+  return ops.sort((left, right) => left.sourceLine - right.sourceLine);
 }
 
 async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> {
@@ -139,12 +143,8 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
   try {
     const memory = readBookMemory(floor, context.chat[floor]?.mes ?? '', context.name1);
     const entriesBefore = charTagsBeforeFloor(floor);
-    // 柏宝书新面孔只暂存为本楼建档操作;请求/写回失败时不会污染角色库。
-    const anchors = await resolveCharAnchors(memory?.roles ?? [], entriesBefore, controller.signal);
-    if (controller.signal.aborted) {
-      processed.delete(identity);
-      return;
-    }
+    // 纯本地渲染:建档由主请求在同一次输出里完成(changes 的 field="new")
+    const anchors = resolveCharAnchors(entriesBefore);
     const messages = await buildAutoTagMessages(
       context,
       floor,
@@ -193,24 +193,39 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     }
 
     const planOps = planChangeOps(plan);
-    const floorOps = [...anchors.ops, ...planOps];
-    const stagedEntries = applyCharTagOps(anchors.entries, planOps, floor);
+    const floorOps = planOps.map(item => item.op);
     const previousDelta = readCharTagFloorDelta(message);
 
-    // @占位符 替换:库里有的换成最新 tag,库里没有的剥掉(nl 部分优先条目的自然语言句)
+    // @占位符按正文位置替换：变化前图片用旧档，变化位置及之后用新档。
     const unknownNames = new Set<string>();
     for (const image of plan.images) {
-      const tagRes = applyCharRefs(image.tag, stagedEntries, 'tag');
+      const tagRes = applyPositionedCharRefs(
+        image.tag,
+        anchors.entries,
+        planOps,
+        image.sourceLine,
+        'tag',
+      );
       if (tagRes.text) image.tag = tagRes.text;
       if (image.nl) {
-        const nlRes = applyCharRefs(image.nl, stagedEntries, 'nl');
+        const nlRes = applyPositionedCharRefs(
+          image.nl,
+          anchors.entries,
+          planOps,
+          image.sourceLine,
+          'nl',
+        );
         image.nl = nlRes.text;
         for (const n of nlRes.unknown) unknownNames.add(n);
       }
       for (const n of tagRes.unknown) unknownNames.add(n);
     }
     if (unknownNames.size) {
-      console.warn('[柏宝绘] AI 引用了库里没有的角色占位符,已剥除:', [...unknownNames].join('、'));
+      // 模型认为这是角色、却没给它建档 —— 该角色在图里将完全没有外貌。
+      // 这是漏建档唯一的确定性信号,藏进控制台等于没有,必须让用户看见。
+      const names = [...unknownNames].join('、');
+      console.warn('[柏宝绘] AI 引用了库里没有的角色占位符,已剥除:', names);
+      toastr.warning(`角色「${names}」没有建档，本次画面中缺少其外貌`, '柏宝绘');
     }
 
     // 没有图片、没有角色变化、也没有旧楼层变化要清理时,保持原来的无写入早退。

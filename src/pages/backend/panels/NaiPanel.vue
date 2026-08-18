@@ -8,11 +8,12 @@ import {
 import {
   buildNaiv4vibe,
   encodeVibeImage,
+  naiDefaultQualityTags,
+  naiDefaultUndesired,
   NAI_NOISE_SCHEDULES,
   NAI_SAMPLERS,
   parseNaiv4vibe,
   testNaiConnection,
-  ucPresetNames,
   vibeModelKey,
 } from '@/backends/nai';
 import {
@@ -28,24 +29,13 @@ import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { getContext } from '@/st/context';
 import { NAI_MODELS, settings, type NaiVibe } from '@/state/settings';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 
 /** 本渠道是否为当前出图渠道;「使用此渠道」按钮与设置页选择器、页签徽标同属一个开关。 */
 const inUse = computed(() => settings.defaultBackend === 'nai');
 
 const testing = ref(false);
 const showKey = ref(false);
-
-/** 负面预设选项跟随模型;切换模型后原预设不存在时回落 Heavy。 */
-const ucOptions = computed(() => ucPresetNames(settings.nai.model));
-watch(
-  () => settings.nai.model,
-  () => {
-    if (!ucOptions.value.includes(settings.nai.ucPreset)) {
-      settings.nai.ucPreset = ucOptions.value.includes('Heavy') ? 'Heavy' : '无';
-    }
-  },
-);
 
 function errorMessage(error: unknown): string {
   if (error instanceof DOMException && error.name === 'AbortError') return '操作已取消';
@@ -64,6 +54,40 @@ async function onTestConnection() {
     testing.value = false;
   }
 }
+
+/* ============ 提示词:官方默认词可见且可改 ============ */
+
+/**
+ * 质量词与基线负面词都按模型有一套官方值。设置里存的是「覆盖值」,空串 = 跟随模型官方词。
+ *
+ * 为什么要这层可写 computed:直接把 v-model 绑到设置上,未自定义时框里是空的——
+ * 那就是把「看不到默认注入了什么」的老问题原地搬了个家。故读取时回落官方词
+ * (框里永远是实际生效的内容、切模型会跟着换),写入时与官方词一致就存空串
+ * (与设置页自定义提示词的 saveTagPrompt 同口径,避免把模板冗余存进设置)。
+ */
+function overrideText(read: () => string, write: (v: string) => void, official: () => string) {
+  return computed<string>({
+    get: () => read().trim() || official(),
+    set: v => write(v.trim() === official().trim() ? '' : v),
+  });
+}
+
+const officialQuality = () => naiDefaultQualityTags(settings.nai.model);
+const officialUndesired = () => naiDefaultUndesired(settings.nai.model);
+
+const qualityText = overrideText(
+  () => settings.nai.qualityTags,
+  v => (settings.nai.qualityTags = v),
+  officialQuality,
+);
+const undesiredText = overrideText(
+  () => settings.nai.undesiredContent,
+  v => (settings.nai.undesiredContent = v),
+  officialUndesired,
+);
+
+const qualityCustom = computed(() => settings.nai.qualityTags.trim().length > 0);
+const undesiredCustom = computed(() => settings.nai.undesiredContent.trim().length > 0);
 
 /* ============ Vibe 库 ============ */
 
@@ -321,39 +345,45 @@ async function removeVibe(vibe: NaiVibe) {
         <div class="bbi-field">
           <div class="bbi-field-head">
             <span class="bbi-field-label">正面质量词</span>
+            <span class="prompt-head-right">
+              <span class="bbi-prompt-state" :class="{ 'is-custom': qualityCustom }">
+                {{ qualityCustom ? '已自定义' : '默认' }}
+              </span>
+              <button
+                class="bbi-btn bbi-btn-sm"
+                type="button"
+                :disabled="!qualityCustom"
+                title="回到当前模型的官方质量词"
+                @click="settings.nai.qualityTags = ''"
+              >
+                <Icon name="refresh" :size="12" /> 恢复默认
+              </button>
+            </span>
           </div>
-          <BbiTextarea
-            v-model="settings.nai.qualityTags"
-            :rows="1"
-            :max-rows="4"
-            mono
-            placeholder="留空则按模型用内置质量词"
-          />
-          <p class="bbi-field-hint">生成时拼到正向提示词最前;留空 + 质量词开关开启时按模型自动附加</p>
+          <BbiTextarea v-model="qualityText" :max-rows="6" mono />
+          <p class="bbi-field-hint">拼在画面 tag 之后</p>
         </div>
 
         <div class="bbi-field">
           <div class="bbi-field-head">
             <span class="bbi-field-label">负面提示词</span>
+            <span class="prompt-head-right">
+              <span class="bbi-prompt-state" :class="{ 'is-custom': undesiredCustom }">
+                {{ undesiredCustom ? '已自定义' : '默认' }}
+              </span>
+              <button
+                class="bbi-btn bbi-btn-sm"
+                type="button"
+                :disabled="!undesiredCustom"
+                title="回到当前模型的官方负面词"
+                @click="settings.nai.undesiredContent = ''"
+              >
+                <Icon name="refresh" :size="12" /> 恢复默认
+              </button>
+            </span>
           </div>
-          <BbiTextarea
-            v-model="settings.nai.negativePrompt"
-            :rows="1"
-            :max-rows="6"
-            mono
-            placeholder="bad anatomy, bad hands, ..."
-          />
-          <p class="bbi-field-hint">与下方负面预设一起拼进负面</p>
-        </div>
-
-        <div class="bbi-field">
-          <div class="bbi-field-head">
-            <span class="bbi-field-label">负面预设</span>
-          </div>
-          <select class="bbi-input bbi-select" v-model="settings.nai.ucPreset">
-            <option v-for="name in ucOptions" :key="name" :value="name">{{ name }}</option>
-          </select>
-          <p class="bbi-field-hint">各模型内置的官方负面词组,选项跟随当前模型</p>
+          <BbiTextarea v-model="undesiredText" :max-rows="10" mono />
+          <p class="bbi-field-hint">按模型给官方默认值;要加自己的词直接往后接</p>
         </div>
       </Collapsible>
 
@@ -464,10 +494,6 @@ async function removeVibe(vibe: NaiVibe) {
         </div>
 
         <label class="bbi-switch-row">
-          <span class="bbi-field-label">质量词开关(无自定义质量词时按模型附加内置质量词)</span>
-          <input v-model="settings.nai.qualityToggle" type="checkbox" class="bbi-checkbox" />
-        </label>
-        <label class="bbi-switch-row">
           <span class="bbi-field-label">Variety Boost(画面多样性,按尺寸自动计算)</span>
           <input v-model="settings.nai.varietyBoost" type="checkbox" class="bbi-checkbox" />
         </label>
@@ -531,7 +557,7 @@ async function removeVibe(vibe: NaiVibe) {
             <div class="vibe-ops">
               <button
                 v-if="!vibe.modelKeys.includes(currentVibeKey) && vibe.hasImage"
-                class="bbi-btn bbi-btn--mini"
+                class="bbi-btn bbi-btn-sm"
                 type="button"
                 :disabled="vibeEncoding"
                 title="该 vibe 缺当前模型的编码,生成时会被跳过;点击按当前模型补编码"
@@ -542,10 +568,10 @@ async function removeVibe(vibe: NaiVibe) {
               <span v-else-if="!vibe.modelKeys.includes(currentVibeKey)" class="vibe-missing">
                 缺当前模型编码且无原图,无法使用
               </span>
-              <button class="bbi-btn bbi-btn--mini" type="button" title="导出 .naiv4vibe" @click="exportVibe(vibe)">
+              <button class="bbi-btn bbi-btn-sm" type="button" title="导出 .naiv4vibe" @click="exportVibe(vibe)">
                 <Icon name="upload" :size="12" /> 导出
               </button>
-              <button class="bbi-btn bbi-btn--mini" type="button" title="删除" @click="removeVibe(vibe)">
+              <button class="bbi-btn bbi-btn-sm" type="button" title="删除" @click="removeVibe(vibe)">
                 <Icon name="trash" :size="12" /> 删除
               </button>
             </div>
@@ -645,6 +671,12 @@ async function removeVibe(vibe: NaiVibe) {
 }
 .vibe-hint {
   margin-top: 0;
+}
+/* 字段标签行右侧:状态药丸 + 恢复默认,基线与标签对齐 */
+.prompt-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .migrate-actions {
   display: flex;

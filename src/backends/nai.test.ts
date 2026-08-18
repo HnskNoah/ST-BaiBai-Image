@@ -5,12 +5,13 @@ import {
   buildNaiParameters,
   fullNegativePrompt,
   fullPositivePrompt,
+  naiDefaultQualityTags,
+  naiDefaultUndesired,
   naiEndpoint,
   naiRandomSeed,
   parseNaiv4vibe,
   parseResolution,
   skipCfgAboveSigma,
-  ucPresetNames,
   unzipNaiImage,
   vibeModelKey,
   NaiError,
@@ -28,14 +29,13 @@ function nai(overrides: Partial<NaiSettings> = {}): NaiSettings {
     landscapeSize: '1216×832',
     key: 'nai-test',
     model: 'nai-diffusion-4-5-full',
+    undesiredContent: '',
     sampler: 'k_euler',
     steps: 28,
     scale: 5,
     cfgRescale: 0,
     noiseSchedule: 'karras',
     seed: 0,
-    ucPreset: 'Heavy',
-    qualityToggle: true,
     varietyBoost: true,
     normalizeRefStrength: true,
     concurrency: 1,
@@ -103,34 +103,52 @@ describe('parseResolution', () => {
 });
 
 describe('提示词拼装', () => {
-  it('qualityToggle 开且无自定义质量词时用模型内置质量词', () => {
+  it('使用模型官方质量词并拼到提示词末尾', () => {
     const full = fullPositivePrompt(nai(), '1girl, sitting');
-    expect(full).toBe('very aesthetic, masterpiece, no text, 1girl, sitting');
+    expect(full).toBe('1girl, sitting, location, very aesthetic, masterpiece, no text');
   });
 
-  it('自定义质量词优先于内置', () => {
-    const full = fullPositivePrompt(nai({ qualityTags: 'best quality' }), '1girl');
-    expect(full).toBe('best quality, 1girl');
+  it('按模型切换官方质量词', () => {
+    expect(fullPositivePrompt(nai({ model: 'nai-diffusion-4-5-curated' }), '1girl')).toBe(
+      '1girl, location, masterpiece, no text, -0.8::feet::, rating:general',
+    );
   });
 
-  it('qualityToggle 关时不加质量词', () => {
-    expect(fullPositivePrompt(nai({ qualityToggle: false }), '1girl')).toBe('1girl');
-  });
-
-  it('负面 = 用户负面 + 预设', () => {
-    const neg = fullNegativePrompt(nai({ negativePrompt: 'bad hands' }));
-    expect(neg.startsWith('bad hands, ')).toBe(true);
+  it('负面 = 模型官方默认词', () => {
+    const neg = fullNegativePrompt(nai());
     expect(neg).toContain('worst quality');
   });
 
-  it('负面预设「无」时只用用户负面', () => {
-    expect(fullNegativePrompt(nai({ ucPreset: '无', negativePrompt: 'bad hands' }))).toBe('bad hands');
+  it('负面只认 undesiredContent,不再拼 negativePrompt', () => {
+    // 「附加负面」已并入一个框;存量 negativePrompt 由 normalizeNai 折进 undesiredContent
+    expect(fullNegativePrompt(nai({ negativePrompt: 'bad hands', undesiredContent: 'lowres' }))).toBe('lowres');
   });
 
-  it('ucPresetNames 按模型给预设,4-5-full 含 Furry Focus', () => {
-    expect(ucPresetNames('nai-diffusion-4-5-full')).toContain('Furry Focus');
-    expect(ucPresetNames('nai-diffusion-4-full')).not.toContain('Furry Focus');
-    expect(ucPresetNames('nai-diffusion-3')).toContain('Human Focus');
+  it('覆盖值优先于模型官方词(正/负各一)', () => {
+    expect(fullPositivePrompt(nai({ qualityTags: 'best quality' }), '1girl')).toBe('1girl, best quality');
+    expect(fullNegativePrompt(nai({ undesiredContent: 'only this' }))).toBe('only this');
+  });
+
+  it('覆盖值留空 = 跟随模型官方词(切模型内容跟着换)', () => {
+    // 这是「空串 = 跟随官方」这条存储口径的核心契约
+    const asFull = fullPositivePrompt(nai({ qualityTags: '', model: 'nai-diffusion-3' }), '1girl');
+    expect(asFull).toBe('1girl, best quality, amazing quality, very aesthetic, absurdres');
+    expect(fullNegativePrompt(nai({ undesiredContent: '', model: 'nai-diffusion-3' }))).toContain('{bad}');
+  });
+
+  it('纯空白覆盖值等同留空', () => {
+    expect(fullPositivePrompt(nai({ qualityTags: '   ' }), '1girl')).toBe(
+      '1girl, location, very aesthetic, masterpiece, no text',
+    );
+    expect(fullNegativePrompt(nai({ undesiredContent: '  \n ' }))).toBe(naiDefaultUndesired('nai-diffusion-4-5-full'));
+  });
+
+  it('未知模型无官方词时回落空串,不抛', () => {
+    expect(naiDefaultQualityTags('nai-diffusion-9')).toBe('');
+    expect(naiDefaultUndesired('nai-diffusion-9')).toBe('');
+    const odd = nai({ model: 'nai-diffusion-9' as NaiSettings['model'] });
+    expect(fullPositivePrompt(odd, '1girl')).toBe('1girl');
+    expect(fullNegativePrompt(odd)).toBe('');
   });
 });
 
@@ -145,6 +163,8 @@ describe('buildNaiParameters', () => {
     expect(v4.use_order).toBe(true);
     expect(p.reference_image_multiple_cached).toEqual([]);
     expect(p.v4_negative_prompt).toBeTruthy();
+    expect(p.ucPreset).toBe(3);
+    expect(p.qualityToggle).toBe(true);
   });
 
   it('NAI3 不带 v4 结构,带原图参考数组与 sm 开关', () => {

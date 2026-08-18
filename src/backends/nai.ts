@@ -42,59 +42,39 @@ export const NAI_NOISE_SCHEDULES: { value: string; label: string }[] = [
   { value: 'polyexponential', label: 'Polyexponential' },
 ];
 
-/** 各模型内置质量词(qualityToggle 开启且未自定义质量词时拼到正向最前)。 */
+/** 各模型官方质量词，拼到正向提示词末尾;用户在面板改过则用其覆盖值。 */
 const QUALITY_TAGS: Record<string, string> = {
-  'nai-diffusion-4-5-full': 'very aesthetic, masterpiece, no text',
-  'nai-diffusion-4-5-curated': 'very aesthetic, masterpiece, no text, -0.8::feet::, rating:general',
+  'nai-diffusion-4-5-full': 'location, very aesthetic, masterpiece, no text',
+  'nai-diffusion-4-5-curated': 'location, masterpiece, no text, -0.8::feet::, rating:general',
   'nai-diffusion-4-full': 'no text, best quality, very aesthetic, absurdres',
   'nai-diffusion-4-curated-preview': 'rating:general, best quality, very aesthetic, absurdres',
   'nai-diffusion-3': 'best quality, amazing quality, very aesthetic, absurdres',
 };
 
-/** 负面预设表:[模型][预设名] → 负面词。与 st-chatu8 逐字一致。 */
-const UC_PRESETS: Record<string, Record<string, string>> = {
-  'nai-diffusion-3': {
-    Heavy:
-      'lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract]',
-    Light: 'lowres, jpeg artifacts, worst quality, watermark, blurry, very displeasing',
-    'Human Focus':
-      'lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract], bad anatomy, bad hands, @_@, mismatched pupils, heart-shaped pupils, glowing eyes',
-  },
-  'nai-diffusion-4-full': {
-    Heavy:
-      'blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, multiple views, logo, too many watermarks, white blank page, blank page',
-    Light:
-      'blurry, lowres, error, worst quality, bad quality, jpeg artifacts, very displeasing, white blank page, blank page',
-  },
-  'nai-diffusion-4-curated-preview': {
-    Heavy:
-      'blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, logo, dated, signature, multiple views, gigantic breasts, white blank page, blank page',
-    Light:
-      'blurry, lowres, error, worst quality, bad quality, jpeg artifacts, very displeasing, logo, dated, signature, white blank page, blank page',
-  },
-  'nai-diffusion-4-5-curated': {
-    Heavy:
-      'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, negative space, blank page',
-    Light:
-      'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, negative space, blank page',
-    'Human Focus':
-      'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, bad anatomy, bad hands, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, @_@, mismatched pupils, glowing eyes, negative space, blank page',
-  },
-  'nai-diffusion-4-5-full': {
-    Heavy:
-      'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page',
-    Light:
-      'blurry, lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, blank page',
-    'Human Focus':
-      'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, @_@, mismatched pupils, glowing eyes, bad anatomy',
-    'Furry Focus':
-      '{worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic',
-  },
+/** 各模型官方 Heavy 负面词，作为无需用户选择的通用默认;用户改过则用其覆盖值。 */
+const DEFAULT_UNDESIRED_CONTENT: Record<string, string> = {
+  'nai-diffusion-3':
+    'lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract]',
+  'nai-diffusion-4-full':
+    'blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, multiple views, logo, too many watermarks, white blank page, blank page',
+  'nai-diffusion-4-curated-preview':
+    'blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, logo, dated, signature, multiple views, gigantic breasts, white blank page, blank page',
+  'nai-diffusion-4-5-curated':
+    'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, negative space, blank page',
+  'nai-diffusion-4-5-full':
+    'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page',
 };
 
-/** 某模型可选的负面预设名(「无」固定在最前)。 */
-export function ucPresetNames(model: string): string[] {
-  return ['无', ...Object.keys(UC_PRESETS[model] ?? {})];
+/**
+ * 某模型的官方质量词 / 官方 Heavy 负面词。面板拿它做「未自定义」时的显示内容
+ * 与「恢复默认」的目标,故必须导出:否则用户看不到实际生效的词(改动前的老问题)。
+ */
+export function naiDefaultQualityTags(model: string): string {
+  return QUALITY_TAGS[model] ?? '';
+}
+
+export function naiDefaultUndesired(model: string): string {
+  return DEFAULT_UNDESIRED_CONTENT[model] ?? '';
 }
 
 /** variety boost 的 magic 常数(st-chatu8 同口径):按像素量相对参考分辨率缩放。 */
@@ -193,16 +173,21 @@ export interface NaiGenerateValues {
 
 type JsonObject = Record<string, unknown>;
 
-/** 正向完整 prompt:质量词(自定义优先,否则按模型内置)拼到 tag 前。 */
+/**
+ * 正向完整 prompt:质量词拼到 tag 后。
+ * 质量词 = 用户覆盖值(qualityTags)优先,留空则按模型取官方词。
+ */
 export function fullPositivePrompt(nai: NaiSettings, prompt: string): string {
-  const quality = nai.qualityTags.trim() || (nai.qualityToggle ? (QUALITY_TAGS[nai.model] ?? '') : '');
-  return [quality, prompt.trim()].filter(Boolean).join(', ');
+  const quality = nai.qualityTags.trim() || naiDefaultQualityTags(nai.model);
+  return [prompt.trim(), quality].filter(Boolean).join(', ');
 }
 
-/** 负面完整 prompt:用户负面 + 负面预设(按模型取表)。 */
+/**
+ * 负面完整 prompt = 用户覆盖值(undesiredContent),留空则按模型取官方负面词。
+ * 想额外排除什么,直接往这一份里接——故不再有单独的「附加负面」字段。
+ */
 export function fullNegativePrompt(nai: NaiSettings): string {
-  const preset = UC_PRESETS[nai.model]?.[nai.ucPreset] ?? '';
-  return [nai.negativePrompt.trim(), preset].filter(Boolean).join(', ');
+  return nai.undesiredContent.trim() || naiDefaultUndesired(nai.model);
 }
 
 /**
@@ -227,9 +212,9 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
     sampler: nai.sampler,
     steps: nai.steps,
     n_samples: 1,
-    // 预设位置恒为 3(自定义):负面词已由 fullNegativePrompt 拼好,不再用官方预设档
+    // 提示词已由本地固定默认拼好；协议字段保持官方前端口径。
     ucPreset: 3,
-    qualityToggle: nai.qualityToggle,
+    qualityToggle: true,
     dynamic_thresholding: false,
     controlnet_strength: 1,
     legacy: false,

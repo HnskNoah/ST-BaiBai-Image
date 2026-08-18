@@ -46,14 +46,26 @@ describe('auto tag prompt', () => {
     const messages = await buildAutoTagMessages(context(), 1, options, null);
 
     expect(messages[0].content).toContain('附加规则');
+    expect(messages.some(m => m.role === 'system' && m.content.includes('你是严谨的剧情画面规划与生图提示词编写员'))).toBe(true);
+    expect(messages.some(m => m.content.includes('除一个 <thinking> 块和一个 JSON 对象外'))).toBe(true);
+    expect(messages.some(m => m.content.includes('最终结果必须包含且只能包含一个可解析的 JSON 对象'))).toBe(true);
     expect(messages.some(m => m.content.includes('最多返回 3 个成员'))).toBe(true);
     expect(messages.some(m => m.content.includes('不得包含质量词'))).toBe(true);
-    expect(messages.some(m => m.content.includes('无图片但有永久变化/建档'))).toBe(true);
+    expect(messages.some(m => m.content.includes('先完成角色建档与变化检查'))).toBe(true);
     expect(messages.some(m => m.content.includes('同一事件的相邻动作'))).toBe(true);
     expect(messages.some(m => m.content.includes('两人同框不等于必须横屏'))).toBe(true);
     expect(messages.some(m => m.content.includes('"field":"new"'))).toBe(true);
     expect(messages.some(m => m.content.includes('"hair":"long black hair","eyes":"blue eyes"'))).toBe(true);
-    expect(messages.some(m => m.content.includes('hair 与 eyes 是二次元角色身份锚点，建档时必填'))).toBe(true);
+    expect(messages.some(m => m.content.includes('首次出场就必须建档'))).toBe(true);
+    expect(messages.some(m => m.content.includes('角色卡、世界书、柏宝书或持续剧情'))).toBe(true);
+    expect(messages.some(m => m.content.includes('hair 与 eyes 必填'))).toBe(true);
+    expect(messages.some(m => m.content.includes('"position":"P2"'))).toBe(true);
+    expect(messages.some(m => m.content.includes('后续不得重新随机'))).toBe(true);
+    // 建档不受入选与否影响,也不受位置门控 —— 这两条是修复的核心,措辞必须在协议里
+    expect(messages.some(m => m.content.includes('不论他是否入选本次图片'))).toBe(true);
+    expect(messages.some(m => m.content.includes('建档在本楼全程有效'))).toBe(true);
+    // 已撤销的 characters 审计:不得回流到协议里
+    expect(messages.some(m => m.content.includes('characters'))).toBe(false);
     expect(messages.some(m => m.content.includes('"tag":"@小雪'))).toBe(false);
     const user = messages[messages.length - 2];
     expect(user.role).toBe('user');
@@ -152,11 +164,16 @@ describe('auto tag prompt', () => {
     const thinkingMsg = messages.find(m => m.content.includes('输出前思考清单'));
     expect(thinkingMsg?.role).toBe('system');
     expect(thinkingMsg?.content).toContain('不得把临时状态恢复成角色默认值');
-    expect(thinkingMsg?.content).toContain('即使 images 为空也不能跳过 changes 检查');
+    expect(thinkingMsg?.content).toContain('即使 images 为空也不能跳过建档与 changes 检查');
     expect(thinkingMsg?.content).toContain('视觉明确度、剧情重要度、动作完整度');
     expect(thinkingMsg?.content).toContain('一张图必须能被一次快门完整拍下');
     expect(thinkingMsg?.content).toContain('双人近距离可 portrait');
     expect(thinkingMsg?.content).toContain('只跳过没有视觉变化的对话');
+    expect(thinkingMsg?.content).toContain('首次出场就用 field:"new" 建档');
+    expect(thinkingMsg?.content).toContain('不论他是否入选本次图片');
+    expect(thinkingMsg?.content).toContain('建档在本楼全程有效');
+    expect(thinkingMsg?.content).toContain('hair 与 eyes 都不得留空');
+    expect(thinkingMsg?.content).toContain('变化前的图片沿用旧档');
     const last = messages[messages.length - 1];
     expect(last.role).toBe('assistant');
     expect(last.content).toBe('<thinking>');
@@ -193,6 +210,30 @@ describe('auto tag prompt', () => {
     expect(messages.some(message => message.content.includes('"tag":"@小雪, white dress"'))).toBe(true);
     expect(messages.some(message => message.content.includes('系统会替换成库中最新 tag'))).toBe(true);
     expect(messages[messages.length - 2].content).toContain(library);
+  });
+
+  it('keeps first-appearance profiling enabled when BaiBai Book memory exists', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+    };
+    const messages = await buildAutoTagMessages(
+      context(),
+      1,
+      options,
+      {
+        timing: 'before_latest',
+        text: '【角色参考】已有其他角色',
+        roles: [],
+      },
+    );
+
+    expect(messages.some(message => message.content.includes('首次出场就必须'))).toBe(true);
+    expect(messages.some(message => message.content.includes('柏宝书本次未提供'))).toBe(false);
   });
 
   it('requests per-image negative tags only when the ComfyUI workflow uses %negative_prompt%', async () => {

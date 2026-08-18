@@ -547,6 +547,25 @@
   font-size: 12px;
 }
 
+/* —— 状态药丸:「默认 / 已自定义」。默认 muted,已自定义转强调色。
+   设置页的自定义提示词列表与渠道页的提示词字段共用,故放全局
+   (scoped 样式过不了组件边界)。 —— */
+.bbi-prompt-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: var(--bbi-radius-pill);
+  color: var(--bbi-ink-muted);
+  background: var(--bbi-surface);
+  border: 1px solid var(--bbi-line);
+}
+.bbi-prompt-state.is-custom {
+  color: var(--bbi-accent);
+  background: var(--bbi-accent-soft);
+  border-color: transparent;
+}
+
 /* ============ 移动端:表单正文整体收一号,与窄屏标题节奏统一(对齐柏宝书) ============ */
 @media (max-width: 640px) {
   .bbi-field-label {
