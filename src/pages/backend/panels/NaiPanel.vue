@@ -18,6 +18,7 @@ import {
   vibeModelKey,
 } from '@/backends/nai';
 import {
+  clampVibeStrength,
   deleteVibeData,
   loadVibeData,
   saveVibeFiles,
@@ -518,6 +519,26 @@ async function exportVibe(vibe: NaiVibe) {
   }
 }
 
+/**
+ * 强度取值:滑块与数字框共用 clampVibeStrength(与设置反序列化、vibe 导入同一口径)。
+ * 滑块步进 0.01 只是「拖着好用」的粒度,数字框 step="any" 才是真正的自由填值——
+ * 想要 0.375 就填 0.375,不再被步进吸附到 5 的倍数上。
+ */
+function setVibeStrength(vibe: NaiVibe, raw: unknown) {
+  vibe.strength = clampVibeStrength(raw, vibe.strength);
+}
+
+/**
+ * 数字框走 change(而非 input):中途输入 "0." / "-" 这类残缺串不该立刻被夹成 0。
+ * 夹取后回写 input.value——填了 5 会被夹到 1,而当强度本来就是 1 时模型值没变、
+ * Vue 不会重渲染,框里就会留着一个骗人的 "5"。
+ */
+function commitVibeStrength(vibe: NaiVibe, event: Event) {
+  const input = event.target as HTMLInputElement;
+  setVibeStrength(vibe, input.value);
+  input.value = String(vibe.strength);
+}
+
 async function removeVibe(vibe: NaiVibe) {
   let deleteError: unknown = null;
   try {
@@ -609,7 +630,7 @@ async function removeVibe(vibe: NaiVibe) {
             spellcheck="false"
             title="Enter 确认，Esc 取消"
             @keydown.enter.prevent="commitRenameArtist"
-            @keydown.esc="renamingArtist = false"
+            @keydown.esc.stop.prevent="renamingArtist = false"
             @blur="commitRenameArtist"
           />
           <BbiSelect
@@ -968,8 +989,27 @@ async function removeVibe(vibe: NaiVibe) {
                     </label>
                   </div>
                   <div class="vibe-strength">
-                    <span class="vibe-strength-label">强度 {{ vibe.strength.toFixed(2) }}</span>
-                    <input type="range" min="0" max="1" step="0.05" v-model.number="vibe.strength" />
+                    <span class="vibe-strength-label">强度</span>
+                    <input
+                      class="bbi-range"
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      :value="vibe.strength"
+                      aria-label="强度"
+                      @input="setVibeStrength(vibe, ($event.target as HTMLInputElement).value)"
+                    />
+                    <input
+                      class="bbi-input vibe-strength-num"
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="any"
+                      :value="vibe.strength"
+                      aria-label="强度数值"
+                      @change="commitVibeStrength(vibe, $event)"
+                    />
                   </div>
                   <div class="vibe-ops">
                     <BbiSelect
@@ -1290,9 +1330,16 @@ async function removeVibe(vibe: NaiVibe) {
 .bbi-modal-foot-spacer {
   flex: 1 1 auto;
 }
-.bbi-btn-danger:hover {
-  border-color: var(--bbi-danger);
+/* 危险按钮:与设置页/ConfirmDialog 同一份口径。base 规则不能只写 :hover ——
+   scoped 不跨组件、base.css 里也没有,只写 hover 的话平时是默认墨色,鼠标一过才变红。 */
+.bbi-btn-danger {
   color: var(--bbi-danger);
+  border-color: var(--bbi-line-strong);
+}
+.bbi-btn-danger:hover {
+  color: var(--bbi-danger);
+  border-color: var(--bbi-danger);
+  background: var(--bbi-danger-soft);
 }
 
 .migrate-actions {
@@ -1369,6 +1416,26 @@ async function removeVibe(vibe: NaiVibe) {
 .vibe-strength input[type='range'] {
   flex: 1 1 auto;
   min-width: 0;
+  /* .bbi-range 的 margin 是给「整行占一栏」的设置页留的,这里在同一行里要压掉 */
+  margin: 0;
+}
+/* 数字框窄一档:四位小数够用,再宽就把滑块挤没了 */
+.vibe-strength-num {
+  flex: 0 0 auto;
+  width: 68px;
+  padding: 4px 6px;
+  font-size: 12px;
+  text-align: right;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+/* step="any" 下浏览器仍画上下箭头,但规范让 stepUp/stepDown 直接抛错 → 按了没反应。
+   摆一对点不动的箭头不如不摆;要微调用左边滑块(方向键 0.01 一档)。 */
+.vibe-strength-num::-webkit-inner-spin-button,
+.vibe-strength-num::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
 }
 .vibe-ops {
   display: flex;

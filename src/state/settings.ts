@@ -1,6 +1,11 @@
 import { naiDefaultUndesired } from '@/backends/nai';
 import { parseSize, type SizePair } from '@/backends/size';
-import { saveVibeFiles, vibeFingerprint, vibeMetaFromData } from '@/backends/vibeStore';
+import {
+  clampVibeStrength,
+  saveVibeFiles,
+  vibeFingerprint,
+  vibeMetaFromData,
+} from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
 import { reactive, watch } from 'vue';
 
@@ -885,7 +890,7 @@ function normalizeVibe(raw: unknown, seq: number): NaiVibe | null {
     hasImage: typeof o.hasImage === 'boolean' ? o.hasImage : !!image,
     fingerprint:
       typeof o.fingerprint === 'string' && o.fingerprint ? o.fingerprint : vibeFingerprint(encodings),
-    strength: clampNumber(o.strength, 0.6, 0, 1),
+    strength: clampVibeStrength(o.strength),
     enabled: typeof o.enabled === 'boolean' ? o.enabled : false,
     group: typeof o.group === 'string' ? o.group.trim() : '',
   };

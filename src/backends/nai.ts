@@ -2,7 +2,7 @@ import { unzipSync } from 'fflate';
 
 import type { ComfyImageResult } from '@/backends/comfyui';
 import { parseSize, pickSize, type Orientation } from '@/backends/size';
-import { loadVibeData } from '@/backends/vibeStore';
+import { clampVibeStrength, loadVibeData } from '@/backends/vibeStore';
 import type { NaiSettings, NaiVibe, NaiVibeData, NaiVibeEncodings } from '@/state/settings';
 
 /**
@@ -542,13 +542,12 @@ export function parseNaiv4vibe(text: string): ImportedVibe {
     }
   }
   if (!Object.keys(encodings).length) throw new NaiError('vibe 文件里没有可用的编码数据');
-  const strength = Number(json.importInfo?.strength);
   return {
     name: typeof json.name === 'string' && json.name ? json.name : '导入的 Vibe',
     image: typeof json.image === 'string' ? json.image : '',
     thumbnail: typeof json.thumbnail === 'string' ? json.thumbnail : '',
     encodings,
-    strength: Number.isFinite(strength) ? Math.min(1, Math.max(0, strength)) : 0.6,
+    strength: clampVibeStrength(json.importInfo?.strength),
   };
 }
 

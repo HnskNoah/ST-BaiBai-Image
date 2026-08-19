@@ -251,7 +251,7 @@ function applyAssist() {
             spellcheck="false"
             title="Enter 确认，Esc 取消"
             @keydown.enter.prevent="commitRename"
-            @keydown.esc="renaming = false"
+            @keydown.esc.stop.prevent="renaming = false"
             @blur="commitRename"
           />
           <BbiSelect

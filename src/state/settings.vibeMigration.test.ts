@@ -9,35 +9,12 @@ vi.mock('@/st/context', () => ({
   getContext: () => mocks.context,
 }));
 
-vi.mock('@/backends/vibeStore', () => ({
+// 只替换真正需要拦截的 saveVibeFiles(要断言调用与失败路径),其余导出取真身。
+// 曾经这里手抄了 vibeFingerprint / vibeMetaFromData 的实现,于是 vibeStore 每加一个
+// 导出都会让本文件以「No xxx export is defined on the mock」炸掉,且抄件与真身还会悄悄漂移。
+vi.mock('@/backends/vibeStore', async () => ({
+  ...(await vi.importActual<typeof import('@/backends/vibeStore')>('@/backends/vibeStore')),
   saveVibeFiles: mocks.saveVibeFiles,
-  vibeFingerprint: (encodings: Record<string, { encoding: string }>) =>
-    Object.keys(encodings)
-      .sort()
-      .map(key => `${key}:${encodings[key].encoding.slice(0, 64)}`)
-      .join('|'),
-  vibeMetaFromData: (
-    id: string,
-    name: string,
-    dataPath: string,
-    thumbnailPath: string,
-    data: { image: string; encodings: Record<string, { encoding: string }> },
-    strength: number,
-    enabled: boolean,
-  ) => ({
-    id,
-    name,
-    dataPath,
-    thumbnailPath,
-    modelKeys: Object.keys(data.encodings),
-    hasImage: !!data.image,
-    fingerprint: Object.keys(data.encodings)
-      .sort()
-      .map(key => `${key}:${data.encodings[key].encoding.slice(0, 64)}`)
-      .join('|'),
-    strength,
-    enabled,
-  }),
 }));
 
 describe('旧版 Vibe 设置迁移', () => {

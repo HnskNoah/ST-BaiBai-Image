@@ -11,6 +11,7 @@ vi.mock('@/floor/upload', () => ({
 }));
 
 import {
+  clampVibeStrength,
   deleteVibeData,
   loadVibeData,
   saveVibeFiles,
@@ -83,5 +84,30 @@ describe('vibeStore', () => {
     await deleteVibeData(vibe);
     expect(fileStore.remove).toHaveBeenNthCalledWith(1, vibe.dataPath);
     expect(fileStore.remove).toHaveBeenNthCalledWith(2, vibe.thumbnailPath);
+  });
+});
+
+describe('clampVibeStrength', () => {
+  it('自由填值不吸附步进,超界夹到 0–1', () => {
+    expect(clampVibeStrength(0.375)).toBe(0.375);
+    expect(clampVibeStrength('0.4321')).toBe(0.4321);
+    expect(clampVibeStrength(5)).toBe(1);
+    expect(clampVibeStrength(-2)).toBe(0);
+    expect(clampVibeStrength(0)).toBe(0);
+    expect(clampVibeStrength(1)).toBe(1);
+  });
+
+  it('认不出数就回落默认值,而非静默变成 0', () => {
+    // 回归:旧实现用 Number(v),而 Number(null) / Number('') 都是 0,
+    // 「字段缺失」于是被判成「强度 0」——vibe 挂上了却对画面毫无影响。
+    for (const raw of [null, undefined, '', '   ', 'abc', NaN, Infinity, true, {}, []]) {
+      expect(clampVibeStrength(raw)).toBe(0.6);
+    }
+  });
+
+  it('可指定回落值(面板输入非法时保留原强度)', () => {
+    expect(clampVibeStrength('', 0.9)).toBe(0.9);
+    expect(clampVibeStrength('abc', 0.25)).toBe(0.25);
+    expect(clampVibeStrength('0.5', 0.9)).toBe(0.5);
   });
 });

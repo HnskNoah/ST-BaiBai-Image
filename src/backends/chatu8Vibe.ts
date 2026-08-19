@@ -1,5 +1,10 @@
 import { parseNaiv4vibe } from '@/backends/nai';
-import { saveVibeFiles, vibeFingerprint, vibeMetaFromData } from '@/backends/vibeStore';
+import {
+  clampVibeStrength,
+  saveVibeFiles,
+  vibeFingerprint,
+  vibeMetaFromData,
+} from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
 import type { NaiVibe } from '@/state/settings';
 
@@ -33,11 +38,6 @@ export interface Chatu8VibeRef {
   kind: 'preset' | 'group';
 }
 
-function validStrength(value: unknown): number {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.6;
-}
-
 /** 从 chatu8 设置里收集全部 vibe 引用(预设 + 组),按 vibeDataId 去重(预设优先,命名更好看)。 */
 export function collectChatu8VibeRefs(chatu8: unknown): Chatu8VibeRef[] {
   if (!chatu8 || typeof chatu8 !== 'object') return [];
@@ -47,7 +47,7 @@ export function collectChatu8VibeRefs(chatu8: unknown): Chatu8VibeRef[] {
   const push = (vibeDataId: unknown, strength: unknown, source: string, kind: Chatu8VibeRef['kind']) => {
     if (typeof vibeDataId !== 'string' || !vibeDataId || seen.has(vibeDataId)) return;
     seen.add(vibeDataId);
-    refs.push({ vibeDataId, strength: validStrength(strength), source, kind });
+    refs.push({ vibeDataId, strength: clampVibeStrength(strength), source, kind });
   };
 
   const presets = root.vibePresets;

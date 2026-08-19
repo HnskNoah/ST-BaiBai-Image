@@ -398,6 +398,26 @@ describe('parseNaiv4vibe', () => {
     expect(v.strength).toBe(0.7);
   });
 
+  it('缺 strength 字段回落 0.6,不静默变成强度 0', () => {
+    // 回归:旧实现走 Number(v),而 Number(null) / Number('') 都是 0 ——
+    // vibe 会以「强度 0」导入,挂上了却对画面毫无影响,且极难排查。
+    const build = (importInfo: unknown) =>
+      JSON.stringify({
+        identifier: 'novelai-vibe-transfer',
+        version: 1,
+        image: 'aW1hZ2U=',
+        encodings: {
+          'v4-5full': {
+            k: { encoding: 'ZW5jb2Rpbmc=', params: { information_extracted: 1 } },
+          },
+        },
+        importInfo,
+      });
+    expect(parseNaiv4vibe(build({ model: 'nai-diffusion-4-5-full' })).strength).toBe(0.6);
+    expect(parseNaiv4vibe(build({ strength: null })).strength).toBe(0.6);
+    expect(parseNaiv4vibe(build({ strength: '' })).strength).toBe(0.6);
+  });
+
   it('拒绝非 vibe JSON', () => {
     expect(() => parseNaiv4vibe('{"foo":1}')).toThrow(/标识/);
     expect(() => parseNaiv4vibe('not json')).toThrow(NaiError);

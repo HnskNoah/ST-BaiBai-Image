@@ -93,6 +93,23 @@ function dataUrlBase64(dataUrl: string): string {
   return comma === -1 ? dataUrl : dataUrl.slice(comma + 1);
 }
 
+export const DEFAULT_VIBE_STRENGTH = 0.6;
+
+/**
+ * Vibe 强度的唯一口径:夹到 0–1,认不出数就回落默认值。
+ *
+ * 曾经有四份各自为政的实现(设置反序列化 / .naiv4vibe 解析 / 智绘姬导入 / 面板输入),
+ * 其中三份写作 `Number(v)`,而 `Number(null)` 与 `Number('')` 都是 0 ——
+ * 「字段缺失」于是被静默判成「强度 0」,vibe 挂上了却对画面毫无影响,极难排查。
+ * 这里只认真正的数字和能解析出数字的字符串(面板 <input> 给的是字符串),
+ * 其余(null / '' / 空白串 / 布尔 / 对象)一律回落默认值。
+ */
+export function clampVibeStrength(raw: unknown, def = DEFAULT_VIBE_STRENGTH): number {
+  const value =
+    typeof raw === 'number' ? raw : typeof raw === 'string' ? Number.parseFloat(raw) : NaN;
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : def;
+}
+
 export function vibeFingerprint(encodings: NaiVibeEncodings): string {
   return Object.keys(encodings)
     .sort()
