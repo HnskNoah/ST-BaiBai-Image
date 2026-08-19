@@ -27,10 +27,12 @@ src/
 │   ├── imageTagRegex.ts  # 托管两条正则:<bbi_image> 显示侧→空锚点 div,提示词侧→空串
 │   ├── messageEdit.ts # CAS 写回消息正文(applyMessageText),竞态保护
 │   ├── keyboard.ts    # shadow 内编辑控件方向键不冒泡到 ST 全局快捷键
+│   ├── clipboard.ts   # 复制到剪贴板统一入口(失败 toast;卡片/灯箱/历史页共用)
 │   └── iconFallback.ts# 注入按钮的字体图标兜底(防美化主题清空图标)
 ├── state/             # 全局状态与持久化
 │   ├── settings.ts    # ★ 设置模型 + hydrate/persist/迁移 + 跨插件共享渠道存储
 │   ├── ui.ts          # 窗口开关/主题/导航/悬浮球;activePage 存 localStorage
+│   ├── history.ts     # 请求历史(LLM 推理+生图)模块级内存 store,刻意不持久化
 │   └── charTags.ts    # 角色固定外貌库 v3:手动基线(chatMetadata)+ AI 楼层增量(消息 extra)两层
 ├── api/
 │   └── client.ts      # LLM 请求:副 API 走 ST 服务端代理 / 跟随主 API 走 generateRaw
@@ -45,7 +47,7 @@ src/
 ├── backends/          # 出图后端(链路 B 的生成端)+ 共享尺寸工具
 │   ├── comfyui.ts     # ComfyUI:工作流模板 %占位符% 渲染、浏览器直连/ST 转发自动回退
 │   ├── comfyWorkflowAssistant.ts # AI 自动定位工作流节点(片段 ID 协议,不复制原文)
-│   ├── nai.ts         # NovelAI:参数构造、vibe 编码/叠加、.naiv4vibe 导入导出
+│   ├── nai.ts         # NovelAI:参数构造、vibe 编码/叠加、画师串前置拼装、.naiv4vibe 导入导出
 │   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe
 │   ├── vibeGroups.ts  # Vibe 分组纯逻辑(装箱 key/归拢/搜索/启用集合判定)
 │   └── size.ts        # 画幅方向归一 / 尺寸解析 / 按方向取配置(刻意不 import settings)
@@ -68,6 +70,7 @@ src/
 │   ├── backend/index.vue      # 「渠道」页:页签(webui 已隐藏)+ 各后端面板
 │   │   └── panels/            # ComfyUIPanel / NaiPanel / WebUIPanel(隐藏,代码保留)
 │   ├── characters/index.vue   # 「角色管理」页:固定外貌 tag 库 CRUD
+│   ├── history/index.vue      # 「请求历史」页:调试辅助(LLM 提示词/响应/生图元信息)
 │   └── settings/index.vue     # 「设置」页:渠道管理/自动 tag/提示词编辑/界面偏好(最大页)
 ├── components/       # 通用组件:BbiSelect/BbiTextarea/Collapsible/ConfirmDialog/FloatingOrb/Icon/ModalMask/NavBar
 ├── styles/           # base.css(全局基础样式)、theme.css(主题变量,data-theme 切换)
@@ -240,7 +243,8 @@ runForFloor(floor, opts)
   后端层只该知道「这一次出图用什么」,不该知道用户存了几套。
 - `nai.ts`:协议与官方一致(浏览器直连,url 可指第三方兼容站,自动补 `/ai` 前缀);v4 系走
   `v4_prompt` 结构 + vibe 编码缓存;NAI3 直接发参考原图;质量词/负面词按模型给默认值,
-  渠道页可见可覆盖(存空串 = 跟随模型官方词);
+  渠道页可见可覆盖(存空串 = 跟随模型官方词);正向拼装顺序为
+  **画师串 → 画面 tag → 质量词**(画师串来自库,见 §7);
   `.naiv4vibe` 导入导出与官方互通。
 - `chatu8Vibe.ts`:只读智绘姬的 extension_settings + IndexedDB,逐条导入 vibe(内容指纹去重、读取超时、迁移进度)。
 - `vibeStore.ts`:Vibe 原图/编码正文与缩略图分文件存 ST `user/files`，文件存储不可用时回退本机 IndexedDB。
@@ -265,6 +269,31 @@ runForFloor(floor, opts)
     `workflow` 为空串也照样建这一条。靠字段有无判断,无 schemaVersion。
   - 工作流 JSON 随设置整体进 `settings.json`(单套数 KB–数十 KB)。刻意**没有**像 Vibe 那样搬去 `user/files`:
     量级差两个数量级。若日后设置保存变慢,这里是第一嫌疑人。
+- **NAI 画师串库**:`settings.nai.artistPresets`(`NaiArtistPreset[]`)+ `activeArtistId`。
+  一条 = 名字 + 一段拼在正向提示词**最前面**的画风 tag(`backends/nai.ts` 的
+  `fullPositivePrompt`,顺序:画师串 → 画面 tag → 质量词;放最前是因为它定整幅画的基调,
+  NAI 对靠前 tag 权重更高)。
+  - **不按模型分表**(与质量词/负面词相反):官方质量词是**模型的属性**,切模型必须跟着换;
+    画师串是**用户自己的配方**,跨模型复用才是常态,故做成可增删的库而非 `Record<model, …>`。
+  - **与工作流库刻意相反的三处**:①`artistPresets` **允许为空**(工作流恒非空);
+    ②`naiDefaults()` **不播种**任何一条(工作流出生即带一条);③`activeArtistId` 悬空时
+    `normalizeNai` **清成空串**而非回落 `[0]`。根因是必需品与可选项的差别:不给工作流就
+    出不了图,不给画师串只是不加画风;回落 `[0]` 会在用户删掉当前条目后**静默套上一套
+    他没选过的画风**,而下拉显示的正是那一条(看起来就是自己设的),几乎无法排查。
+    有单测锁定这条对照(`settings.naiArtistMigration.test.ts`)。
+  - 空串是「不使用」的哨兵。preset id 恒为 `art_*` 形状(normalize 保证非空),故空串不会
+    与任何 id 相撞,无需像 `vibeGroups` 的 `g:` 那样装箱(那里组名由用户输入、会撞名)。
+    清成空串也让 `activeArtistId ∈ {'', 库中已有 id}` 成为不变式,面板无需再判悬空。
+  - 消费方两条路:面板走 `activeNaiArtist()`(读全局 settings,返回 `NaiArtistPreset | null`,
+    刻意只读——在 computed 里被调用);拼装走 `backends/nai.ts` 的 `naiArtistPrompt(nai)`
+    (纯函数、吃 NaiSettings,可单测)。**刻意不共用一份**:settings.ts 已 import nai.ts 的
+    `naiDefaultUndesired`,反向加值依赖会成运行时环。
+  - ⚠ `fullPositivePrompt` 在 `buildNaiParameters`(v4_prompt 来源)与 `generateNaiImage`
+    的顶层 `input` 处**各调一次**,两处必须同源。拼装改动一律留在函数内部——在某个调用点
+    单独加料会让 NAI3(读 input)与 NAI4/4.5(读 v4_prompt)拿到不同提示词,且只在 NAI3
+    上暴露(现有测试全是 4.5 模型,一个都不会红)。有同源断言锁定。
+  - **存量迁移**:纯加法,无老字段可折。老配置 hydrate 后得空库 + 空 id,正向提示词输出
+    与上线前逐字节一致。
 - **Vibe 大文件**:
   - `extensionSettings['baibai_image'].nai.vibes`:仅存 `NaiVibe` 小型索引，不存原图、缩略图 dataURL 或编码正文;
   - `user/files/bbi-vibe-*.json`:原图与各模型编码正文;
@@ -350,6 +379,7 @@ runForFloor(floor, opts)
 | ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe | src/backends/nai.ts + vibeStore.ts(+ chatu8Vibe.ts 导入) |
+| NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |
 | 卡片「生成中」状态 / 取消 / 并发 | src/floor/genState.ts(运行态)+ genQueue.ts(NAI 闸门) |
@@ -359,6 +389,8 @@ runForFloor(floor, opts)
 | 显示/提示词两侧的正则 | src/st/imageTagRegex.ts |
 | 楼层按钮 / 顶栏按钮 / 魔杖入口 | src/floor/actionButton.ts / src/topbar.ts / src/menu.ts |
 | 正文写回(含竞态) | src/st/messageEdit.ts |
+| 请求历史(LLM/生图,内存不持久化) | src/state/history.ts(store)+ src/pages/history/index.vue(页面)+ src/api/client.ts 埋点 |
+| 复制到剪贴板 | src/st/clipboard.ts 的 copyText |
 | 主窗口 UI(遮罩/导航/动画/抽屉) | src/App.vue + state/ui.ts + components/ |
 | 主题 | src/styles/theme.css + state/ui.ts 的 THEMES |
 | 图标 | src/components/Icon.vue(新增图标 + PATHS) |

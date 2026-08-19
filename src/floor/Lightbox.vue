@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
 import Icon from '@/components/Icon.vue';
 import { saveImageFile } from '@/floor/download';
+import { copyText } from '@/st/clipboard';
 import { modalHost } from '@/state/ui';
 
 /**
@@ -54,13 +55,7 @@ onBeforeUnmount(() => {
 });
 
 async function copyPrompt(): Promise<void> {
-  if (!props.prompt) return;
-  try {
-    await navigator.clipboard.writeText(props.prompt);
-    toastr.success('提示词已复制', '柏宝绘');
-  } catch {
-    toastr.error('复制失败,请手动选择文本', '柏宝绘');
-  }
+  await copyText(props.prompt ?? '', '提示词已复制');
 }
 
 function save(): void {

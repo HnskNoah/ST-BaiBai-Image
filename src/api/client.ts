@@ -1,5 +1,13 @@
 import { getContext } from '@/st/context';
 import type { ApiChannel } from '@/state/settings';
+import {
+  beginLlm,
+  failLlm,
+  finishLlm,
+  patchLlmTokens,
+  safeHistory,
+  FOLLOW_MAIN_API,
+} from '@/state/history';
 
 /**
  * 通过 SillyTavern 的服务端代理调用任意 OpenAI 兼容端点。
@@ -46,6 +54,50 @@ function alternateUrl(url: string): string {
 
 export interface RequestOptions {
   signal?: AbortSignal;
+  /**
+   * 用途标签,只用于请求历史页的展示(如「自动 tag」)。
+   * 不传也不影响请求本身,历史里显示为「未标注」。
+   */
+  source?: string;
+}
+
+/* ============ 请求历史埋点(纯辅助,绝不允许影响主流程) ============ */
+
+/** 从响应体取 OpenAI 标准 usage。ST 代理非流式分支原样透传上游 JSON,故这里拿到的是真值。 */
+function readUsage(data: any): { prompt: number | null; completion: number | null } {
+  const usage = data?.usage;
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
+  return {
+    prompt: num(usage?.prompt_tokens),
+    completion: num(usage?.completion_tokens),
+  };
+}
+
+/**
+ * 本地估算 token(拿不到真值时的兜底):流式与「跟随主 API」两条路都没有 usage。
+ *
+ * 用 ST 的 getTokenCountAsync —— 但它用的是**主界面当前模型**的分词器,
+ * 与副 API 渠道的模型未必同源,所以结果只能当估算,UI 上以 ≈ 标注。
+ * 任何失败都降级为 null(不显示数字),不抛。
+ */
+async function estimateTokens(id: number, messages: ChatMsg[], response: string): Promise<void> {
+  try {
+    const count = getContext()?.getTokenCountAsync;
+    if (typeof count !== 'function') return;
+    const promptText = messages.map(m => m.content).join('\n');
+    const prompt = await count(promptText);
+    const completion = response ? await count(response) : 0;
+    safeHistory(() =>
+      patchLlmTokens(
+        id,
+        typeof prompt === 'number' ? prompt : null,
+        typeof completion === 'number' ? completion : null,
+      ),
+    );
+  } catch (e) {
+    console.debug('[柏宝绘] token 估算失败(已忽略)', e);
+  }
 }
 
 function validTimeoutSec(value: unknown): number {
@@ -135,35 +187,73 @@ async function requestCompletionAtUrl(
   }
 
   const timeoutSec = validTimeoutSec(channel.timeoutSec);
-  return withTimeout(timeoutSec, opts.signal, '副 API 请求', async signal => {
-    const resp = await fetch(GENERATE_URL, {
-      method: 'POST',
-      headers: ctx.getRequestHeaders(),
-      body: JSON.stringify(body),
-      signal,
+
+  // 历史埋点:登记在真正发请求之前,失败/超时也留痕(排查时要看的往往正是失败那次)。
+  const historyId = safeHistory(() =>
+    beginLlm({
+      source: opts.source || '未标注',
+      channelName: channel.name || channel.model || '(未命名渠道)',
+      model: channel.model,
+      stream,
+      messages: outMessages,
+    }),
+  );
+
+  try {
+    const result = await withTimeout(timeoutSec, opts.signal, '副 API 请求', async signal => {
+      const resp = await fetch(GENERATE_URL, {
+        method: 'POST',
+        headers: ctx.getRequestHeaders(),
+        body: JSON.stringify(body),
+        signal,
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new ApiError(`副 API 请求失败 (${resp.status}): ${text.slice(0, 300)}`, resp.status);
+      }
+
+      // 流式:按 SSE 增量拼接;非流式:直接解析 JSON。
+      if (stream) {
+        const streamed = await readSseContent(resp);
+        if (!streamed) throw new ApiError('副 API 返回空内容');
+        // 流式无 usage:ST 构造上游请求体是字段白名单,不含 stream_options,
+        // 没法让上游在末尾回 usage chunk。只能事后本地估算。
+        return { content: streamed, usage: { prompt: null, completion: null } };
+      }
+
+      const data = await resp.json();
+      if (data?.error) {
+        throw new ApiError(data.error.message || '副 API 返回错误');
+      }
+
+      const parsed = extractContent(data);
+      if (!parsed) throw new ApiError('副 API 返回空内容');
+      // ST 代理非流式分支是 response.send(json) 原样透传,故 usage 是上游真值。
+      return { content: parsed, usage: readUsage(data) };
     });
 
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      throw new ApiError(`副 API 请求失败 (${resp.status}): ${text.slice(0, 300)}`, resp.status);
+    if (historyId !== null) {
+      const hasReal = result.usage.prompt !== null;
+      safeHistory(() =>
+        finishLlm(historyId, {
+          response: result.content,
+          promptTokens: result.usage.prompt,
+          completionTokens: result.usage.completion,
+          tokensEstimated: false,
+        }),
+      );
+      // 没有真值(流式)才估算。估算是异步的,不 await——不能让它拖慢主流程。
+      if (!hasReal) void estimateTokens(historyId, outMessages, result.content);
     }
-
-    // 流式:按 SSE 增量拼接;非流式:直接解析 JSON。
-    if (stream) {
-      const content = await readSseContent(resp);
-      if (!content) throw new ApiError('副 API 返回空内容');
-      return content;
+    return result.content;
+  } catch (e) {
+    if (historyId !== null) {
+      const aborted = e instanceof DOMException && e.name === 'AbortError';
+      safeHistory(() => failLlm(historyId, e instanceof Error ? e.message : String(e), aborted));
     }
-
-    const data = await resp.json();
-    if (data?.error) {
-      throw new ApiError(data.error.message || '副 API 返回错误');
-    }
-
-    const content = extractContent(data);
-    if (!content) throw new ApiError('副 API 返回空内容');
-    return content;
-  });
+    throw e;
+  }
 }
 
 /**
@@ -266,14 +356,45 @@ export function mainApiAvailable(): boolean {
  * 走 ST 的 generateRaw:只发我们给的这几条消息,不带聊天历史/角色卡;无需连接档。
  * quiet 类型内部强制非流式,返回清洗后的整段文本;失败抛 ApiError。
  */
-export async function requestViaMainApi(messages: ChatMsg[], _opts: RequestOptions = {}): Promise<string> {
+export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOptions = {}): Promise<string> {
   const ctx = getContext();
   if (typeof ctx?.generateRaw !== 'function') {
     throw new ApiError('当前 ST 版本不支持 generateRaw,无法跟随主 API');
   }
-  const content = (await ctx.generateRaw({ prompt: messages, responseLength: MAIN_API_RESPONSE_LENGTH }))?.trim();
-  if (!content) throw new ApiError('主 API 返回空内容');
-  return content;
+
+  // 历史埋点。跟随主 API 走 ST 内部黑盒,拿不到 usage,token 一律靠估算。
+  const historyId = safeHistory(() =>
+    beginLlm({
+      source: opts.source || '未标注',
+      channelName: FOLLOW_MAIN_API,
+      model: '',
+      stream: false,
+      messages,
+    }),
+  );
+
+  try {
+    const content = (await ctx.generateRaw({ prompt: messages, responseLength: MAIN_API_RESPONSE_LENGTH }))?.trim();
+    if (!content) throw new ApiError('主 API 返回空内容');
+    if (historyId !== null) {
+      safeHistory(() =>
+        finishLlm(historyId, {
+          response: content,
+          promptTokens: null,
+          completionTokens: null,
+          tokensEstimated: true,
+        }),
+      );
+      void estimateTokens(historyId, messages, content);
+    }
+    return content;
+  } catch (e) {
+    if (historyId !== null) {
+      const aborted = e instanceof DOMException && e.name === 'AbortError';
+      safeHistory(() => failLlm(historyId, e instanceof Error ? e.message : String(e), aborted));
+    }
+    throw e;
+  }
 }
 
 /** 连通性测试:发一条极短请求 */
@@ -284,6 +405,7 @@ export async function testChannel(channel: ApiChannel): Promise<{ ok: boolean; m
       channel,
       [{ role: 'user', content: '回复"ok"两个字符即可。' }],
       primaryUrl,
+      { source: '连通性测试' },
     );
     const changed = channel.url.trim().replace(/\/+$/, '') !== primaryUrl;
     if (changed) channel.url = primaryUrl;
@@ -305,6 +427,7 @@ export async function testChannel(channel: ApiChannel): Promise<{ ok: boolean; m
         channel,
         [{ role: 'user', content: '回复"ok"两个字符即可。' }],
         fallbackUrl,
+        { source: '连通性测试(备用地址)' },
       );
       channel.url = fallbackUrl;
       return {

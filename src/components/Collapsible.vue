@@ -4,11 +4,12 @@ import { ref } from 'vue';
 
 const props = withDefaults(
   defineProps<{
-    title: string;
+    /** 标题文本。用 #header 插槽时可留空。 */
+    title?: string;
     /** 初始是否展开 */
     open?: boolean;
   }>(),
-  { open: true },
+  { title: '', open: true },
 );
 
 const expanded = ref(props.open);
@@ -19,7 +20,11 @@ const expanded = ref(props.open);
 <template>
   <section class="bbi-collapsible" :class="{ 'is-open': expanded }">
     <button class="bbi-collapsible-head" type="button" :aria-expanded="expanded" @click="expanded = !expanded">
-      <span class="bbi-collapsible-title">{{ title }}</span>
+      <!-- 默认只放标题文本;需要在标题行放徽章/元信息时用 #header 插槽覆盖
+           (插槽内不要放按钮等可交互元素——整个头本身就是一个 button)。 -->
+      <slot name="header">
+        <span class="bbi-collapsible-title">{{ title }}</span>
+      </slot>
       <Icon name="chevron" class="bbi-collapsible-chevron" />
     </button>
     <div class="bbi-collapsible-outer">

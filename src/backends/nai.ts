@@ -174,12 +174,35 @@ export interface NaiGenerateValues {
 type JsonObject = Record<string, unknown>;
 
 /**
- * 正向完整 prompt:质量词拼到 tag 后。
- * 质量词 = 用户覆盖值(qualityTags)优先,留空则按模型取官方词。
+ * 当前生效的画师串:选中条目的 prompt;未选 / 指向已删条目 / 内容全空白 → 空串。
+ *
+ * 刻意吃 nai 而不读全局 settings:本文件的拼装函数都是纯函数、可单测,读全局会让测试
+ * 没法用 nai() 工厂控制输入。也刻意不 import state/settings 的 activeNaiArtist ——
+ * settings.ts 已 import 本模块的 naiDefaultUndesired,反向加值依赖会成运行时环(TDZ 隐患)。
+ * 这一行 find 的重复是有意为之。
+ */
+export function naiArtistPrompt(nai: NaiSettings): string {
+  if (!nai.activeArtistId) return '';
+  const preset = nai.artistPresets.find(a => a.id === nai.activeArtistId);
+  // 全空白的 preset 必须归空串:'   ' 是 truthy,下游 filter(Boolean) 兜不住它
+  return preset?.prompt.trim() ?? '';
+}
+
+/**
+ * 正向完整 prompt:画师串在最前,画面 tag 居中,质量词在最后。
+ * - 画师串 = 画师串库当前选中条目(未选则无)。放最前是因为它决定整幅画的画风基调,
+ *   NAI 对靠前 tag 的权重更高;
+ * - 质量词 = 用户覆盖值(qualityTags)优先,留空则按模型取官方词。
+ *
+ * ⚠ 本函数在 buildNaiParameters(v4_prompt 的来源)与 generateNaiImage 的顶层 input
+ * 字段处各调一次,两处必须同源。拼装改动一律留在本函数内部——在某个调用点单独加料会让
+ * NAI3(读 input)与 NAI4/4.5(读 v4_prompt)拿到不同的提示词,且只在 NAI3 上暴露。
  */
 export function fullPositivePrompt(nai: NaiSettings, prompt: string): string {
+  const artist = naiArtistPrompt(nai);
   const quality = nai.qualityTags.trim() || naiDefaultQualityTags(nai.model);
-  return [prompt.trim(), quality].filter(Boolean).join(', ');
+  // filter(Boolean) 不能省:空画师串会产出 ', 1girl, …' 这种前导逗号,NAI 会当成一个空 tag
+  return [artist, prompt.trim(), quality].filter(Boolean).join(', ');
 }
 
 /**

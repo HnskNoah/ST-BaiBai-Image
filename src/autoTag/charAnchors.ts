@@ -148,8 +148,8 @@ export async function generateCharTags(
   ];
   const channel = getTagGenChannel();
   const raw = channel
-    ? await requestCompletion(channel, messages, { signal })
-    : await requestViaMainApi(messages, { signal });
+    ? await requestCompletion(channel, messages, { signal, source: '角色外貌转换' })
+    : await requestViaMainApi(messages, { signal, source: '角色外貌转换' });
   const parsed = parseConvertedTags(raw);
   const out: ConvertedChar[] = [];
   for (const c of chars) {

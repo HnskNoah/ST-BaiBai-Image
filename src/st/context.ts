@@ -83,6 +83,12 @@ export interface STContext {
   /** 展开 {{char}}/{{user}} 等宏。带角色卡描述时,字段里可能含宏,需用它还原。ST 稳定 API。 */
   substituteParams?: (content: string) => string;
   /**
+   * 用当前分词器数 token。ST 稳定 API(tokenizers.js)。
+   * 【口径】用的是**主界面当前 API/模型**的分词器,与副 API 渠道的模型未必同源,
+   * 故结果只能当估算(UI 上以 ≈ 标注),不能与上游返回的真实 usage 混为一谈。
+   */
+  getTokenCountAsync?: (str: string, padding?: number) => Promise<number>;
+  /**
    * 按文本激活世界书条目(关键词触发 + constant 常驻)。ST 稳定 API(world-info.js)。
    * chat 为待扫描文本数组(由旧到新);isDryRun=true 仅扫描不触发副作用事件。
    */

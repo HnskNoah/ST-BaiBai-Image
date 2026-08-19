@@ -30,6 +30,8 @@ import {
   type BbiImageEntry,
 } from '@/floor/storage';
 import { activeComfyPreset, effectiveComfyConn, settings } from '@/state/settings';
+import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
+import { copyText } from '@/st/clipboard';
 import { getContext } from '@/st/context';
 
 /**
@@ -162,6 +164,8 @@ async function generate(): Promise<void> {
   // NAI 需要闸门排队 → 先显示「排队中」;ComfyUI 有服务端队列,直接进 generating
   const { signal, token } = beginGen(slot, currentHash, naiActive.value ? 'queued' : 'generating');
   let release: (() => void) | null = null;
+  // 历史记录 id:在 seed 确定后才登记(见下),故这里先置空,catch 里据此判断要不要收尾。
+  let historyId: number | null = null;
 
   try {
     if (naiActive.value) {
@@ -175,6 +179,21 @@ async function generate(): Promise<void> {
         ? settings.nai.seed
         : naiRandomSeed()
       : randomSeed();
+    // 历史埋点:seed 已定、请求将发,此刻登记。图片本身不进 store(dataURL 会爆内存,
+    // 且图随后就落盘进 ST 了)——只留元信息 + 楼层坐标,够回溯「这张图是怎么来的」。
+    historyId = safeHistory(() =>
+      beginImage({
+        backend: naiActive.value ? 'nai' : 'comfyui',
+        model: naiActive.value ? settings.nai.model : activeComfyPreset().name,
+        prompt: job.prompt,
+        nl: job.nl,
+        negative: job.negative,
+        seed,
+        size: job.size,
+        floor: job.messageId,
+        seq: job.seq,
+      }),
+    );
     const result = naiActive.value
       ? await generateNaiImage(settings.nai, { prompt: job.prompt, seed, size: job.size }, signal)
       : await generateComfyImage(
@@ -193,18 +212,25 @@ async function generate(): Promise<void> {
     // 否则会把旧提示词的结果写进 extra,并触发一次多余的重水合打断新任务。
     if (!isCurrentGen(slot, token)) {
       result.revoke();
+      // 图出来了却被丢弃,历史里记成「已取消」——否则这条会永远停在「进行中」。
+      if (historyId !== null) safeHistory(() => failImage(historyId!, '', true));
       return;
     }
     // 落盘:图片进 ST 文件系统 + extra 写指针。成功后重水合,
     // 卡片从 extra 恢复为 ready(blob/dataURL 生命周期随之结束)。
     await saveImageResult(job.messageId, job.swipeId, job.seq, job.tag, seed, result);
     result.revoke();
+    if (historyId !== null) safeHistory(() => finishImage(historyId!));
     // 先清运行态再重水合:重水合会重建本组件,清完才不会带着 generating 复活
     clearGen(slot, token);
     const ctx = getContext();
     if (ctx) hydrateMessage(job.messageId, ctx);
   } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') {
+    const aborted = e instanceof DOMException && e.name === 'AbortError';
+    if (historyId !== null) {
+      safeHistory(() => failImage(historyId!, e instanceof Error ? e.message : String(e), aborted));
+    }
+    if (aborted) {
       clearGen(slot, token);
     } else {
       failGen(slot, token, e instanceof Error ? e.message : String(e));
@@ -271,13 +297,7 @@ async function removeEntry(
 }
 
 async function copyPrompt(): Promise<void> {
-  const text = promptText.value;
-  try {
-    await navigator.clipboard.writeText(text);
-    toastr.success('提示词已复制', '柏宝绘');
-  } catch {
-    toastr.error('复制失败,请手动选择文本', '柏宝绘');
-  }
+  await copyText(promptText.value, '提示词已复制');
 }
 
 /** 另存当前展示的这张图(与灯箱共用 download.ts,免得两份逻辑漂移)。 */

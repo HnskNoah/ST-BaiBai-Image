@@ -5,6 +5,7 @@ import {
   buildNaiParameters,
   fullNegativePrompt,
   fullPositivePrompt,
+  naiArtistPrompt,
   naiDefaultQualityTags,
   naiDefaultUndesired,
   naiEndpoint,
@@ -40,6 +41,8 @@ function nai(overrides: Partial<NaiSettings> = {}): NaiSettings {
     normalizeRefStrength: true,
     concurrency: 1,
     vibes: [],
+    artistPresets: [],
+    activeArtistId: '',
     ...overrides,
   };
 }
@@ -153,6 +156,66 @@ describe('提示词拼装', () => {
   });
 });
 
+describe('画师串拼装', () => {
+  const preset = (prompt: string, id = 'art_a') => ({ id, name: 'A', prompt });
+
+  it('空库 / 未选 → 输出与本功能上线前逐字节一致(存量用户零变化)', () => {
+    expect(fullPositivePrompt(nai(), '1girl')).toBe(
+      '1girl, location, very aesthetic, masterpiece, no text',
+    );
+  });
+
+  it('画师串拼在最前:画师串 → 画面 tag → 质量词', () => {
+    const s = nai({
+      artistPresets: [preset('artist:wlop, artist:krenz')],
+      activeArtistId: 'art_a',
+    });
+    expect(fullPositivePrompt(s, '1girl, sitting')).toBe(
+      'artist:wlop, artist:krenz, 1girl, sitting, location, very aesthetic, masterpiece, no text',
+    );
+  });
+
+  it('activeArtistId 悬空 → 不使用,绝不回落第一条(那会静默给用户换一套画风)', () => {
+    const s = nai({ artistPresets: [preset('artist:a')], activeArtistId: 'art_gone' });
+    expect(fullPositivePrompt(s, '1girl')).toBe(
+      '1girl, location, very aesthetic, masterpiece, no text',
+    );
+  });
+
+  it('选中条目内容全空白 → 等同不使用,不留前导逗号', () => {
+    // '   ' 是 truthy,filter(Boolean) 兜不住,故 naiArtistPrompt 内部必须 trim
+    const s = nai({ artistPresets: [preset('   ')], activeArtistId: 'art_a' });
+    expect(fullPositivePrompt(s, '1girl')).toBe(
+      '1girl, location, very aesthetic, masterpiece, no text',
+    );
+  });
+
+  it('与自定义质量词共存,顺序仍是 画师串 → tag → 质量词', () => {
+    const s = nai({
+      qualityTags: 'best quality',
+      artistPresets: [preset('artist:a')],
+      activeArtistId: 'art_a',
+    });
+    expect(fullPositivePrompt(s, '1girl')).toBe('artist:a, 1girl, best quality');
+  });
+
+  it('naiArtistPrompt 三态:空库 / 悬空 / 选中(选中时首尾空白被去掉)', () => {
+    expect(naiArtistPrompt(nai())).toBe('');
+    expect(naiArtistPrompt(nai({ artistPresets: [preset('artist:a')], activeArtistId: 'art_x' }))).toBe('');
+    expect(
+      naiArtistPrompt(nai({ artistPresets: [preset(' artist:a ')], activeArtistId: 'art_a' })),
+    ).toBe('artist:a');
+  });
+
+  it('多条只取选中那一条,不串味', () => {
+    const s = nai({
+      artistPresets: [preset('artist:a', 'art_a'), preset('artist:b', 'art_b')],
+      activeArtistId: 'art_b',
+    });
+    expect(naiArtistPrompt(s)).toBe('artist:b');
+  });
+});
+
 describe('buildNaiParameters', () => {
   it('v4 系带 v4_prompt 结构', () => {
     const p = buildNaiParameters(nai(), { prompt: '1girl', seed: 42 });
@@ -175,6 +238,20 @@ describe('buildNaiParameters', () => {
     expect(p.reference_information_extracted_multiple).toEqual([]);
     expect(p.sm).toBe(false);
     expect(p.reference_image_multiple_cached).toBeUndefined();
+  });
+
+  it('v4_prompt 的 base_caption 与 fullPositivePrompt 同源(含画师串)', () => {
+    // 顶层 input(generateNaiImage)与 parameters.v4_prompt 各拼一次的话,NAI3 读 input、
+    // NAI4/4.5 读 v4_prompt,两者会拿到不同提示词且只在 NAI3 上暴露。此断言把「同源」钉死:
+    // 任何拼装改动都必须留在 fullPositivePrompt 内部,不能在调用点单独加料。
+    const s = nai({
+      artistPresets: [{ id: 'art_a', name: 'A', prompt: 'artist:a' }],
+      activeArtistId: 'art_a',
+    });
+    const p = buildNaiParameters(s, { prompt: '1girl', seed: 1 });
+    const v4 = p.v4_prompt as { caption: { base_caption: string } };
+    expect(v4.caption.base_caption).toBe(fullPositivePrompt(s, '1girl'));
+    expect(v4.caption.base_caption.startsWith('artist:a, 1girl')).toBe(true);
   });
 
   it('k_euler_ancestral 附加 brownian 修正', () => {

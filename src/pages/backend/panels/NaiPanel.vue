@@ -37,11 +37,19 @@ import {
 import Collapsible from '@/components/Collapsible.vue';
 import BbiSelect from '@/components/BbiSelect.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
+import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { getContext } from '@/st/context';
-import { NAI_MODELS, settings, type NaiVibe } from '@/state/settings';
-import { computed, onMounted, ref } from 'vue';
+import {
+  activeNaiArtist,
+  newNaiArtist,
+  NAI_MODELS,
+  settings,
+  type NaiArtistPreset,
+  type NaiVibe,
+} from '@/state/settings';
+import { computed, nextTick, onMounted, ref } from 'vue';
 
 /** 本渠道是否为当前出图渠道;「使用此渠道」按钮与设置页选择器、页签徽标同属一个开关。 */
 const inUse = computed(() => settings.defaultBackend === 'nai');
@@ -67,39 +75,150 @@ async function onTestConnection() {
   }
 }
 
-/* ============ 提示词:官方默认词可见且可改 ============ */
+/* ============ 画师串库(形制照搬 ComfyUI 工作流库) ============ */
+
+/**
+ * 当前选中的画师串;null = 不使用(库为空、用户主动选了「不使用」、或 id 悬空)。
+ * settings 是 reactive,直接把它的字段绑 v-model 即可就地编辑。
+ */
+const artist = computed<NaiArtistPreset | null>(() => activeNaiArtist());
+
+/** 「不使用」的下拉值。preset id 恒为 art_* 形状,空串不会与任何一条相撞,无需装箱。 */
+const NO_ARTIST = '';
+
+const artistOptions = computed(() => [
+  { value: NO_ARTIST, label: '不使用' },
+  ...settings.nai.artistPresets.map(a => ({ value: a.id, label: a.name || '未命名画师串' })),
+]);
+
+/**
+ * 下拉的值取「实际生效的那一条」而非存的 id:存的 id 悬空时 activeNaiArtist 返回 null,
+ * 下拉也该跟着显示「不使用」,不能显示空白。
+ */
+const activeArtistId = computed<string>({
+  get: () => artist.value?.id ?? NO_ARTIST,
+  set: id => {
+    settings.nai.activeArtistId = id;
+  },
+});
+
+/** 改名/复制/删除都只对「真的选中了一条」有意义;选「不使用」时一律禁用。 */
+const hasArtist = computed(() => artist.value !== null);
+
+/** 改名是低频操作:平时只显示下拉,点「改名」才把选择器原地换成输入框。 */
+const renamingArtist = ref(false);
+const artistNameDraft = ref('');
+const artistNameInput = ref<HTMLInputElement | null>(null);
+const artistDeleteOpen = ref(false);
+
+function startRenameArtist() {
+  if (!artist.value) return;
+  artistNameDraft.value = artist.value.name;
+  renamingArtist.value = true;
+  nextTick(() => artistNameInput.value?.focus());
+}
+
+/** Enter / 失焦都算确认;Esc 直接置 renamingArtist=false 不经过这里,即为取消。 */
+function commitRenameArtist() {
+  if (renamingArtist.value && artist.value) artist.value.name = artistNameDraft.value.trim();
+  renamingArtist.value = false;
+}
+
+function addArtist() {
+  const preset = newNaiArtist(`画师串 ${settings.nai.artistPresets.length + 1}`);
+  settings.nai.artistPresets.push(preset);
+  settings.nai.activeArtistId = preset.id;
+}
+
+function duplicateArtist() {
+  const src = artist.value;
+  if (!src) return;
+  // 只换 id 与名字;id 生成仍由 settings 统一口径
+  const preset = { ...src, id: newNaiArtist().id, name: `${src.name} 副本` };
+  settings.nai.artistPresets.push(preset);
+  settings.nai.activeArtistId = preset.id;
+}
+
+function confirmRemoveArtist() {
+  artistDeleteOpen.value = false;
+  const list = settings.nai.artistPresets;
+  const index = list.findIndex(a => a.id === artist.value?.id);
+  if (index < 0) return;
+  list.splice(index, 1);
+  // 接位到原位置那一条(已是最后一条则退一格);删空了就回「不使用」——
+  // `?? ''` 正是画师串库与工作流库的分水岭(那边恒非空、回落 [0]),不能省。
+  settings.nai.activeArtistId = list[Math.min(index, list.length - 1)]?.id ?? '';
+}
+
+/* ============ 提示词:官方默认词可见且可改(列表行 + 弹窗,同设置页自定义提示词) ============ */
 
 /**
  * 质量词与基线负面词都按模型有一套官方值。设置里存的是「覆盖值」,空串 = 跟随模型官方词。
  *
- * 为什么要这层可写 computed:直接把 v-model 绑到设置上,未自定义时框里是空的——
- * 那就是把「看不到默认注入了什么」的老问题原地搬了个家。故读取时回落官方词
- * (框里永远是实际生效的内容、切模型会跟着换),写入时与官方词一致就存空串
- * (与设置页自定义提示词的 saveTagPrompt 同口径,避免把模板冗余存进设置)。
+ * 为什么打开弹窗要预填官方词:框里空着就是把「看不到默认注入了什么」的老问题原地搬家。
+ * 故读取时回落官方词(看得见实际生效的内容),保存时与官方词一致就存空串
+ * (与设置页 saveTagPrompt 同口径,避免把模板冗余存进设置、也便于列表显示「默认」)。
+ *
+ * official 必须是函数而非常量:它随 settings.nai.model 变,要在读取时才求值。
  */
-function overrideText(read: () => string, write: (v: string) => void, official: () => string) {
-  return computed<string>({
-    get: () => read().trim() || official(),
-    set: v => write(v.trim() === official().trim() ? '' : v),
-  });
+interface NaiPromptMeta {
+  key: 'quality' | 'undesired';
+  label: string;
+  hint: string;
+  official: () => string;
+  read: () => string;
+  write: (v: string) => void;
 }
 
-const officialQuality = () => naiDefaultQualityTags(settings.nai.model);
-const officialUndesired = () => naiDefaultUndesired(settings.nai.model);
+const NAI_PROMPT_METAS: NaiPromptMeta[] = [
+  {
+    key: 'quality',
+    label: '正面质量词',
+    hint: '拼在画面 tag 之后(整体顺序:画师串 → 画面 tag → 质量词)。留空 = 跟随当前模型的官方质量词,切模型自动跟着换。',
+    official: () => naiDefaultQualityTags(settings.nai.model),
+    read: () => settings.nai.qualityTags,
+    write: v => (settings.nai.qualityTags = v),
+  },
+  {
+    key: 'undesired',
+    label: '负面提示词',
+    hint: '按模型给官方默认值;要额外排除什么,直接往这一份里接。留空 = 跟随当前模型的官方负面词。',
+    official: () => naiDefaultUndesired(settings.nai.model),
+    read: () => settings.nai.undesiredContent,
+    write: v => (settings.nai.undesiredContent = v),
+  },
+];
 
-const qualityText = overrideText(
-  () => settings.nai.qualityTags,
-  v => (settings.nai.qualityTags = v),
-  officialQuality,
-);
-const undesiredText = overrideText(
-  () => settings.nai.undesiredContent,
-  v => (settings.nai.undesiredContent = v),
-  officialUndesired,
-);
+/** 该条是否已自定义(非空即视为已覆盖官方词)。 */
+function isNaiPromptCustom(meta: NaiPromptMeta): boolean {
+  return meta.read().trim().length > 0;
+}
 
-const qualityCustom = computed(() => settings.nai.qualityTags.trim().length > 0);
-const undesiredCustom = computed(() => settings.nai.undesiredContent.trim().length > 0);
+// 正在编辑的那条;draft 是草稿,点「完成」才写回 settings(取消则丢弃)。
+const editingNaiPrompt = ref<NaiPromptMeta | null>(null);
+const naiPromptDraft = ref('');
+
+function openNaiPrompt(meta: NaiPromptMeta) {
+  editingNaiPrompt.value = meta;
+  // 已自定义→载入用户内容;未自定义→预填当前模型官方词,方便直接在其上改
+  naiPromptDraft.value = meta.read().trim() || meta.official();
+}
+function closeNaiPrompt() {
+  editingNaiPrompt.value = null;
+  naiPromptDraft.value = '';
+}
+function saveNaiPrompt() {
+  const meta = editingNaiPrompt.value;
+  if (!meta) return;
+  const v = naiPromptDraft.value.trim();
+  meta.write(v === meta.official().trim() ? '' : naiPromptDraft.value);
+  closeNaiPrompt();
+}
+/** 「恢复默认」:把草稿重置回当前模型的官方词(保存后即回落官方) */
+function resetNaiPromptDraft() {
+  const meta = editingNaiPrompt.value;
+  if (meta) naiPromptDraft.value = meta.official();
+}
 
 /* ============ Vibe 库 ============ */
 
@@ -476,50 +595,105 @@ async function removeVibe(vibe: NaiVibe) {
         </div>
       </Collapsible>
 
-      <Collapsible title="提示词" :open="false">
-        <div class="bbi-field">
-          <div class="bbi-field-head">
-            <span class="bbi-field-label">正面质量词</span>
-            <span class="prompt-head-right">
-              <span class="bbi-prompt-state" :class="{ 'is-custom': qualityCustom }">
-                {{ qualityCustom ? '已自定义' : '默认' }}
-              </span>
-              <button
-                class="bbi-btn bbi-btn-sm"
-                type="button"
-                :disabled="!qualityCustom"
-                title="回到当前模型的官方质量词"
-                @click="settings.nai.qualityTags = ''"
-              >
-                <Icon name="refresh" :size="12" /> 恢复默认
-              </button>
-            </span>
-          </div>
-          <BbiTextarea v-model="qualityText" :max-rows="6" mono />
-          <p class="bbi-field-hint">拼在画面 tag 之后</p>
+      <Collapsible title="提示词" :open="true">
+        <!-- 画师串库:形制与 ComfyUI 工作流库一致,多一个「不使用」选项 -->
+        <div class="art-row">
+          <span class="bbi-field-label">画师串</span>
+          <input
+            v-if="renamingArtist"
+            ref="artistNameInput"
+            class="bbi-input"
+            type="text"
+            v-model="artistNameDraft"
+            placeholder="画师串名称"
+            spellcheck="false"
+            title="Enter 确认，Esc 取消"
+            @keydown.enter.prevent="commitRenameArtist"
+            @keydown.esc="renamingArtist = false"
+            @blur="commitRenameArtist"
+          />
+          <BbiSelect
+            v-else
+            class="art-select"
+            v-model="activeArtistId"
+            :options="artistOptions"
+            aria-label="当前画师串"
+          />
+          <span v-if="!renamingArtist" class="art-ops">
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              :disabled="!hasArtist"
+              :title="hasArtist ? '重命名当前画师串' : '未选中画师串'"
+              aria-label="重命名当前画师串"
+              @click="startRenameArtist"
+            >
+              <Icon name="edit" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              title="新建一条空画师串"
+              aria-label="新建一条空画师串"
+              @click="addArtist"
+            >
+              <Icon name="plus" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              :disabled="!hasArtist"
+              :title="hasArtist ? '复制当前画师串' : '未选中画师串'"
+              aria-label="复制当前画师串"
+              @click="duplicateArtist"
+            >
+              <Icon name="copy" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op art-remove"
+              type="button"
+              :disabled="!hasArtist"
+              :title="hasArtist ? '删除当前画师串' : '未选中画师串'"
+              aria-label="删除当前画师串"
+              @click="artistDeleteOpen = true"
+            >
+              <Icon name="trash" :size="14" />
+            </button>
+          </span>
         </div>
 
-        <div class="bbi-field">
-          <div class="bbi-field-head">
-            <span class="bbi-field-label">负面提示词</span>
-            <span class="prompt-head-right">
-              <span class="bbi-prompt-state" :class="{ 'is-custom': undesiredCustom }">
-                {{ undesiredCustom ? '已自定义' : '默认' }}
+        <!-- 内容内联编辑:画师串通常就几个 tag,让「选中哪条」与「这条写了什么」一眼同框 -->
+        <template v-if="artist">
+          <BbiTextarea
+            v-model="artist.prompt"
+            :rows="3"
+            :max-rows="8"
+            mono
+            placeholder="artist:xxx, artist:yyy"
+          />
+          <p class="bbi-field-hint art-hint">
+            拼在正向提示词的最前面,先于画面 tag 与质量词——整幅画的画风基调由它定。
+          </p>
+        </template>
+        <p v-else class="bbi-field-hint art-hint">
+          当前不使用画师串。点上面的加号新建一条,可存多套画风随时切换。
+        </p>
+
+        <hr class="art-divider" />
+
+        <!-- 质量词 / 负面词:只读列表行,点行进弹窗编辑(与设置页「自定义提示词」同款) -->
+        <ul class="bbi-prompt-list">
+          <li v-for="m in NAI_PROMPT_METAS" :key="m.key" class="bbi-prompt-item">
+            <button class="bbi-prompt-open" type="button" @click="openNaiPrompt(m)">
+              <span class="bbi-prompt-name">{{ m.label }}</span>
+              <span class="bbi-prompt-state" :class="{ 'is-custom': isNaiPromptCustom(m) }">
+                {{ isNaiPromptCustom(m) ? '已自定义' : '默认' }}
               </span>
-              <button
-                class="bbi-btn bbi-btn-sm"
-                type="button"
-                :disabled="!undesiredCustom"
-                title="回到当前模型的官方负面词"
-                @click="settings.nai.undesiredContent = ''"
-              >
-                <Icon name="refresh" :size="12" /> 恢复默认
-              </button>
-            </span>
-          </div>
-          <BbiTextarea v-model="undesiredText" :max-rows="10" mono />
-          <p class="bbi-field-hint">按模型给官方默认值;要加自己的词直接往后接</p>
-        </div>
+              <Icon name="edit" class="bbi-prompt-edit" />
+            </button>
+          </li>
+        </ul>
+        <p class="bbi-field-hint">留空 = 跟随当前模型的官方词,切模型会自动跟着换。</p>
       </Collapsible>
 
       <Collapsible title="默认参数" :open="false">
@@ -887,6 +1061,54 @@ async function removeVibe(vibe: NaiVibe) {
         </footer>
       </div>
     </ModalMask>
+
+    <ConfirmDialog
+      v-model:open="artistDeleteOpen"
+      title="删除画师串"
+      confirm-text="删除"
+      confirm-icon="trash"
+      tone="danger"
+      @confirm="confirmRemoveArtist"
+    >
+      确定删除画师串「{{ artist?.name || '未命名画师串' }}」？删除后无法恢复。
+    </ConfirmDialog>
+
+    <!-- ===== 质量词 / 负面词编辑弹窗(与设置页自定义提示词同款) ===== -->
+    <ModalMask :open="!!editingNaiPrompt" @close="closeNaiPrompt">
+      <div
+        v-if="editingNaiPrompt"
+        class="bbi-modal bbi-modal-wide"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="`编辑${editingNaiPrompt.label}`"
+      >
+        <header class="bbi-modal-head">
+          <span class="bbi-modal-title">编辑{{ editingNaiPrompt.label }}</span>
+          <button class="bbi-icon-mini" type="button" title="关闭" @click="closeNaiPrompt">
+            <Icon name="close" />
+          </button>
+        </header>
+
+        <p class="bbi-modal-label">{{ editingNaiPrompt.hint }}</p>
+
+        <BbiTextarea
+          v-model="naiPromptDraft"
+          class="bbi-prompt-area"
+          :rows="12"
+          :max-rows="28"
+          mono
+        />
+
+        <footer class="bbi-modal-foot">
+          <button class="bbi-btn bbi-btn-danger" type="button" @click="resetNaiPromptDraft">
+            <Icon name="refresh" /> 恢复默认
+          </button>
+          <span class="bbi-modal-foot-spacer"></span>
+          <button class="bbi-btn" type="button" @click="closeNaiPrompt">取消</button>
+          <button class="bbi-btn bbi-btn-primary" type="button" @click="saveNaiPrompt">完成</button>
+        </footer>
+      </div>
+    </ModalMask>
   </div>
 </template>
 
@@ -930,12 +1152,149 @@ async function removeVibe(vibe: NaiVibe) {
 .vibe-hint {
   margin-top: 0;
 }
-/* 字段标签行右侧:状态药丸 + 恢复默认,基线与标签对齐 */
-.prompt-head-right {
+
+/* —— 画师串库(形制照搬 ComfyUIPanel 的 .wf-*) —— */
+/* 选择行:grid 而非 flex——靠 flex-basis 撑出的对齐一 wrap 就散,
+   固定首列宽让标签列与下方各行的标签列同起点。 */
+.art-row {
+  display: grid;
+  grid-template-columns: 5.5em minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+.art-row > .bbi-field-label:first-child {
+  white-space: nowrap;
+}
+.art-row > .bbi-input {
+  min-width: 0;
+}
+/* 下拉不吃满:名称通常很短,拉满只会拖出半截空白(子组件根类默认 180px/不伸缩,此处 0,2,0 压过) */
+.art-row > .art-select {
+  width: auto;
+  max-width: 320px;
+  min-width: 0;
+}
+.art-ops {
+  display: flex;
+  gap: 4px;
+  justify-self: end;
+}
+/* 四个操作低频且同级,图标化后整行只剩下拉一个视觉重点;文案退到 title/aria-label */
+.art-op {
+  width: 30px;
+  height: 30px;
+  font-size: 13px;
+}
+.art-op:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.art-remove:not(:disabled) {
+  color: var(--bbi-danger);
+}
+.art-remove:not(:disabled):hover {
+  color: var(--bbi-danger);
+  background: var(--bbi-danger-soft);
+}
+.art-hint {
+  margin-top: 8px;
+}
+/* 画师串与下方质量词/负面词的分界 */
+.art-divider {
+  border: 0;
+  border-top: 1px dashed var(--bbi-line);
+  margin: 12px 0;
+}
+
+/* 操作按钮基类:.bbi-icon-btn 只在 App.vue 的 scoped 块里声明,此处补一份
+   (与 ComfyUIPanel 同款处理;漏了会渲染成浏览器原生按钮,shadow DOM 里也拿不到 ST 样式) */
+.bbi-icon-btn {
+  width: 36px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--bbi-radius-sm);
+  background: var(--bbi-surface-2);
+  color: var(--bbi-ink-soft);
+  cursor: pointer;
+  font-size: 15px;
+  transition:
+    color var(--bbi-dur) var(--bbi-ease),
+    background var(--bbi-dur) var(--bbi-ease);
+}
+.bbi-icon-btn:hover {
+  color: var(--bbi-ink);
+  background: var(--bbi-line-strong);
+}
+
+/* —— 质量词/负面词列表行 + 弹窗:样式随设置页「自定义提示词」,scoped 不跨组件故补一份 —— */
+.bbi-prompt-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
+/* 整行可点进弹窗编辑(状态药丸 .bbi-prompt-state 在 base.css 全局,无需补) */
+.bbi-prompt-open {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--bbi-line);
+  border-radius: var(--bbi-radius);
+  background: var(--bbi-surface-2);
+  color: var(--bbi-ink);
+  font-family: var(--bbi-font-sans);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color var(--bbi-dur) var(--bbi-ease),
+    background var(--bbi-dur) var(--bbi-ease);
+}
+.bbi-prompt-open:hover {
+  border-color: var(--bbi-accent);
+  background: var(--bbi-surface);
+}
+.bbi-prompt-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.bbi-prompt-edit {
+  flex: 0 0 auto;
+  font-size: 16px;
+  color: var(--bbi-ink-muted);
+}
+.bbi-prompt-open:hover .bbi-prompt-edit {
+  color: var(--bbi-accent);
+}
+/* 弹窗:更宽 + 大文本框 */
+.bbi-modal-wide {
+  max-width: 680px;
+}
+.bbi-prompt-area {
+  line-height: 1.6;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+/* 把「恢复默认」推到最左(本文件的迁移弹窗此前裸用过此类名,靠 foot 的 flex-end 蒙对) */
+.bbi-modal-foot-spacer {
+  flex: 1 1 auto;
+}
+.bbi-btn-danger:hover {
+  border-color: var(--bbi-danger);
+  color: var(--bbi-danger);
+}
+
 .migrate-actions {
   display: flex;
   align-items: center;
@@ -1145,6 +1504,18 @@ async function removeVibe(vibe: NaiVibe) {
   }
   .vibe-group-body {
     padding-left: 0;
+  }
+  /* 同理:四个图标钮 + 标签会把画师串下拉挤成一条缝,标签独占首行,
+     下拉与操作组同行分据两端 */
+  .art-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 8px;
+  }
+  .art-row > .bbi-field-label:first-child {
+    grid-column: 1 / -1;
+  }
+  .art-row > .art-select {
+    max-width: none;
   }
 }
 </style>

@@ -166,8 +166,14 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       }
       try {
         const raw = channel
-          ? await requestCompletion(channel, messages, { signal: controller.signal })
-          : await requestViaMainApi(messages, { signal: controller.signal });
+          ? await requestCompletion(channel, messages, {
+              signal: controller.signal,
+              source: `自动 tag(第 ${floor} 楼)`,
+            })
+          : await requestViaMainApi(messages, {
+              signal: controller.signal,
+              source: `自动 tag(第 ${floor} 楼)`,
+            });
         if (controller.signal.aborted) {
           processed.delete(identity);
           return;

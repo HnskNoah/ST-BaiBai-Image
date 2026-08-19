@@ -134,6 +134,22 @@ export interface NaiVibe {
   group: string;
 }
 
+/**
+ * 一条具名画师串。内容是拼在正向提示词**最前面**的一段画风 tag
+ * (通常形如 `artist:xxx, artist:yyy`),整条即用户的一套画风配方。
+ *
+ * 为什么不像质量词/负面词那样按模型分表:那两者是**模型的属性**——官方给每个模型
+ * 一套推荐词,切模型必须跟着换(见 nai.ts 的 QUALITY_TAGS / DEFAULT_UNDESIRED_CONTENT);
+ * 画师串是**用户自己的配方**,跨模型复用才是常态。故做成可增删的库,而非 Record<model, …>。
+ */
+export interface NaiArtistPreset {
+  id: string;
+  /** 显示名(下拉列表与切换用;允许重名,以 id 为键)。 */
+  name: string;
+  /** 画师/画风 tag 串;留空的条目在拼装时等同于没选。 */
+  prompt: string;
+}
+
 /** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */
 export interface NaiSettings extends BackendConn {
   /** API Key(与副 API 渠道同口径,随设置落盘)。 */
@@ -163,6 +179,18 @@ export interface NaiSettings extends BackendConn {
   concurrency: number;
   /** Vibe 库索引；正文存在 ST user/files，设置中不存大 Base64。 */
   vibes: NaiVibe[];
+  /**
+   * 画师串库。**与 ComfyUI 工作流库相反:允许为空**——工作流不给就没法出图,
+   * 故那边有「恒非空」不变式;画师串不给只是不加画风,是可选调味,
+   * 所以既不播种默认条目(见 naiDefaults),也不做补一条的兜底。
+   */
+  artistPresets: NaiArtistPreset[];
+  /**
+   * 当前使用的画师串 id。**空串 = 不使用画师串**,是有意义的存储值。
+   * 指向已删条目时由 normalizeNai 清成空串——刻意**不**像 activeWorkflowId 那样
+   * 回落第一条:那会给用户静默套上一套他没选过的画风,每张图都变样却查不出原因。
+   */
+  activeArtistId: string;
 }
 
 /** 界面偏好里要跨设备同步的部分;activePage 等纯本机临时态不在此。 */
@@ -557,6 +585,17 @@ function comfyDefaults(): ComfyUISettings {
   };
 }
 
+/** 新画师串的默认名。 */
+const DEFAULT_ARTIST_NAME = '画师串 1';
+
+let artistSeq = 0;
+
+/** 新建一条空画师串(id 生成口径同 newComfyWorkflow / newChannel;art_ 前缀不与 wf_/ch_ 撞)。 */
+export function newNaiArtist(name = DEFAULT_ARTIST_NAME): NaiArtistPreset {
+  artistSeq += 1;
+  return { id: `art_${Date.now()}_${artistSeq}`, name, prompt: '' };
+}
+
 function naiDefaults(): NaiSettings {
   return {
     ...backendDefaults('https://image.novelai.net'),
@@ -574,6 +613,11 @@ function naiDefaults(): NaiSettings {
     normalizeRefStrength: true,
     concurrency: 1,
     vibes: [],
+    // 空库 + 不使用:新装用户的正向提示词与本功能上线前完全一致。
+    // 刻意不像 comfyDefaults 那样播种一条——凭空给一条「画师串 1」会让人
+    // 以为自己已经被套上了某种画风。
+    artistPresets: [],
+    activeArtistId: '',
   };
 }
 
@@ -685,6 +729,23 @@ export function effectiveComfyConn(): ComfyRunConn {
     portraitSize: preset.portraitSize,
     landscapeSize: preset.landscapeSize,
   };
+}
+
+/**
+ * 当前选中的画师串;**未选 / 指向已删条目时返回 null(= 不使用)**。
+ *
+ * 与 activeComfyPreset 的「永不 null」刻意相反:工作流不给就出不了图,所以那边一路兜底;
+ * 画师串不给只是不加画风,兜底成 [0] 反而会把「不使用」悄悄变成「用库里第一条」,
+ * 是画面级的静默改动。
+ * 同样刻意只读不写:本函数在 computed 里被调用,写 settings 会引起递归求值。
+ *
+ * 注意拼装侧不走这里,走 backends/nai.ts 的 naiArtistPrompt(纯函数、吃 NaiSettings)——
+ * settings.ts 已 import 本模块的 naiDefaultUndesired,反向加值依赖会成运行时环。
+ */
+export function activeNaiArtist(): NaiArtistPreset | null {
+  const id = settings.nai.activeArtistId;
+  if (!id) return null;
+  return settings.nai.artistPresets.find(a => a.id === id) ?? null;
 }
 
 /**
@@ -887,11 +948,35 @@ function foldLegacyNegative(o: Partial<NaiSettings>, model: NaiModel, def: strin
   return [legacy, naiDefaultUndesired(model)].filter(Boolean).join(', ');
 }
 
+/** 单条画师串清洗:缺字段/类型不符逐项回退;prompt 允许空串(空槽位不是垃圾数据)。 */
+function normalizeArtistPreset(raw: unknown, seq: number): NaiArtistPreset {
+  const o = (raw ?? {}) as Partial<NaiArtistPreset>;
+  return {
+    id: typeof o.id === 'string' && o.id ? o.id : `art_${Date.now()}_${seq}`,
+    name: typeof o.name === 'string' && o.name ? o.name : `画师串 ${seq + 1}`,
+    prompt: typeof o.prompt === 'string' ? o.prompt : '',
+  };
+}
+
 function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   const conn = normalizeBackend(raw, def);
   const o = (raw ?? {}) as Partial<NaiSettings>;
   const model =
     typeof o.model === 'string' && NAI_MODEL_VALUES.has(o.model) ? (o.model as NaiModel) : def.model;
+
+  // 画师串库:允许为空,故没有「恒非空」兜底(与 normalizeComfyUI 刻意不同)
+  const artistPresets = Array.isArray(o.artistPresets)
+    ? o.artistPresets.map(normalizeArtistPreset)
+    : def.artistPresets;
+  // 悬空 id 一律清成空串(= 不使用)。**不**照抄 normalizeComfyUI 的「回落第一条」:
+  // 用户删掉当前画师串后本该「什么都不加」,回落会给他静默换一套画风,而下拉显示的
+  // 也正是那一条(看起来就是自己设的),几乎无法排查。
+  // 清成空串同时让 activeArtistId ∈ {'', 库中已有 id} 成为不变式,面板无需再判悬空。
+  const activeArtistId =
+    typeof o.activeArtistId === 'string' && artistPresets.some(a => a.id === o.activeArtistId)
+      ? o.activeArtistId
+      : '';
+
   return {
     ...conn,
     // 「附加负面」已并入 undesiredContent 一个框,存量值折进去(见 foldLegacyNegative)
@@ -914,6 +999,8 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
     vibes: Array.isArray(o.vibes)
       ? o.vibes.map((v, i) => normalizeVibe(v, i)).filter((v): v is NaiVibe => v !== null)
       : def.vibes,
+    artistPresets,
+    activeArtistId,
   };
 }
 

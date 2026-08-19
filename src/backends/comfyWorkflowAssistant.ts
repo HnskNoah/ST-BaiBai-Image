@@ -307,7 +307,7 @@ export async function configureWorkflowWithAi(
   ];
   const channel = getTagGenChannel();
   const raw = channel
-    ? await requestCompletion(channel, messages, { signal })
-    : await requestViaMainApi(messages, { signal });
+    ? await requestCompletion(channel, messages, { signal, source: 'ComfyUI 工作流配置' })
+    : await requestViaMainApi(messages, { signal, source: 'ComfyUI 工作流配置' });
   return applyWorkflowBindings(template, parseWorkflowBindings(raw));
 }
