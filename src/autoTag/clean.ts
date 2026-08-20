@@ -200,16 +200,24 @@ function targetRemovalRanges(source: string, tags: string[]): RemovalRange[] {
   for (let match = startRe.exec(masked); match; match = startRe.exec(masked)) lastStart = match.index;
   if (lastStart >= 0) crop.push({ start: 0, end: lastStart });
 
-  const endSearchStart = Math.max(0, lastStart);
-  const endMatch = masked.slice(endSearchStart).match(/<\/bbs_end>/i);
-  if (endMatch?.index !== undefined) {
-    const end = endSearchStart + endMatch.index + endMatch[0].length;
-    crop.push({ start: end, end: source.length });
-  }
+  const bodyStart = Math.max(0, lastStart);
+  const endMatch = masked.slice(bodyStart).match(/<\/bbs_end>/i);
+  const bodyEnd = endMatch?.index === undefined
+    ? source.length
+    : bodyStart + endMatch.index + endMatch[0].length;
+  if (bodyEnd < source.length) crop.push({ start: bodyEnd, end: source.length });
 
+  // Match BaiBai Book's order: crop to the story time range before removing time tags.
+  // A format example before the story must not pair with the real closing tag and swallow the prose.
   const timeTags: RemovalRange[] = [];
+  const body = masked.slice(bodyStart, bodyEnd);
   for (const tag of ['bbs_start', 'bbs_end']) {
-    for (const regex of blockStripRegexes(tag)) timeTags.push(...rangesForRegex(masked, regex));
+    for (const regex of blockStripRegexes(tag)) {
+      timeTags.push(...rangesForRegex(body, regex).map(range => ({
+        start: bodyStart + range.start,
+        end: bodyStart + range.end,
+      })));
+    }
   }
   return mergeRanges([...noise, ...crop, ...timeTags]);
 }

@@ -113,6 +113,27 @@ describe('prompt body cleaning', () => {
     });
   });
 
+  it('crops draft format examples before removing real time tags', () => {
+    const text = `<draft_notes>
+format example: <bbs_start>/<bbs_end>
+</draft_notes>
+<bbs_start>1978/9/15 10:15</bbs_start>
+first useful line
+second useful line
+<bbs_end>1978/9/15 11:05</bbs_end>
+<diary>tail content</diary>`;
+
+    expect(prepareTargetText(text, [])).toEqual({
+      promptText: `first useful line \u27e6P1\u27e7
+
+second useful line \u27e6P2\u27e7`,
+      segments: [
+        { id: 'P1', sourceLine: 4, text: 'first useful line' },
+        { id: 'P2', sourceLine: 5, text: 'second useful line' },
+      ],
+    });
+  });
+
   it('keeps source offsets stable when emoji appear before removed blocks', () => {
     expect(
       prepareTargetText(
