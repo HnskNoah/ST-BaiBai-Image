@@ -256,7 +256,8 @@ runForFloor(floor, opts)
   另有三件画师串预设函数(collectChatu8ArtistRefs / detectChatu8Artists / importArtistsFromChatu8):
   读 `yushe` 表 + `yusheid_novelai` 当前选中,positive 两段(fixedPrompt/fixedPrompt_end)按原序
   拼成一条画师串,按 (名字, 内容) 去重,active 预设映射到目标 id 由调用方决定是否选中;纯函数不落盘,
-  UI 在 NaiPanel(检测横条 + 预览弹窗)。
+  UI 在 NaiPanel:对当前库实时跑 importArtistsFromChatu8 算「还剩 N 个新预设」,N>0 才显示
+  文字按钮行(导完自动消失),点击进预览弹窗。
 - `vibeStore.ts`:Vibe 原图/编码正文与缩略图分文件存 ST `user/files`，文件存储不可用时回退本机 IndexedDB。
   `extensionSettings['baibai_image']` 只留路径、模型键、指纹等小型索引，禁止再放 Base64。
 

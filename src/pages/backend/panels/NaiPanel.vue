@@ -176,15 +176,19 @@ const switchActiveArtist = ref(true);
 
 const chatu8ActiveRef = computed(() => artistImportRefs.value.find(r => r.active) ?? null);
 
-/** 导入入口:检测到智绘姬且有预设才可用。 */
-const chatu8ArtistImportable = computed(
-  () => chatu8ArtistDetect.value.found && chatu8ArtistDetect.value.total > 0,
-);
-const chatu8ArtistImportTitle = computed(() => {
-  if (!chatu8ArtistDetect.value.found) return '未检测到智绘姬（插件未安装或未启用）';
-  if (chatu8ArtistDetect.value.total === 0) return '智绘姬里没有画师串预设';
-  return '从智绘姬导入全部画师串预设';
+/**
+ * 还没导过来的画师串数量:对当前库实时跑一遍纯函数预览(importArtistsFromChatu8 不落盘)。
+ * 依赖 settings.nai.artistPresets——导入 push 完成后自动重算归零,入口随之消失。
+ */
+const chatu8ArtistRemaining = computed(() => {
+  const chatu8 = getContext()?.extensionSettings?.[CHATU8_SETTINGS_KEY];
+  return importArtistsFromChatu8(settings.nai.artistPresets, chatu8).imported;
 });
+
+/** 导入入口:检测到智绘姬、且有尚未导入的预设才显示(全部导过就不再出现)。 */
+const chatu8ArtistImportable = computed(
+  () => chatu8ArtistDetect.value.found && chatu8ArtistRemaining.value > 0,
+);
 
 function isArtistDup(ref: Chatu8ArtistRef): boolean {
   const key = JSON.stringify([ref.source.trim(), ref.prompt.trim()]);
@@ -748,16 +752,6 @@ async function removeVibe(vibe: NaiVibe) {
               <Icon name="copy" :size="14" />
             </button>
             <button
-              class="bbi-icon-btn art-op"
-              type="button"
-              :disabled="!chatu8ArtistImportable"
-              :title="chatu8ArtistImportTitle"
-              aria-label="从智绘姬导入画师串"
-              @click="openArtistImport"
-            >
-              <Icon name="download" :size="14" />
-            </button>
-            <button
               class="bbi-icon-btn art-op art-remove"
               type="button"
               :disabled="!hasArtist"
@@ -768,6 +762,15 @@ async function removeVibe(vibe: NaiVibe) {
               <Icon name="trash" :size="14" />
             </button>
           </span>
+        </div>
+
+        <!-- 从智绘姬导入:批量外部数据操作,与上面针对「当前选中画师串」的对象操作不同级,
+             不进图标行;仅在检测到可导入时出现(带文字标签,不用裸图标,避免与下载混淆) -->
+        <div v-if="chatu8ArtistImportable" class="art-import">
+          <button class="bbi-btn bbi-btn-sm" type="button" @click="openArtistImport">
+            <Icon name="download" :size="14" />
+            从智绘姬导入画师串({{ chatu8ArtistRemaining }} 个新预设)
+          </button>
         </div>
 
         <!-- 内容内联编辑:画师串通常就几个 tag,让「选中哪条」与「这条写了什么」一眼同框 -->
@@ -1391,6 +1394,12 @@ async function removeVibe(vibe: NaiVibe) {
 }
 .art-hint {
   margin-top: 8px;
+}
+
+/* 智绘姬导入入口:仅检测到可导入时出现的文字按钮行 */
+.art-import {
+  display: flex;
+  margin: 8px 0 12px;
 }
 /* 画师串与下方质量词/负面词的分界 */
 .art-divider {
