@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectChatu8ArtistRefs,
   collectChatu8VibeRefs,
+  detectChatu8Artists,
   detectChatu8Vibes,
+  importArtistsFromChatu8,
   planPrefixGroups,
   vibeFingerprint,
 } from '@/backends/chatu8Vibe';
@@ -123,5 +126,63 @@ describe('vibeFingerprint', () => {
     const a = vibeFingerprint({ v3: { encoding: 'AAA', infoExtracted: 1 } });
     const b = vibeFingerprint({ v3: { encoding: 'CCC', infoExtracted: 1 } });
     expect(a).not.toBe(b);
+  });
+});
+
+describe('st-chatu8 artist migration', () => {
+  const source = {
+    yushe: {
+      Default: { fixedPrompt: '', fixedPrompt_end: '', negativePrompt: 'ignored' },
+      Painter: { fixedPrompt: 'artist:a', fixedPrompt_end: 'style:b', negativePrompt: 'bad' },
+      SharedSDPreset: { fixedPrompt: 'score_9', fixedPrompt_end: '' },
+      Broken: null,
+    },
+    yusheid_novelai: 'Painter',
+  };
+
+  it('collects the whole shared preset library and merges both positive prompt positions', () => {
+    expect(collectChatu8ArtistRefs(source)).toEqual([
+      { source: 'Default', prompt: '', active: false },
+      { source: 'Painter', prompt: 'artist:a, style:b', active: true },
+      { source: 'SharedSDPreset', prompt: 'score_9', active: false },
+    ]);
+  });
+
+  it('detects source settings independently from preset count', () => {
+    expect(detectChatu8Artists(undefined)).toEqual({ found: false, total: 0 });
+    expect(detectChatu8Artists({ yushe: {} })).toEqual({ found: true, total: 0 });
+    expect(detectChatu8Artists(source)).toEqual({ found: true, total: 3 });
+  });
+
+  it('imports every valid preset, including empty and presets shared with other backends', () => {
+    const result = importArtistsFromChatu8([], source);
+    expect(result.found).toBe(true);
+    expect(result.imported).toBe(3);
+    expect(result.duplicates).toBe(0);
+    expect(result.artistPresets.map(p => [p.name, p.prompt])).toEqual([
+      ['Default', ''],
+      ['Painter', 'artist:a, style:b'],
+      ['SharedSDPreset', 'score_9'],
+    ]);
+    expect(result.artistPresets.every(p => p.id.startsWith('art_'))).toBe(true);
+    expect(result.activeArtistId).toBe(result.artistPresets[1].id);
+  });
+
+  it('deduplicates by trimmed name and prompt and maps the active source preset to an existing id', () => {
+    const existing = [{ id: 'art_existing', name: ' Painter ', prompt: 'artist:a, style:b ' }];
+    const result = importArtistsFromChatu8(existing, source);
+    expect(result.imported).toBe(2);
+    expect(result.duplicates).toBe(1);
+    expect(result.activeArtistId).toBe('art_existing');
+  });
+
+  it('does not collapse different names with identical prompt content', () => {
+    const result = importArtistsFromChatu8([], {
+      yushe: {
+        A: { fixedPrompt: 'artist:a' },
+        B: { fixedPrompt: 'artist:a' },
+      },
+    });
+    expect(result.imported).toBe(2);
   });
 });

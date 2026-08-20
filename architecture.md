@@ -49,7 +49,8 @@ src/
 │   ├── comfyui.ts     # ComfyUI:工作流模板 %占位符% 渲染、浏览器直连/ST 转发自动回退
 │   ├── comfyWorkflowAssistant.ts # AI 自动定位工作流节点(片段 ID 协议,不复制原文)
 │   ├── nai.ts         # NovelAI:参数构造、vibe 编码/叠加、画师串前置拼装、.naiv4vibe 导入导出
-│   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe
+│   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe / 画师串预设
+│   │                  # (collect/detect/import 纯函数三件套,绝不写回智绘姬)
 │   ├── vibeGroups.ts  # Vibe 分组纯逻辑(装箱 key/归拢/搜索/启用集合判定)
 │   └── size.ts        # 画幅方向归一 / 尺寸解析 / 按方向取配置(刻意不 import settings)
 ├── floor/             # ★ 链路 B:楼层生图卡片
@@ -252,6 +253,10 @@ runForFloor(floor, opts)
   **画师串 → 画面 tag → 质量词**(画师串来自库,见 §7);
   `.naiv4vibe` 导入导出与官方互通。
 - `chatu8Vibe.ts`:只读智绘姬的 extension_settings + IndexedDB,逐条导入 vibe(内容指纹去重、读取超时、迁移进度)。
+  另有三件画师串预设函数(collectChatu8ArtistRefs / detectChatu8Artists / importArtistsFromChatu8):
+  读 `yushe` 表 + `yusheid_novelai` 当前选中,positive 两段(fixedPrompt/fixedPrompt_end)按原序
+  拼成一条画师串,按 (名字, 内容) 去重,active 预设映射到目标 id 由调用方决定是否选中;纯函数不落盘,
+  UI 在 NaiPanel(检测横条 + 预览弹窗)。
 - `vibeStore.ts`:Vibe 原图/编码正文与缩略图分文件存 ST `user/files`，文件存储不可用时回退本机 IndexedDB。
   `extensionSettings['baibai_image']` 只留路径、模型键、指纹等小型索引，禁止再放 Base64。
 
@@ -388,7 +393,7 @@ runForFloor(floor, opts)
 | ComfyUI 工作流 / 出图 / 通道回退 | src/backends/comfyui.ts |
 | ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
-| NAI 参数 / vibe / .naiv4vibe | src/backends/nai.ts + vibeStore.ts(+ chatu8Vibe.ts 导入) |
+| NAI 参数 / vibe / .naiv4vibe / 智绘姬画师串导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
 | NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |

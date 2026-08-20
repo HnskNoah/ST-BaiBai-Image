@@ -6,7 +6,7 @@ import {
   vibeMetaFromData,
 } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
-import type { NaiVibe } from '@/state/settings';
+import { newNaiArtist, type NaiArtistPreset, type NaiVibe } from '@/state/settings';
 
 /**
  * 智绘姬(st-chatu8)vibe 兼容导入(只读,绝不写智绘姬的任何数据)。
@@ -36,6 +36,88 @@ export interface Chatu8VibeRef {
   /** 来源名:预设名或组名(用于命名导入条目)。 */
   source: string;
   kind: 'preset' | 'group';
+}
+
+export interface Chatu8ArtistRef {
+  /** Source preset name in st-chatu8. */
+  source: string;
+  /** The target has one positive field, so keep both source positive parts in their original order. */
+  prompt: string;
+  /** Whether this is the currently selected NovelAI prompt preset in st-chatu8. */
+  active: boolean;
+}
+
+/** Collect every shared st-chatu8 prompt preset; the source does not track per-backend ownership. */
+export function collectChatu8ArtistRefs(chatu8: unknown): Chatu8ArtistRef[] {
+  if (!chatu8 || typeof chatu8 !== 'object') return [];
+  const root = chatu8 as Record<string, unknown>;
+  if (!root.yushe || typeof root.yushe !== 'object') return [];
+  const activeName = typeof root.yusheid_novelai === 'string' ? root.yusheid_novelai : '';
+  const refs: Chatu8ArtistRef[] = [];
+  for (const [source, value] of Object.entries(root.yushe)) {
+    if (!value || typeof value !== 'object') continue;
+    const preset = value as Record<string, unknown>;
+    const fixedPrompt = typeof preset.fixedPrompt === 'string' ? preset.fixedPrompt.trim() : '';
+    const fixedPromptEnd = typeof preset.fixedPrompt_end === 'string' ? preset.fixedPrompt_end.trim() : '';
+    refs.push({ source, prompt: [fixedPrompt, fixedPromptEnd].filter(Boolean).join(', '), active: source === activeName });
+  }
+  return refs;
+}
+
+export interface Chatu8ArtistDetectInfo {
+  found: boolean;
+  total: number;
+}
+
+export function detectChatu8Artists(chatu8: unknown): Chatu8ArtistDetectInfo {
+  if (!chatu8 || typeof chatu8 !== 'object') return { found: false, total: 0 };
+  return { found: true, total: collectChatu8ArtistRefs(chatu8).length };
+}
+
+export interface Chatu8ArtistImportResult {
+  found: boolean;
+  imported: number;
+  duplicates: number;
+  artistPresets: NaiArtistPreset[];
+  /** Matching target id for the source's active NovelAI preset; the caller decides whether to select it. */
+  activeArtistId: string;
+}
+
+/** Import all st-chatu8 prompt presets as artist strings without mutating either settings object. */
+export function importArtistsFromChatu8(
+  existing: readonly NaiArtistPreset[],
+  chatu8: unknown = getContext()?.extensionSettings?.[CHATU8_SETTINGS_KEY],
+): Chatu8ArtistImportResult {
+  if (!chatu8 || typeof chatu8 !== 'object') {
+    return { found: false, imported: 0, duplicates: 0, artistPresets: [], activeArtistId: '' };
+  }
+
+  const keyOf = (name: string, prompt: string) => JSON.stringify([name.trim(), prompt.trim()]);
+  const existingByKey = new Map(existing.map(preset => [keyOf(preset.name, preset.prompt), preset.id]));
+  const result: Chatu8ArtistImportResult = {
+    found: true,
+    imported: 0,
+    duplicates: 0,
+    artistPresets: [],
+    activeArtistId: '',
+  };
+
+  for (const ref of collectChatu8ArtistRefs(chatu8)) {
+    const key = keyOf(ref.source, ref.prompt);
+    const duplicateId = existingByKey.get(key);
+    if (duplicateId) {
+      result.duplicates++;
+      if (ref.active) result.activeArtistId = duplicateId;
+      continue;
+    }
+    const preset = newNaiArtist(ref.source);
+    preset.prompt = ref.prompt;
+    result.artistPresets.push(preset);
+    existingByKey.set(key, preset.id);
+    if (ref.active) result.activeArtistId = preset.id;
+    result.imported++;
+  }
+  return result;
 }
 
 /** 从 chatu8 设置里收集全部 vibe 引用(预设 + 组),按 vibeDataId 去重(预设优先,命名更好看)。 */
