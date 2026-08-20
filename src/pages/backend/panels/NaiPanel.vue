@@ -176,6 +176,16 @@ const switchActiveArtist = ref(true);
 
 const chatu8ActiveRef = computed(() => artistImportRefs.value.find(r => r.active) ?? null);
 
+/** 导入入口:检测到智绘姬且有预设才可用。 */
+const chatu8ArtistImportable = computed(
+  () => chatu8ArtistDetect.value.found && chatu8ArtistDetect.value.total > 0,
+);
+const chatu8ArtistImportTitle = computed(() => {
+  if (!chatu8ArtistDetect.value.found) return '未检测到智绘姬（插件未安装或未启用）';
+  if (chatu8ArtistDetect.value.total === 0) return '智绘姬里没有画师串预设';
+  return '从智绘姬导入全部画师串预设';
+});
+
 function isArtistDup(ref: Chatu8ArtistRef): boolean {
   const key = JSON.stringify([ref.source.trim(), ref.prompt.trim()]);
   return artistImportDup.value.has(key);
@@ -738,6 +748,16 @@ async function removeVibe(vibe: NaiVibe) {
               <Icon name="copy" :size="14" />
             </button>
             <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              :disabled="!chatu8ArtistImportable"
+              :title="chatu8ArtistImportTitle"
+              aria-label="从智绘姬导入画师串"
+              @click="openArtistImport"
+            >
+              <Icon name="download" :size="14" />
+            </button>
+            <button
               class="bbi-icon-btn art-op art-remove"
               type="button"
               :disabled="!hasArtist"
@@ -764,17 +784,6 @@ async function removeVibe(vibe: NaiVibe) {
           </p>
         </template>
         <!-- 不选画师串时无提示:下拉里「不使用」已自明 -->
-
-        <!-- 从智绘姬迁移画师串:检测到才显示入口,常驻可重复导入(幂等) -->
-        <div v-if="chatu8ArtistDetect.found" class="art-migrate">
-          <span class="bbi-field-hint art-migrate-hint">
-            检测到智绘姬有 {{ chatu8ArtistDetect.total }} 个画师串预设
-          </span>
-          <button class="bbi-btn bbi-btn-sm" type="button" @click="openArtistImport">
-            <Icon name="download" :size="13" />
-            从智绘姬导入
-          </button>
-        </div>
 
         <hr class="art-divider" />
 
@@ -1391,15 +1400,6 @@ async function removeVibe(vibe: NaiVibe) {
 }
 
 /* —— 从智绘姬迁移画师串 —— */
-.art-migrate {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 0 2px;
-}
-.art-migrate-hint {
-  margin: 0;
-}
 .art-import-list {
   list-style: none;
   margin: 10px 0 4px;
