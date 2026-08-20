@@ -17,10 +17,11 @@ import { reactive, watch } from 'vue';
 
 /** 生图后端 */
 export type BackendId = 'webui' | 'comfyui' | 'nai';
+// 顺序即展示顺序(渠道页页签 / 设置页出图后端下拉):NAI 用户最多,排最前;webui 隐藏但保留。
 export const BACKENDS: { value: BackendId; label: string }[] = [
-  { value: 'webui', label: 'WebUI' },
-  { value: 'comfyui', label: 'ComfyUI' },
   { value: 'nai', label: 'NAI' },
+  { value: 'comfyui', label: 'ComfyUI' },
+  { value: 'webui', label: 'WebUI' },
 ];
 
 /** 各后端共有骨架:连接 + 出图参数。具体参数后面按后端加。 */

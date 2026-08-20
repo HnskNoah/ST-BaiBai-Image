@@ -32,6 +32,7 @@ src/
 ├── state/             # 全局状态与持久化
 │   ├── settings.ts    # ★ 设置模型 + hydrate/persist/迁移 + 跨插件共享渠道存储
 │   ├── ui.ts          # 窗口开关/主题/导航/悬浮球;activePage 存 localStorage
+│   │                  # (纯浏览态都走 localStorage:渠道页签记忆同理,在 backend/index.vue)
 │   ├── history.ts     # 请求历史(LLM 推理+生图)模块级内存 store,刻意不持久化
 │   └── charTags.ts    # 角色固定外貌库 v3:手动基线(chatMetadata)+ AI 楼层增量(消息 extra)两层
 ├── api/
@@ -180,6 +181,8 @@ runForFloor(floor, opts)
 - **可继承属性**(font/color/line-height…)仍穿透 shadow 边界 → `CARD_INHERITED_RESET` 在 host 上钉死;
 - **自定义属性**也穿透 → 故 `theme.css` 的 `data-theme='st'` 仍能取到宿主 `--SmartTheme*`。
   样式经 `adoptedStyleSheets` 共享**同一个** CSSStyleSheet 对象(cardStyles.ts),N 张卡零重复。
+  设置页 0.1.9 起移除「楼层卡片主题」选择项(卡片无边框化后恒跟随 ST 主题),但
+  `settings.ui.cardTheme` 字段与 hydrate 的读取保留 —— 旧用户已设的值继续生效,别当死代码删。
 
 **卡片状态机(Card.vue + genState.ts)**:
 - **运行态**(genState.ts 的模块级 reactive Map,key 同上):`queued / generating / error`

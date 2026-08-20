@@ -175,7 +175,7 @@ const NAI_PROMPT_METAS: NaiPromptMeta[] = [
   {
     key: 'quality',
     label: '正面质量词',
-    hint: '拼在画面 tag 之后(整体顺序:画师串 → 画面 tag → 质量词)。留空 = 跟随当前模型的官方质量词,切模型自动跟着换。',
+    hint: '拼在画面 tag 之后(整体顺序:画师串 → 画面 tag → 质量词)。',
     official: () => naiDefaultQualityTags(settings.nai.model),
     read: () => settings.nai.qualityTags,
     write: v => (settings.nai.qualityTags = v),
@@ -183,7 +183,7 @@ const NAI_PROMPT_METAS: NaiPromptMeta[] = [
   {
     key: 'undesired',
     label: '负面提示词',
-    hint: '按模型给官方默认值;要额外排除什么,直接往这一份里接。留空 = 跟随当前模型的官方负面词。',
+    hint: '按模型给官方默认值;要额外排除什么,直接往这一份里接。',
     official: () => naiDefaultUndesired(settings.nai.model),
     read: () => settings.nai.undesiredContent,
     write: v => (settings.nai.undesiredContent = v),
@@ -559,7 +559,7 @@ async function removeVibe(vibe: NaiVibe) {
     </p>
 
     <div class="bbi-sections">
-      <Collapsible title="配置" :open="true">
+      <Collapsible title="配置" :open="false">
         <div class="bbi-field">
           <div class="bbi-field-head">
             <span class="bbi-field-label">接口地址</span>
@@ -571,7 +571,7 @@ async function removeVibe(vibe: NaiVibe) {
             placeholder="https://image.novelai.net"
             spellcheck="false"
           />
-          <p class="bbi-field-hint">默认官方;第三方站填域名即可(自动补 /ai 端点),也可直接填完整端点 URL</p>
+          <p class="bbi-field-hint">默认官方;第三方站填域名即可,自动补全 /ai 端点。</p>
         </div>
 
         <div class="bbi-field">
@@ -595,7 +595,7 @@ async function removeVibe(vibe: NaiVibe) {
               <Icon :name="showKey ? 'eye-off' : 'eye'" />
             </button>
           </div>
-          <p class="bbi-field-hint">官方站在 NovelAI 设置页生成;与副 API 渠道同口径,随设置跨设备同步</p>
+          <p class="bbi-field-hint">官方站在 NovelAI 设置页生成。</p>
         </div>
 
         <div class="conn-actions">
@@ -616,7 +616,7 @@ async function removeVibe(vibe: NaiVibe) {
         </div>
       </Collapsible>
 
-      <Collapsible title="提示词" :open="true">
+      <Collapsible title="提示词" :open="false">
         <!-- 画师串库:形制与 ComfyUI 工作流库一致,多一个「不使用」选项 -->
         <div class="art-row">
           <span class="bbi-field-label">画师串</span>
@@ -696,9 +696,7 @@ async function removeVibe(vibe: NaiVibe) {
             拼在正向提示词的最前面,先于画面 tag 与质量词——整幅画的画风基调由它定。
           </p>
         </template>
-        <p v-else class="bbi-field-hint art-hint">
-          当前不使用画师串。点上面的加号新建一条,可存多套画风随时切换。
-        </p>
+        <!-- 不选画师串时无提示:下拉里「不使用」已自明 -->
 
         <hr class="art-divider" />
 
@@ -714,19 +712,21 @@ async function removeVibe(vibe: NaiVibe) {
             </button>
           </li>
         </ul>
-        <p class="bbi-field-hint">留空 = 跟随当前模型的官方词,切模型会自动跟着换。</p>
+        <!-- 「默认/已自定义」徽标与编辑弹窗的「恢复默认」已表达留空语义,不再重复提示 -->
       </Collapsible>
 
       <Collapsible title="默认参数" :open="false">
-        <div class="be-grid">
-          <div class="bbi-field">
-            <div class="bbi-field-head">
-              <span class="bbi-field-label">模型</span>
-            </div>
-            <select class="bbi-input bbi-select" v-model="settings.nai.model">
-              <option v-for="m in NAI_MODELS" :key="m.value" :value="m.value">{{ m.label }}</option>
-            </select>
+        <!-- 语义配对紧凑行:双字段行两列、数字参数行四列;说明统一收进行下的一行 hint -->
+        <div class="bbi-field">
+          <div class="bbi-field-head">
+            <span class="bbi-field-label">模型</span>
           </div>
+          <select class="bbi-input bbi-select" v-model="settings.nai.model">
+            <option v-for="m in NAI_MODELS" :key="m.value" :value="m.value">{{ m.label }}</option>
+          </select>
+        </div>
+
+        <div class="be-row">
           <div class="bbi-field">
             <div class="bbi-field-head">
               <span class="bbi-field-label">竖屏尺寸(宽×高)</span>
@@ -744,7 +744,6 @@ async function removeVibe(vibe: NaiVibe) {
               <option value="1024×1536">大竖版</option>
               <option value="1024×1024">方图</option>
             </datalist>
-            <p class="bbi-field-hint">单人、特写、立绘等画面用此尺寸</p>
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
@@ -763,8 +762,11 @@ async function removeVibe(vibe: NaiVibe) {
               <option value="1536×1024">大横版</option>
               <option value="1024×1024">方图</option>
             </datalist>
-            <p class="bbi-field-hint">群像、远景、全景等画面用此尺寸；由自动 tag 判定方向</p>
           </div>
+        </div>
+        <p class="bbi-field-hint">竖屏用于单人、特写、立绘;横屏用于群像、远景、全景;方向由自动 tag 判定。</p>
+
+        <div class="be-row">
           <div class="bbi-field">
             <div class="bbi-field-head">
               <span class="bbi-field-label">采样器</span>
@@ -783,6 +785,9 @@ async function removeVibe(vibe: NaiVibe) {
               </option>
             </select>
           </div>
+        </div>
+
+        <div class="be-row be-row--nums">
           <div class="bbi-field">
             <div class="bbi-field-head">
               <span class="bbi-field-label">步数</span>
@@ -791,7 +796,7 @@ async function removeVibe(vibe: NaiVibe) {
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
-              <span class="bbi-field-label">提示词相关性(Scale)</span>
+              <span class="bbi-field-label">Scale</span>
             </div>
             <input
               class="bbi-input"
@@ -804,7 +809,7 @@ async function removeVibe(vibe: NaiVibe) {
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
-              <span class="bbi-field-label">相关性调整(Rescale)</span>
+              <span class="bbi-field-label">Rescale</span>
             </div>
             <input
               class="bbi-input"
@@ -817,11 +822,12 @@ async function removeVibe(vibe: NaiVibe) {
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
-              <span class="bbi-field-label">种子(0 = 随机)</span>
+              <span class="bbi-field-label">种子</span>
             </div>
             <input class="bbi-input" type="number" v-model.number="settings.nai.seed" min="0" />
           </div>
         </div>
+        <p class="bbi-field-hint">Scale = 提示词相关性;Rescale = 相关性调整;种子 0 = 随机。</p>
 
         <label class="bbi-switch-row">
           <span class="bbi-field-label">Variety Boost(画面多样性,按尺寸自动计算)</span>
@@ -839,15 +845,13 @@ async function removeVibe(vibe: NaiVibe) {
           />
         </div>
         <p class="bbi-field-hint">
-          一层多张图时同时发起几个请求。NAI 服务端不排队,并发太高容易被限流(429),
-          建议保持 1;超出的请求会自动排队等待。(ComfyUI 有服务端队列,无需此设置)
+          NAI 服务端不排队,并发高容易被限流(429),建议保持 1;超出的请求自动排队等待。
         </p>
       </Collapsible>
 
       <Collapsible title="Vibe 库(氛围转移)" :open="false">
         <p class="bbi-field-hint vibe-hint">
-          上传参考图编码为 vibe,生成时叠加其风格/氛围。NAI3 直接发参考原图;NAI4/4.5
-          需先编码(会消耗一次接口调用),编码按当前选中的模型生成。支持导入/导出官方 .naiv4vibe 文件。
+          上传参考图,生成时叠加其风格/氛围;编码按当前选中的模型进行,会消耗一次接口调用。
         </p>
 
         <div class="vibe-actions">
@@ -1053,8 +1057,7 @@ async function removeVibe(vibe: NaiVibe) {
 
       <Collapsible title="从智绘姬迁移" :open="false">
         <p class="bbi-field-hint vibe-hint">
-          把智绘姬(st-chatu8)里的 vibe 复制一份到柏宝绘 Vibe 库。只是创建副本，不会改动智绘姬的数据；
-          内容相同的会自动跳过，可以反复迁移。
+          复制智绘姬(st-chatu8)的 vibe 到本库:只建副本、不改源数据,重复的自动跳过。
         </p>
         <p class="bbi-field-hint">
           <template v-if="!chatu8Detect.found">未检测到智绘姬（插件未安装或未启用）。</template>
@@ -1153,14 +1156,32 @@ async function removeVibe(vibe: NaiVibe) {
 </template>
 
 <style scoped>
-.be-grid {
+/* 默认参数的语义配对紧凑行:双字段行两列、数字参数行四列;
+   窄屏双字段行落单列、数字行落 2×2。
+   垂直节奏由行容器统一管(行内字段的 margin-bottom 归零),
+   不靠 .bbi-field 自带的:last-child 规则——行尾字段会被它吃掉下间距。 */
+.be-row {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 0 12px;
+  margin-bottom: 18px;
 }
+
+.be-row .bbi-field {
+  margin-bottom: 0;
+}
+
+.be-row--nums {
+  grid-template-columns: repeat(4, 1fr);
+}
+
 @media (max-width: 640px) {
-  .be-grid {
+  .be-row {
     grid-template-columns: 1fr;
+  }
+
+  .be-row--nums {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 .key-row {

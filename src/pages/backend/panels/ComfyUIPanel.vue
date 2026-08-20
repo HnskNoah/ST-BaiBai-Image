@@ -209,7 +209,7 @@ function applyAssist() {
 <template>
   <div class="panel">
     <div class="bbi-sections">
-      <Collapsible title="配置" :open="true">
+      <Collapsible title="配置" :open="false">
         <div class="api-row">
           <span class="bbi-field-label">URL</span>
           <input
@@ -238,7 +238,7 @@ function applyAssist() {
         </div>
       </Collapsible>
 
-      <Collapsible title="工作流" :open="true">
+      <Collapsible title="工作流" :open="false">
         <div class="wf-row">
           <span class="bbi-field-label">当前工作流</span>
           <input

@@ -237,10 +237,7 @@ function entryTagPreview(entry: CharTagEntry): string {
     <hr class="bbi-rule" />
 
     <p class="bbi-field-hint">
-      角色固定外貌库:外貌按字段记录(性别/头发/眼睛/体型等),生成图片 tag 时 AI 用 <code>@角色名</code> 引用,
-      插件自动替换成库中最新 tag —— 同一角色外貌稳定不漂移。
-      剧情造成的永久变化(剪发、长大等)由 AI 自动更新并记录历史;柏宝书只负责首次建档。
-      仅当前聊天生效,不跨聊天。
+      角色固定外貌库:AI 生图 tag 以 <code>@角色名</code> 引用,自动替换为库中最新外貌,稳定不漂移。仅当前聊天生效。
     </p>
 
     <div class="bbi-char-bar">
@@ -287,8 +284,7 @@ function entryTagPreview(entry: CharTagEntry): string {
       </li>
     </ul>
     <p v-else class="bbi-field-hint">
-      还没有记录。生成 tag 时,柏宝书里有外貌的角色会自动转换入库;没有柏宝书时 AI 也会为反复出场的角色建档;
-      也可以点「添加角色」手动补。
+      还没有记录。生成 tag 时柏宝书角色会自动入库,也可点「添加角色」手动补。
     </p>
 
     <!-- ===== 角色编辑弹窗 ===== -->

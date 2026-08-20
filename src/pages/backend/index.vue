@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { BACKENDS, settings, type BackendId } from '@/state/settings';
-import { computed, ref, type Component } from 'vue';
+import { computed, ref, watch, type Component } from 'vue';
 import ComfyUIPanel from './panels/ComfyUIPanel.vue';
 import NaiPanel from './panels/NaiPanel.vue';
 import WebUIPanel from './panels/WebUIPanel.vue';
@@ -10,11 +10,35 @@ import WebUIPanel from './panels/WebUIPanel.vue';
 // 与设置页「出图后端」下拉,两处都读写 settings.defaultBackend,任一处改动自动跟随。
 // webui 暂不开放:入口藏掉(代码保留,便于后续恢复);merge 已把存量 webui 值迁移走,这里恒有匹配页签。
 const VISIBLE_BACKENDS = BACKENDS.filter(b => b.value !== 'webui');
+
+// 上次停在哪个渠道页签:与 activePage 同理——纯本机浏览态,存 localStorage,
+// 不进 settings.json(翻页签即回写服务器太频繁,且跨设备同步无意义)。
+const TAB_STORAGE_KEY = 'bbi.backend.tab.v1';
+
+function loadViewing(): BackendId | null {
+  try {
+    const v = localStorage.getItem(TAB_STORAGE_KEY);
+    return VISIBLE_BACKENDS.some(b => b.value === v) ? (v as BackendId) : null;
+  } catch {
+    return null;
+  }
+}
+
+// 优先级:上次看的页签 > 当前出图渠道 > 第一个可见页签。
 const viewing = ref<BackendId>(
-  VISIBLE_BACKENDS.some(b => b.value === settings.defaultBackend)
-    ? settings.defaultBackend
-    : VISIBLE_BACKENDS[0].value,
+  loadViewing() ??
+    (VISIBLE_BACKENDS.some(b => b.value === settings.defaultBackend)
+      ? settings.defaultBackend
+      : VISIBLE_BACKENDS[0].value),
 );
+
+watch(viewing, v => {
+  try {
+    localStorage.setItem(TAB_STORAGE_KEY, v);
+  } catch {
+    /* localStorage 不可用时静默 */
+  }
+});
 
 const PANELS: Record<BackendId, Component> = {
   webui: WebUIPanel,

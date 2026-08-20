@@ -146,11 +146,6 @@ function copyAll(record: HistoryRecord): void {
     </div>
     <hr class="bbi-rule" />
 
-    <p class="bbi-field-hint">
-      本次会话里发出的副 API 推理与生图请求。<strong>不保存</strong> —— 刷新页面即清空，
-      只留最近 50 条。用来排查「刚才那次到底发了什么、模型回了什么」。
-    </p>
-
     <div class="bbi-hist-bar">
       <div class="bbi-segmented-wrap">
         <div class="bbi-segmented" role="tablist" aria-label="记录类型">

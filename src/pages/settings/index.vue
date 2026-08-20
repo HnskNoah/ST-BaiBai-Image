@@ -50,11 +50,8 @@ const navSel = computed<string>({
   get: () => ui.navPosition,
   set: v => (ui.navPosition = v as NavPosition),
 });
-// 楼层卡片主题直接读写 settings(不进 ui:它只在聊天侧生效,窗口不用它)
-const cardThemeSel = computed<string>({
-  get: () => settings.ui.cardTheme || 'st',
-  set: v => (settings.ui.cardTheme = v),
-});
+// 楼层卡片主题不再提供设置项:卡片无边框化后恒跟随 ST 主题。
+// settings.ui.cardTheme 字段与 hydrate 读取保留(旧用户已改的值继续生效,无害)。
 const orbShapeSel = computed<string>({
   get: () => ui.orbShape,
   set: v => (ui.orbShape = v as OrbShape),
@@ -514,15 +511,6 @@ async function confirmUpdate() {
         </div>
 
         <div class="bbi-select-row">
-          <span class="bbi-field-label">楼层卡片主题</span>
-          <BbiSelect v-model="cardThemeSel" :options="THEMES" aria-label="楼层卡片主题" />
-        </div>
-        <p class="bbi-field-hint">
-          聊天里生图卡片的配色,与上面的窗口主题分开设置。默认「跟随ST」——卡片会取当前
-          SillyTavern 主题的配色,融进聊天流;想让卡片走柏宝绘自己的观感就另选一个。
-        </p>
-
-        <div class="bbi-select-row">
           <span class="bbi-field-label">导航位置</span>
           <BbiSelect v-model="navSel" :options="NAV_OPTIONS" aria-label="导航位置" />
         </div>
@@ -537,8 +525,7 @@ async function confirmUpdate() {
           <input v-model="settings.storage.saveAsJpeg" type="checkbox" class="bbi-checkbox" />
         </label>
         <p class="bbi-field-hint">
-          开启后新生成的图片统一转为 JPG(质量 0.9)再保存，体积约为 PNG 的一到两成；不再保存
-          PNG。代价：图片内嵌的生成参数会丢失(无法再拖回 NovelAI / ComfyUI 复现)，提示词与种子仍保存在聊天记录里。仅影响新图，已保存的 PNG 不变；转码失败时自动回退原格式。
+          体积约为 PNG 的一到两成;代价是图片不再内嵌生成参数(提示词与种子仍留在聊天记录里)。
         </p>
 
         <label class="bbi-switch-row">
@@ -598,13 +585,13 @@ async function confirmUpdate() {
           <span class="bbi-field-label">自动生成 tag</span>
           <input v-model="settings.autoTag.enabled" type="checkbox" class="bbi-checkbox" />
         </label>
-        <p class="bbi-field-hint">使用独立请求判断最新 AI 楼层是否需要插图；写入 tag 后是否自动出图由下方开关决定。</p>
+        <p class="bbi-field-hint">AI 正文生成后自动判断该楼是否需要插图,需要就写入生图 tag。</p>
 
         <label class="bbi-switch-row">
           <span class="bbi-field-label">自动生成图片</span>
           <input v-model="settings.autoTag.autoGenerate" type="checkbox" class="bbi-checkbox" />
         </label>
-        <p class="bbi-field-hint">tag 写入楼层后立即按当前出图渠道自动生图（含手动「生成 tag」按钮）；关闭则只写 tag，图片在卡片上手动点「生成」。</p>
+        <p class="bbi-field-hint">写入 tag 后立即按当前出图渠道自动出图;关闭则只写 tag,在卡片上手动生成。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">携带最近 AI 楼数</span>
@@ -617,7 +604,7 @@ async function confirmUpdate() {
             @change="normalizeAutoTagNumbers"
           />
         </label>
-        <p class="bbi-field-hint">按 AI 故事楼计数，目标楼计入数量；中间 user 楼一并携带，并按与柏宝书共用的正文清洗设置处理，不设置字符或 token 截断上限。</p>
+        <p class="bbi-field-hint">按 AI 故事楼计数,中间的 user 楼一并携带。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">单楼最少图片数</span>
@@ -643,7 +630,7 @@ async function confirmUpdate() {
             @change="normalizeAutoTagNumbers('maxImages')"
           />
         </label>
-        <p class="bbi-field-hint">模型必须在最少～最多范围内选图。最少设为 0 时，没有值得画的内容可以不出图；大于 0 时会从较次但仍可见的瞬间补足。最多数量始终由插件硬限制。</p>
+        <p class="bbi-field-hint">最少设为 0 时允许不出图;最多数量始终受插件硬限制。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">失败自动重试次数</span>
@@ -662,7 +649,7 @@ async function confirmUpdate() {
 
       <!-- 排除角色:名单与柏宝书共享(见 state/settings.ts 的共享存储),任一端改动自动同步 -->
       <Collapsible title="排除角色" :open="false">
-        <p class="bbi-field-hint">勾选的角色名(含同名的重名卡)所在聊天里,柏宝绘不会自动生成生图 tag(楼层按钮同步隐藏)。名单与柏宝书共享——柏宝书里排除的角色,绘里同样停用,任一端改动自动同步。适合工具性、不需要 AI 参与的角色。</p>
+        <p class="bbi-field-hint">名单内角色的聊天里不自动生成生图 tag。名单与柏宝书共享,任一端改动自动同步。</p>
         <div class="bbi-channel-bar">
           <span class="bbi-field-label">已排除 {{ settings.excludes.excludedChars.length }} 个</span>
           <button class="bbi-btn bbi-btn-primary bbi-btn-sm" type="button" @click="openExclude">
@@ -683,9 +670,7 @@ async function confirmUpdate() {
       <!-- 排除世界书内容:与柏宝书同名单共享 -->
       <Collapsible title="排除世界书内容" :open="false">
         <p class="bbi-field-hint">
-          生成 tag 时会激活世界书当参考。这里可剔除对画面无用的条目——如全局挂载的附加知识书、
-          规则说明等,既省 token 也避免干扰。名单与柏宝书共享(柏宝书里排除的书,绘里同样不带),
-          任一端改动自动同步。仅影响副 API,不改变你主对话里的世界书。
+          从生成 tag 参考的世界书里剔除对画面无用的条目,省 token 也避免干扰。名单与柏宝书共享;仅影响副 API。
         </p>
 
         <!-- 整本排除:复刻排除角色的搜索+勾选弹窗 -->
@@ -712,9 +697,8 @@ async function confirmUpdate() {
           <span class="bbi-field-label">按条目名过滤</span>
         </div>
         <p class="bbi-field-hint">
-          填条目备注名(comment)即按<strong>包含</strong>匹配(不分大小写)——如填 <code>附加</code> 可命中「附加设定」。
-          也支持正则:<code>^规则</code> 表示以「规则」开头。对上面未整本排除的世界书生效。
-          默认预置一条 <code>\[mvu[\s\S]*?\]</code>,过滤变量框架 MVU 的机制条目;不需要可直接删。
+          按条目备注名<strong>包含</strong>匹配(不分大小写),支持正则(如 <code>^规则</code>)。
+          预置的 <code>\[mvu[\s\S]*?\]</code> 用于过滤 MVU 机制条目,不需要可删。
         </p>
         <div class="bbi-striptag-bar">
           <input
@@ -742,9 +726,7 @@ async function confirmUpdate() {
       <!-- 自定义清洗标签:与柏宝书同名单共享 -->
       <Collapsible title="自定义清洗标签" :open="false">
         <p class="bbi-field-hint">
-          正文里若混入其它插件/世界书写的格式块(如状态栏 <code>&lt;snow&gt;…&lt;/snow&gt;</code>),
-          可在此填入标签名(只填 <code>snow</code>,不带尖括号),世界书扫描与正文清洗时会把整块连内容一并删掉。
-          名单与柏宝书共享(柏宝书配的清洗标签,绘里同样生效),任一端改动自动同步。
+          填入标签名(如 <code>snow</code>),正文与世界书扫描时会把 <code>&lt;snow&gt;…&lt;/snow&gt;</code> 整块删掉。名单与柏宝书共享。
         </p>
         <div class="bbi-striptag-bar">
           <input
@@ -782,7 +764,6 @@ async function confirmUpdate() {
             </button>
           </li>
         </ul>
-        <p class="bbi-field-hint">留空 = 回落内置默认。破限词内置与柏宝书同款；思维链要求模型先过检查清单再输出 JSON，预填充以 &lt;thinking&gt; 开头引导续写，两者配套提升出图 tag 质量。</p>
       </Collapsible>
 
       <!-- 副 API:生成画图 tag 用的模型渠道(与柏宝书共享渠道列表) -->
