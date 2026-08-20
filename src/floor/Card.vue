@@ -87,6 +87,9 @@ watch(
 
 const promptOpen = ref(false);
 
+/** 触屏收纳菜单(⋯ 钮)的展开态;桌面 hover 一排直达,不用它。 */
+const menuOpen = ref(false);
+
 /** 运行态记录(可能为 undefined = 无在途任务)。 */
 const record = computed(() => getGenRecord(key.value));
 
@@ -143,6 +146,15 @@ const statusLabel = computed(() => {
   const ahead = queueAhead.value;
   if (phase.value === 'generating' && ahead !== null && ahead > 0) return `排队中(前面 ${ahead} 个)`;
   return '生成中…';
+});
+
+/** 无图且后端未就绪时,占位区中央的配置引导。 */
+const pendingHint = computed(() => {
+  if (!comfyActive.value && !naiActive.value)
+    return '出图后端未选择,请到柏宝绘「渠道」页选择出图渠道';
+  return naiActive.value
+    ? '未配置 NAI,请到柏宝绘「渠道」页填写 API Key'
+    : '未配置 ComfyUI,请到柏宝绘「渠道」页填写工作流';
 });
 
 async function generate(): Promise<void> {
@@ -307,10 +319,11 @@ function downloadCurrent(): void {
   saveImageFile(entry.path, downloadFileName(entry));
 }
 
-onMounted(() => {
-  // 提示词已改时作废在途/失败的旧任务:key 不变但 hash 变,旧结果已无意义
-  reconcileGen(key.value, hash.value);
+// 提示词变更对账放 watch 而非 onMounted:差分水合(hydrate.ts)下同锚点卡片是
+// props patch 而非重挂,onMounted 不会再跑;tag 一变必须立刻作废旧提示词的任务。
+watch(hash, current => reconcileGen(key.value, current), { immediate: true });
 
+onMounted(() => {
   // 「写入 tag 后自动生成图片」:本槽位带着标记水合挂载 → 消费标记并直接开跑。
   // 只在真·空槽位(pending)时消费:重水合后若已有结果或有在途任务,不该再触发。
   // 未配置后端时不跑(卡片维持 pending,显示配置引导);标记同样消费掉,不留着影响后续手动操作。
@@ -323,76 +336,102 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="bbi-card" :data-phase="phase">
-    <div class="bbi-card__head">
-      <span class="bbi-card__brand">
-        <Icon name="palette" :size="15" />
-        <span class="bbi-card__brand-text">柏宝绘</span>
-      </span>
-      <span v-if="isStale && !busy" class="bbi-card__chip">已过时</span>
-      <span class="bbi-card__spacer" />
-
-      <span class="bbi-card__actions">
-        <button
-          v-if="shownEntry && !busy"
-          class="bbi-btn bbi-btn--icon"
-          type="button"
-          title="下载这张图"
-          @click="downloadCurrent"
-        >
-          <Icon name="download" :size="15" />
-        </button>
-        <button
-          v-if="shownEntry && !busy"
-          class="bbi-btn bbi-btn--icon bbi-btn--danger"
-          type="button"
-          title="删除这张图"
-          @click="removeCurrent()"
-        >
-          <Icon name="trash" :size="15" />
-        </button>
-        <button v-if="busy" class="bbi-btn" type="button" @click="cancel">取消</button>
-        <button
-          v-else
-          class="bbi-btn"
-          :class="{ 'bbi-btn--primary': !shownEntry }"
-          type="button"
-          :disabled="!configured"
-          :title="configured ? '' : '请先在柏宝绘「渠道」页完成配置'"
-          @click="generate"
-        >
-          <Icon v-if="shownEntry" name="refresh" :size="14" />
-          {{ shownEntry ? '重绘' : '生成' }}
-        </button>
-      </span>
-    </div>
-
-    <!-- 图片区:无图时按画幅方向预留位(aspect-ratio),出图瞬间不跳版 -->
-    <div
-      v-if="imageSrc || busy"
-      class="bbi-card__frame"
-      :data-size="size"
-      :data-placeholder="imageSrc ? '' : '1'"
-    >
+  <!-- 沉浸式设计:图即卡片。无边框/无背景面板/无品牌栏,控件悬浮在图上,
+       桌面 hover 浮现、触屏常驻淡显;提示词收进悬浮按钮唤起的面板,平时零占位。 -->
+  <div class="bbi-figure" :data-phase="phase">
+    <div class="bbi-figure__stage" :data-size="size" :data-placeholder="imageSrc ? '' : '1'">
       <img
         v-if="imageSrc"
-        class="bbi-card__img"
+        class="bbi-figure__img"
         :src="imageSrc"
-        :data-stale="isStale ? '1' : ''"
         alt="生图结果"
         @click="openImage"
       />
-      <div v-if="busy" class="bbi-card__skeleton" />
-      <div v-if="busy" class="bbi-card__frame-label">
-        <span class="bbi-card__spin" />
-        <span>{{ statusLabel }}</span>
+
+      <!-- 无图时的生成中:骨架微光扫过占位底 -->
+      <div v-if="busy && !imageSrc" class="bbi-figure__skeleton" />
+
+      <!-- 生成中遮罩:绝对定位盖在整个舞台上(有图=磨砂盖住旧图,无图=压住骨架)。
+           居中 spinner + 状态 + 取消,不再像旧版那样作为 flex 子项跟图片并排互挤。 -->
+      <div v-if="busy" class="bbi-figure__busy">
+        <span class="bbi-figure__spin" />
+        <span class="bbi-figure__busy-text">{{ statusLabel }}</span>
+        <button class="bbi-figure__cancel" type="button" @click="cancel">取消</button>
       </div>
 
-      <span v-if="pageable" class="bbi-card__pager">
-        <button class="bbi-pager-btn" type="button" :disabled="index <= 0" @click="index--">◀</button>
-        <span class="bbi-card__pager-count">{{ index + 1 }}/{{ history.length }}</span>
+      <!-- 无图且空闲:生成入口 / 配置引导 -->
+      <div v-if="!imageSrc && !busy" class="bbi-figure__pending">
+        <button v-if="configured" class="bbi-figure__generate" type="button" @click="generate">
+          <Icon name="palette" :size="15" />
+          {{ phase === 'error' ? '重试' : '生成图片' }}
+        </button>
+        <p v-else class="bbi-figure__hint">{{ pendingHint }}</p>
+      </div>
+
+      <!-- 提示词已改:角标提示,不再整图压暗 -->
+      <span v-if="isStale && !busy" class="bbi-figure__badge">旧提示词</span>
+
+      <!-- 悬浮操作组:桌面 hover 浮现一整排;触屏只留 ⋯ 收纳钮,点开竖排展开,
+           点任意操作后自动收起(重绘等高频操作两步可达,图片平时只有一颗小点) -->
+      <span v-if="!busy" class="bbi-figure__actions" :data-open="menuOpen ? '1' : ''">
         <button
-          class="bbi-pager-btn"
+          class="bbi-fab bbi-figure__more"
+          type="button"
+          title="更多操作"
+          :aria-expanded="menuOpen"
+          @click="menuOpen = !menuOpen"
+        >
+          <Icon name="more" :size="15" />
+        </button>
+        <span class="bbi-figure__menu">
+          <button
+            v-if="shownEntry"
+            class="bbi-fab"
+            type="button"
+            :disabled="!configured"
+            :title="configured ? '重绘' : '请先在柏宝绘「渠道」页完成配置'"
+            @click="menuOpen = false; generate()"
+          >
+            <Icon name="refresh" :size="15" />
+          </button>
+          <button
+            v-if="shownEntry"
+            class="bbi-fab"
+            type="button"
+            title="下载这张图"
+            @click="menuOpen = false; downloadCurrent()"
+          >
+            <Icon name="download" :size="15" />
+          </button>
+          <button
+            v-if="shownEntry"
+            class="bbi-fab bbi-fab--danger"
+            type="button"
+            title="删除这张图"
+            @click="menuOpen = false; removeCurrent()"
+          >
+            <Icon name="trash" :size="15" />
+          </button>
+          <button
+            v-if="promptText"
+            class="bbi-fab"
+            :class="{ 'bbi-fab--on': promptOpen }"
+            type="button"
+            title="查看提示词"
+            :aria-expanded="promptOpen"
+            @click="menuOpen = false; promptOpen = !promptOpen"
+          >
+            <Icon name="text" :size="15" />
+          </button>
+        </span>
+      </span>
+
+      <!-- 翻页器:叠在图片右下角的胶囊 -->
+      <span v-if="pageable" class="bbi-figure__pager">
+        <button class="bbi-figure__pager-btn" type="button" :disabled="index <= 0" @click="index--">◀</button>
+        <span class="bbi-figure__pager-count">{{ index + 1 }}/{{ history.length }}</span>
+        <button
+          class="bbi-figure__pager-btn"
           type="button"
           :disabled="index >= history.length - 1"
           @click="index++"
@@ -402,44 +441,27 @@ onMounted(() => {
       </span>
     </div>
 
-    <div class="bbi-card__foot">
-      <p v-if="phase === 'error'" class="bbi-card__note bbi-card__note--error">{{ error }}</p>
-      <p v-else-if="isStale && !busy" class="bbi-card__note bbi-card__note--warn">
-        提示词已修改,上图由旧提示词生成;点「重绘」用新提示词出图
-      </p>
-      <p v-else-if="phase === 'pending' && !comfyActive && !naiActive" class="bbi-card__note">
-        出图后端未选择,请到柏宝绘「渠道」页选择出图渠道
-      </p>
-      <p v-else-if="phase === 'pending' && !configured" class="bbi-card__note">
-        {{ naiActive ? '未配置 NAI,请到柏宝绘「渠道」页填写 API Key' : '未配置 ComfyUI,请到柏宝绘「渠道」页填写工作流' }}
-      </p>
-
-      <button
-        v-if="promptText"
-        class="bbi-card__prompt-toggle"
-        type="button"
-        :aria-expanded="promptOpen"
-        @click="promptOpen = !promptOpen"
-      >
-        <Icon
-          name="chevron"
-          :size="12"
-          class="bbi-card__prompt-caret"
-          :data-open="promptOpen ? '1' : ''"
-        />
-        提示词
+    <!-- 状态行:仅出错 / 提示词已改时出现,平时零占位 -->
+    <p v-if="phase === 'error'" class="bbi-figure__status bbi-figure__status--error">
+      {{ error
+      }}<button v-if="configured" class="bbi-figure__retry" type="button" @click="generate">
+        重试
       </button>
-      <!-- 复制按钮在展开区内:头部只留「对当前这张图」的操作,提示词的操作跟着提示词走 -->
-      <div v-if="promptOpen && promptText" class="bbi-card__prompt-box">
-        <pre class="bbi-card__prompt">{{ prompt
-          }}<span v-if="nl" class="bbi-card__prompt-nl">{{ nl }}</span><span
-            v-if="negative"
-            class="bbi-card__prompt-nl bbi-card__prompt-negative"
-          >Negative: {{ negative }}</span></pre>
-        <button class="bbi-btn bbi-btn--icon bbi-card__prompt-copy" type="button" title="复制提示词" @click="copyPrompt">
-          <Icon name="copy" :size="14" />
-        </button>
-      </div>
+    </p>
+    <p v-else-if="isStale && !busy" class="bbi-figure__status bbi-figure__status--warn">
+      提示词已修改,上图由旧提示词生成;点右上角重绘用新提示词出图
+    </p>
+
+    <!-- 提示词面板:悬浮 文本按钮唤起,复制按钮跟着面板走 -->
+    <div v-if="promptOpen && promptText" class="bbi-figure__prompt-box">
+      <pre class="bbi-figure__prompt">{{ prompt
+        }}<span v-if="nl" class="bbi-figure__prompt-nl">{{ nl }}</span><span
+          v-if="negative"
+          class="bbi-figure__prompt-nl bbi-figure__prompt-negative"
+        >Negative: {{ negative }}</span></pre>
+      <button class="bbi-figure__prompt-copy" type="button" title="复制提示词" @click="copyPrompt">
+        <Icon name="copy" :size="14" />
+      </button>
     </div>
   </div>
 </template>

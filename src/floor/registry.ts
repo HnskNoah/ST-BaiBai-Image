@@ -6,7 +6,8 @@ import type { VNode } from 'vue';
  * key = (chatId, mesid, swipeId, seq)：
  * - mesid 定位楼层，seq 定位楼层内第 N 个锚点（DOM 顺序 = tag 序号）。
  * - swipeId 进 key，滑动切换时各 swipe 的记录互不污染。
- * - 重水合前必须 render(null, container) 显式卸载旧 vnode，再挂新树。
+ * - 重水合时同锚点的槽位直接 patch（hydrate.ts 差分策略）；锚点更换或槽位消失
+ *   时必须 render(null, container) 显式卸载旧 vnode，再挂新树。
  */
 export interface SlotRecord {
   /**

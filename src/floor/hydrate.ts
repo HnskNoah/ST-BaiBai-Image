@@ -1,4 +1,4 @@
-import { h, render, watch } from 'vue';
+import { h, render, watch, type VNode } from 'vue';
 
 import Card from '@/floor/Card.vue';
 import { clearAutoGenerateFlags } from '@/floor/autoGenerate';
@@ -96,66 +96,97 @@ function unmountAll(): void {
 }
 
 /**
- * 水合单条消息的全部槽位。幂等：先卸载该消息旧记录（跨 swipeId），
- * 再按「锚点顺序 = tag 顺序」配对挂载。
+ * 水合单条消息的全部槽位。
+ *
+ * 差分策略(替代旧版「先全卸再全挂」):同 key 且锚点元素没变 → render 同类型组件
+ * 做 props patch,组件实例与 DOM(尤其 <img>)原样保留;锚点换了(ST 重渲染重建了
+ * .mes_text)或新槽位 → 卸载旧记录重挂;本楼不再需要的记录(tag 变少 / swipe 切换 /
+ * 楼层离屏 / 消息删除)卸载。
+ *
+ * 为什么值得:任一槽位出图成功都会触发本楼重水合,旧实现把所有卡片的 <img> 重建,
+ * 每张图都重新发起请求(ST 静态服务 max-age=0,每次都要重验证)——楼层里图越多,
+ * 一次出图完成的请求风暴越大。patch 路径下 src 不变则 DOM 不动,零请求。
  */
 export function hydrateMessage(messageId: number, ctx: STContext): void {
   const chatId = ctx.getCurrentChatId();
-  for (const key of slotRegistry.keysByMessage(chatId, messageId)) {
-    unmountKey(key);
-  }
-
   const message = ctx.chat[messageId];
-  if (!message) return;
 
-  const tags = parseImageTags(message.mes);
-  const swipeId = message.swipe_id ?? 0;
-  // 槽位可能整个消失(用户删掉 tag / swipe 到 tag 更少的一版):那些槽位再没有卡片
-  // 来对账,运行态记录会永久留存,日后同 key 复现时被新卡片误认领。按 tag 数剪掉越界的。
-  pruneGenSlots(chatId ?? '-', messageId, swipeId, tags.length);
-  if (tags.length === 0) return;
+  /** 本次水合后「应该存在」的槽位:key → {锚点, vnode}。消息没了就留空,下面统一卸载。 */
+  const desired = new Map<string, { anchor: HTMLElement; vnode: VNode }>();
 
-  const mesText = findMesText(messageId);
-  if (!mesText) return; // 楼层不在 DOM，等下次渲染事件再来
+  if (message) {
+    const tags = parseImageTags(message.mes);
+    const swipeId = message.swipe_id ?? 0;
+    // 槽位可能整个消失(用户删掉 tag / swipe 到 tag 更少的一版):那些槽位再没有卡片
+    // 来对账,运行态记录会永久留存,日后同 key 复现时被新卡片误认领。按 tag 数剪掉越界的。
+    pruneGenSlots(chatId ?? '-', messageId, swipeId, tags.length);
 
-  const anchors = [...mesText.querySelectorAll<HTMLElement>(BBI_SLOT_SELECTOR)];
-  if (anchors.length !== tags.length) {
-    console.warn(
-      `[柏宝绘] 楼层 #${messageId} 锚点 ${anchors.length} 个 ≠ 生图 tag ${tags.length} 个，按少者配对`,
-    );
+    if (tags.length > 0) {
+      const mesText = findMesText(messageId);
+      // 楼层不在 DOM(未渲染/群聊懒渲染):desired 留空,本楼旧记录被卸载,等下次渲染事件
+      if (mesText) {
+        const anchors = [...mesText.querySelectorAll<HTMLElement>(BBI_SLOT_SELECTOR)];
+        if (anchors.length !== tags.length) {
+          console.warn(
+            `[柏宝绘] 楼层 #${messageId} 锚点 ${anchors.length} 个 ≠ 生图 tag ${tags.length} 个,按少者配对`,
+          );
+        }
+        const count = Math.min(anchors.length, tags.length);
+
+        for (let seq = 0; seq < count; seq++) {
+          const key = slotRegistry.key(chatId, messageId, swipeId, seq);
+          // 从 extra 恢复:当前 tag 原文重算 hash 匹配同槽位历史 → ready(可翻页);
+          // 无匹配但有旧提示词结果 → stale(DESIGN-FLOOR-UI.md §7.1)。
+          const store = readStore(message);
+          const hash = promptHash(tags[seq]);
+          const history = historyEntries(store, swipeId, hash, seq);
+          const entry = history.length ? history[history.length - 1] : null;
+          const staleEntry = entry ? null : latestStaleEntry(store, swipeId, hash, seq);
+          const content = parseImageTagContent(tags[seq]);
+          desired.set(key, {
+            anchor: anchors[seq],
+            vnode: h(Card, {
+              prompt: content.tag,
+              nl: content.nl,
+              negative: content.negative,
+              size: content.size,
+              tag: tags[seq],
+              messageId,
+              seq,
+              swipeId,
+              history,
+              staleEntry,
+              // key 的一部分:与 registry.key 的占位口径一致(chatId 缺失时用 '-')
+              chatId: chatId ?? '-',
+            }),
+          });
+        }
+      }
+    }
   }
-  const count = Math.min(anchors.length, tags.length);
 
-  for (let seq = 0; seq < count; seq++) {
-    const key = slotRegistry.key(chatId, messageId, swipeId, seq);
-    const anchor = anchors[seq];
-    // 从 extra 恢复：当前 tag 原文重算 hash 匹配同槽位历史 → ready（可翻页）；
-    // 无匹配但有旧提示词结果 → stale（DESIGN-FLOOR-UI.md §7.1）。
-    const store = readStore(message);
-    const hash = promptHash(tags[seq]);
-    const history = historyEntries(store, swipeId, hash, seq);
-    const entry = history.length ? history[history.length - 1] : null;
-    const staleEntry = entry ? null : latestStaleEntry(store, swipeId, hash, seq);
-    const content = parseImageTagContent(tags[seq]);
-    // 卡片渲进锚点的 shadow root，与 ST 样式双向隔离；主题跟随设置（默认 st = 融入宿主配色）
-    const shadow = ensureShadow(anchor);
-    anchor.setAttribute('data-theme', settings.ui.cardTheme || 'st');
-    const vnode = h(Card, {
-      prompt: content.tag,
-      nl: content.nl,
-      negative: content.negative,
-      size: content.size,
-      tag: tags[seq],
-      messageId,
-      seq,
-      swipeId,
-      history,
-      staleEntry,
-      // key 的一部分:与 registry.key 的占位口径一致(chatId 缺失时用 '-')
-      chatId: chatId ?? '-',
-    });
-    render(vnode, shadow);
-    slotRegistry.set(key, { container: shadow, vnode });
+  // 卸载本楼不在期望集合内的旧记录(跨 swipeId)
+  for (const key of slotRegistry.keysByMessage(chatId, messageId)) {
+    if (!desired.has(key)) unmountKey(key);
+  }
+
+  // 挂载或差分更新
+  for (const [key, { anchor, vnode }] of desired) {
+    const existing = slotRegistry.get(key);
+    if (existing && existing.container.host === anchor) {
+      // 同锚点:render 同类型组件 → props patch,不重挂 DOM、不重跑 onMounted。
+      // autoGenerate 标记由 onMounted 消费,但它只出现在「刚写入 tag」的锚点上
+      // (写正文必触发 ST 重渲染、锚点必重建),走不到这条分支。
+      existing.vnode = vnode;
+      render(vnode, existing.container);
+    } else {
+      // 卡片渲进锚点的 shadow root,与 ST 样式双向隔离;主题跟随设置(默认 st = 融入宿主配色)
+      if (existing) unmountKey(key);
+      const shadow = ensureShadow(anchor);
+      anchor.setAttribute('data-theme', settings.ui.cardTheme || 'st');
+      render(vnode, shadow);
+      slotRegistry.set(key, { container: shadow, vnode });
+    }
   }
 }
 

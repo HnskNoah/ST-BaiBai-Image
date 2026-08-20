@@ -183,8 +183,9 @@ runForFloor(floor, opts)
 
 **卡片状态机(Card.vue + genState.ts)**:
 - **运行态**(genState.ts 的模块级 reactive Map,key 同上):`queued / generating / error`
-  —— **必须放在组件外**。卡片生命周期由水合决定:任一槽位出图成功就 `hydrateMessage`,
-  而它卸载**整楼**卡片;ST 重渲染楼层时锚点也会重建。运行态若存组件 ref,一被重建就清零 →
+  —— **必须放在组件外**。差分水合下同锚点卡片是 props patch 不重挂,但锚点一旦被 ST 重渲染
+  重建,组件照样整体重建;reconcileGen 也因此从 onMounted 挪到 `watch(hash, immediate)`
+  (旧版重挂式水合里 onMounted 必跑,差分下不一定)。运行态若存组件 ref,一被重建就清零 →
   兄弟卡片的「生成中…」集体消失并退回 pending(标记已消费不会重跑)。这是历史 bug 的根因。
 - **票据(token)不可省**:key 只认槽位,不认「第几次任务」。同槽位可先后跑多个任务
   (取消后重绘、reconcile 后重来),旧任务迟到的回调必须凭 token 认领 ——

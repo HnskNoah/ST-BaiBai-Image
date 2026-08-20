@@ -83,6 +83,11 @@ const PATHS: Record<string, string> = {
     '<path d="M4 4l16 16"/><path d="M9.6 5.8A8.6 8.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a15.8 15.8 0 0 1-3.3 3.9"/><path d="M6.3 8.1A15.9 15.9 0 0 0 2.5 12S6 18.5 12 18.5a8.5 8.5 0 0 0 3.2-.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
   // 向下箭头(折叠指示)
   chevron: '<path d="M6 9.5 12 15.5 18 9.5"/>',
+  // 文本行:提示词面板开关(楼层卡片浮钮)
+  text: '<path d="M5 6.5h14M5 10.5h14M5 14.5h9M5 18.5h6"/>',
+  // 更多操作:竖三点(楼层卡片触屏收纳钮,点开展开竖排菜单)。
+  // 组件根是 fill=none 描边风格,圆点太小描边会成空心环,故自身覆盖为实心。
+  more: '<circle cx="12" cy="5.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="18.5" r="1.5" fill="currentColor" stroke="none"/>',
   // 前往地点:带长箭杆的向右箭头,区别于折叠用 chevron
   navigate: '<path d="M4 12h15"/><path d="m14 7 5 5-5 5"/>',
   // 搜索:放大镜

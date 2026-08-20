@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 
 import Icon from '@/components/Icon.vue';
 import { saveImageFile } from '@/floor/download';
@@ -21,7 +21,12 @@ import { modalHost } from '@/state/ui';
  * 2. 图片不加 user-select:none / -webkit-touch-callout:none / draggable=false。
  * 3. 显式 touch-action:auto 抵消 ST 的 `body{touch-action:none}`
  *    (css/mobile-styles.css:251,移动端 ≤1000px 全局)——它会干扰部分引擎的长按判定。
- * 部分 WebView 壳(酒馆套 App / Termux)callout 仍不可靠,故另给「保存」按钮兜底。
+ * 【二段放大与平移】点击图片在「适应屏幕 ↔ 原始尺寸」间切换(放大 = 1:1 检查
+ * 脸/手等细节,决定留还是重绘)。放大后的平移分两条路:
+ * - 桌面:鼠标拖拽(pointer 事件只认 pointerType==='mouse',5px 阈值区分点击与拖动);
+ * - 移动:stage 的原生溢出滚动,**不监听任何 touch 事件**(见上面三条约束)。
+ * stage 居中用图片 margin:auto 而非 justify-content:center——后者会把放大后
+ * 左/上两侧的溢出挤出滚动可达区(移动端「只能上下滚」的元凶)。
  */
 
 const props = defineProps<{
@@ -36,8 +41,73 @@ const props = defineProps<{
 
 const emit = defineEmits<{ close: []; delete: [] }>();
 
-/** 适应屏幕 ↔ 原始尺寸(可平移查看细节)。 */
+/** 适应屏幕 ↔ 原始尺寸。 */
 const zoomed = ref(false);
+
+/** 滚动容器(放大后平移用)。 */
+const stage = ref<HTMLElement | null>(null);
+
+/** 拖动平移后的那次 click 要吞掉,否则一拖完图片就缩回去了。 */
+let suppressClick = false;
+
+/** 点击切换缩放;放大时把点击点滚到视口中央(点哪看哪)。 */
+async function onImageClick(event: MouseEvent): Promise<void> {
+  if (suppressClick) {
+    suppressClick = false;
+    return;
+  }
+  if (zoomed.value) {
+    zoomed.value = false;
+    return;
+  }
+  const img = event.currentTarget as HTMLImageElement;
+  const rect = img.getBoundingClientRect();
+  const ratioX = (event.clientX - rect.left) / rect.width;
+  const ratioY = (event.clientY - rect.top) / rect.height;
+  zoomed.value = true;
+  await nextTick();
+  const el = stage.value;
+  if (el) {
+    el.scrollLeft = img.offsetWidth * ratioX - el.clientWidth / 2;
+    el.scrollTop = img.offsetHeight * ratioY - el.clientHeight / 2;
+  }
+}
+
+/**
+ * 鼠标拖拽平移(仅放大态、仅鼠标)。
+ * 触屏不碰:触摸平移交给 stage 的原生溢出滚动(img 上的 touch-action:auto 就是
+ * 为它和长按保存留的),自己拦触摸会违反顶部的长按保存三约束。
+ */
+let pan: { x: number; y: number; left: number; top: number; moved: boolean } | null = null;
+
+function onPointerDown(event: PointerEvent): void {
+  if (!zoomed.value || event.pointerType !== 'mouse' || event.button !== 0) return;
+  const el = stage.value;
+  if (!el) return;
+  pan = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop, moved: false };
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+}
+
+function onPointerMove(event: PointerEvent): void {
+  const el = stage.value;
+  if (!pan || !el) return;
+  const dx = event.clientX - pan.x;
+  const dy = event.clientY - pan.y;
+  if (!pan.moved && Math.hypot(dx, dy) < 5) return; // 阈值内算点击,保留点击缩放
+  pan.moved = true;
+  el.scrollLeft = pan.left - dx;
+  el.scrollTop = pan.top - dy;
+}
+
+function onPointerUp(): void {
+  if (pan?.moved) suppressClick = true;
+  pan = null;
+}
+
+/** 放大态平移时拦掉图片原生拖拽残影;非放大态保持原生行为,一概不动。 */
+function onDragStart(event: DragEvent): void {
+  if (zoomed.value) event.preventDefault();
+}
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
@@ -99,14 +169,24 @@ const promptText = computed(() => (props.prompt ?? '').trim());
         </button>
       </div>
 
-      <!-- 图片容器:zoomed 时允许滚动查看原图 -->
-      <div class="bbi-lightbox__stage" @click.stop="emit('close')">
+      <!-- 图片容器:zoomed 时滚动(触屏)/ 鼠标拖拽查看原图 -->
+      <div
+        ref="stage"
+        class="bbi-lightbox__stage"
+        :data-zoomed="zoomed ? '1' : ''"
+        @click.stop="emit('close')"
+      >
         <img
           class="bbi-lightbox__img"
           :src="src"
           alt="生图结果"
           :data-zoomed="zoomed ? '1' : ''"
-          @click.stop="zoomed = !zoomed"
+          @click.stop="onImageClick"
+          @pointerdown="onPointerDown"
+          @pointermove="onPointerMove"
+          @pointerup="onPointerUp"
+          @pointercancel="onPointerUp"
+          @dragstart="onDragStart"
         />
       </div>
 
@@ -169,32 +249,56 @@ const promptText = computed(() => (props.prompt ?? '').trim());
   color: #fff;
 }
 
+/* 居中不用 justify-content/align-items:center:放大后图片比容器宽时,flex 居中
+   会把左/上两侧的溢出挤出滚动可达区(移动端「只能上下滚」的元凶)。
+   改用图片自身 margin:auto——小时居中,大时自动边距归零、起点对齐,四向皆可滚。 */
 .bbi-lightbox__stage {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
   overflow: auto;
 }
 
 .bbi-lightbox__img {
   display: block;
+  margin: auto;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   border-radius: var(--bbi-radius-sm);
   cursor: zoom-in;
   /* 抵消 ST 的 body{touch-action:none}(css/mobile-styles.css:251):
-     它会干扰部分引擎的长按保存判定。见 <script> 顶部注释的三条约束。 */
+     它会干扰部分引擎的长按保存判定,也会挡住放大后的触屏原生滚动。见 <script> 顶部注释。 */
   touch-action: auto;
 }
 
-/* 原始尺寸:超出部分由 __stage 滚动查看 */
+/* 原始尺寸:超出部分由 __stage 滚动(触屏)/ 鼠标拖拽查看 */
 .bbi-lightbox__img[data-zoomed='1'] {
   max-width: none;
   max-height: none;
-  cursor: zoom-out;
+  cursor: grab;
+}
+
+.bbi-lightbox__img[data-zoomed='1']:active {
+  cursor: grabbing;
+}
+
+/* 放大态找回细滚动条(base.css 在 .bbi-root 内全局隐藏了滚动条),
+   给个「现在看到哪了」的位置感 */
+.bbi-lightbox__stage[data-zoomed='1'] {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(1 0 0 / 0.3) transparent;
+}
+
+.bbi-lightbox__stage[data-zoomed='1']::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  display: block;
+}
+
+.bbi-lightbox__stage[data-zoomed='1']::-webkit-scrollbar-thumb {
+  background: oklch(1 0 0 / 0.25);
+  border-radius: 3px;
 }
 
 .bbi-lightbox__prompt {

@@ -1,23 +1,33 @@
 /*
- * 楼层卡片样式。
+ * 楼层卡片样式 v2 —— 沉浸优先:图即卡片。
+ *
+ * 与 v1 的分歧:v1 把设置窗口的「面板语言」(边框/底色/品牌栏/头部按钮行)搬进了
+ * 聊天正文,在 RP 场景里是突兀的 UI 异物,且 max-width:560px 让宽屏下图片铺不满。
+ * v2 原则:
+ * - 无边框、无背景面板、无品牌栏;宽度 100% 跟随楼层正文,图片自身一点圆角;
+ * - 控件全部悬浮在图上(半透明黑底圆钮),桌面 hover 浮现一排、
+ *   触屏收进一颗 ⋯ 收纳钮(点开竖排展开),图片平时只有一颗小点;
+ * - 提示词收进悬浮 文本按钮唤起的面板,平时零占位;
+ * - 生成中 = 磨砂遮罩绝对定位盖住舞台(旧图保留在底下),居中 spinner + 状态 + 取消,
+ *   不再像 v1 那样把状态文案作为 flex 子项与图片并排互挤。
  *
  * 注入方式(floor/cardStyles.ts):与 theme.css 一起构造成 CSSStyleSheet,
  * 经 adoptedStyleSheets 共享给每个卡片的 shadow root——N 张卡零重复。
  *
- * 卡片自 v0.2 起活在**每个锚点各自的 shadow root** 里(floor/hydrate.ts),
- * 故:
+ * 卡片活在**每个锚点各自的 shadow root** 里(floor/hydrate.ts),故:
  * - 不再需要靠 .bbi- 前缀防冲突(shadow 天然隔离),前缀只为可读性保留;
  * - ST 全局样式与美化主题进不来了;
  * - 但**可继承属性**(font/color/line-height…)仍会穿透 shadow 边界,由 hydrate.ts
  *   在 host 上钉 INHERITED_RESET 切断;
  * - 自定义属性同样穿透,故 theme.css 的 data-theme='st' 仍能取到宿主 --SmartTheme*。
  *
- * 颜色/圆角/间距一律取 theme.css 的 --bbi-* 令牌,与设置窗口同一套设计语言,不写死字面量。
+ * 颜色/圆角一律取 theme.css 的 --bbi-* 令牌,与设置窗口同一套设计语言,不写死字面量
+ * (浮钮/翻页器的半透明黑底是「压在图上」的通用解,与主题无关,除外)。
  */
 
 :host {
   display: block;
-  margin: 10px 0;
+  margin: 8px 0;
 }
 
 *,
@@ -26,184 +36,46 @@
   box-sizing: border-box;
 }
 
-.bbi-card {
-  --bbi-card-pad: 12px;
+.bbi-figure {
   position: relative;
-  border: 1px solid var(--bbi-line);
-  border-radius: var(--bbi-radius);
-  background: var(--bbi-surface);
+  width: 100%;
   color: var(--bbi-ink);
   font-family: var(--bbi-font-sans);
   font-size: 13px;
   line-height: 1.6;
-  overflow: hidden;
-  max-width: 560px;
-  transition: border-color var(--bbi-dur) var(--bbi-ease);
 }
 
-.bbi-card:hover {
-  border-color: var(--bbi-line-strong);
-}
+/* ——— 舞台:图片 / 占位 / 遮罩 / 悬浮层都在这 ———
+   overflow:hidden 让骨架与遮罩跟着图片一起圆角。 */
 
-/* ——— 头部:品牌标 + 状态 + 操作 ———
-   卡片是**聊天内嵌**元素,不是独立面板:头部越高,正文被推得越散。
-   高度 = 上下 padding + 按钮高,两者都按 26px 按钮这条基线定,合计 34px。 */
-
-.bbi-card__head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px var(--bbi-card-pad);
-}
-
-.bbi-card__brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--bbi-accent);
-  flex: 0 0 auto;
-}
-
-.bbi-card__brand-text {
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--bbi-ink-soft);
-}
-
-.bbi-card__chip {
-  flex: 0 0 auto;
-  padding: 0 7px;
-  border-radius: var(--bbi-radius-pill);
-  font-size: 10.5px;
-  line-height: 17px;
-  background: var(--bbi-warning-soft);
-  color: var(--bbi-warning);
-  border: 1px solid color-mix(in srgb, var(--bbi-warning) 40%, transparent);
-}
-
-.bbi-card__spacer {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.bbi-card__actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-}
-
-/* ——— 按钮 ———
-   注:旧版这里把 --SmartThemeBodyColor(ST 的**正文文字色**)同时当背景和文字色,
-   导致按钮字底同色、整颗隐形。现在一律走 --bbi-* 令牌,前景背景各有其色。
-
-   【尺寸基线】所有按钮 26×(26|auto),图标一律 15px。
-   图标按钮必须 width == height,且与文字按钮同高——三者只要有一个漏了,
-   同一行里就会出现「复制比删除大一圈」这种参差。 */
-
-.bbi-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 11px;
-  border: 1px solid var(--bbi-line-strong);
-  border-radius: var(--bbi-radius-pill);
-  background: var(--bbi-surface);
-  color: var(--bbi-ink-soft);
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background var(--bbi-dur) var(--bbi-ease),
-    border-color var(--bbi-dur) var(--bbi-ease),
-    color var(--bbi-dur) var(--bbi-ease);
-}
-
-.bbi-btn:hover:not(:disabled) {
-  border-color: var(--bbi-accent);
-  color: var(--bbi-accent);
-  background: var(--bbi-accent-soft);
-}
-
-.bbi-btn:focus-visible {
-  outline: 2px solid var(--bbi-accent);
-  outline-offset: 1px;
-}
-
-.bbi-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.bbi-btn--primary {
-  background: var(--bbi-accent);
-  border-color: var(--bbi-accent);
-  color: var(--bbi-accent-ink);
-}
-
-.bbi-btn--primary:hover:not(:disabled) {
-  background: var(--bbi-accent);
-  border-color: var(--bbi-accent);
-  color: var(--bbi-accent-ink);
-  opacity: 0.88;
-}
-
-/* 图标按钮:正方形无文字。width/height 都显式写死,别只写 width——
-   高度靠 .bbi-btn 继承看似够用,但一旦谁改了 padding 就会两种按钮各长各的。 */
-.bbi-btn--icon {
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
-  color: var(--bbi-ink-muted);
-}
-
-.bbi-btn--icon:hover:not(:disabled) {
-  background: var(--bbi-accent-soft);
-  border-color: transparent;
-  color: var(--bbi-accent);
-}
-
-.bbi-btn--danger:hover:not(:disabled) {
-  background: var(--bbi-danger-soft);
-  border-color: transparent;
-  color: var(--bbi-danger);
-}
-
-/* ——— 图片 ———
-   frame 承担「有多高」这件事:无图时按画幅方向用 aspect-ratio 预留位,
-   避免出图瞬间楼层跳版;有图时交给图片自己的比例(实际比例可能与配置尺寸略有差异,
-   故不强加 aspect-ratio,免得 contain letterbox 或 cover 裁切)。 */
-
-.bbi-card__frame {
+.bbi-figure__stage {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bbi-surface-2);
+  width: 100%;
+  border-radius: var(--bbi-radius);
   overflow: hidden;
 }
 
-.bbi-card__frame[data-placeholder='1'][data-size='portrait'] {
+/* 无图占位:按画幅方向预留高度,出图瞬间不跳版 */
+.bbi-figure__stage[data-placeholder='1'] {
+  background: var(--bbi-surface-2);
+}
+
+.bbi-figure__stage[data-placeholder='1'][data-size='portrait'] {
   aspect-ratio: 2 / 3;
 }
 
-.bbi-card__frame[data-placeholder='1'][data-size='landscape'] {
+.bbi-figure__stage[data-placeholder='1'][data-size='landscape'] {
   aspect-ratio: 3 / 2;
 }
 
-.bbi-card__img {
+/* ——— 图片:铺满楼层宽度,高度随原图比例 ———
+   不加 max-height/object-fit:竖图就让它高。contain 会在宽盒子里留空柱、
+   cover 会裁切画面,两者都不如「原比例铺满」适合看图场景。 */
+
+.bbi-figure__img {
   display: block;
   width: 100%;
   height: auto;
-  max-height: min(70vh, 560px);
-  object-fit: contain;
   cursor: zoom-in;
   /* 长按保存:抵消 ST 的 body{touch-action:none}(css/mobile-styles.css:251)。
      另注意——图片上绝不可 preventDefault touch 事件、不可加 user-select:none,
@@ -211,17 +83,247 @@
   touch-action: auto;
 }
 
-/* 过时的图片压暗,提示「这不是当前提示词的结果」 */
-.bbi-card__img[data-stale='1'] {
-  opacity: 0.55;
-  filter: saturate(0.7);
+/* ——— 生成中遮罩:磨砂盖住整个舞台,旧图在底下隐约可见 ——— */
+
+.bbi-figure__busy {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bbi-surface) 55%, transparent);
+  backdrop-filter: blur(3px);
 }
 
-/* 翻页器:叠在图片右下角的胶囊 */
-.bbi-card__pager {
+.bbi-figure__busy-text {
+  font-size: 12px;
+  color: var(--bbi-ink-soft);
+}
+
+.bbi-figure__spin {
+  width: 22px;
+  height: 22px;
+  border: 2px solid color-mix(in srgb, var(--bbi-accent) 28%, transparent);
+  border-top-color: var(--bbi-accent);
+  border-radius: 50%;
+  animation: bbi-spin 0.8s linear infinite;
+}
+
+@keyframes bbi-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.bbi-figure__cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 14px;
+  border: 1px solid var(--bbi-line-strong);
+  border-radius: var(--bbi-radius-pill);
+  background: var(--bbi-surface);
+  color: var(--bbi-ink-soft);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    border-color var(--bbi-dur) var(--bbi-ease),
+    color var(--bbi-dur) var(--bbi-ease);
+}
+
+.bbi-figure__cancel:hover {
+  border-color: var(--bbi-accent);
+  color: var(--bbi-accent);
+}
+
+/* ——— 无图且空闲:占位区中央的生成入口 / 配置引导 ——— */
+
+.bbi-figure__pending {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+}
+
+.bbi-figure__generate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--bbi-radius-pill);
+  background: var(--bbi-accent);
+  color: var(--bbi-accent-ink);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: opacity var(--bbi-dur) var(--bbi-ease);
+}
+
+.bbi-figure__generate:hover {
+  opacity: 0.88;
+}
+
+.bbi-figure__generate:focus-visible {
+  outline: 2px solid var(--bbi-accent);
+  outline-offset: 2px;
+}
+
+.bbi-figure__hint {
+  margin: 0;
+  max-width: 32em;
+  text-align: center;
+  font-size: 12px;
+  color: var(--bbi-ink-muted);
+}
+
+/* ——— stale 角标:左上角小胶囊,不再整图压暗 ——— */
+
+.bbi-figure__badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  padding: 2px 9px;
+  border-radius: var(--bbi-radius-pill);
+  background: oklch(0 0 0 / 0.55);
+  backdrop-filter: blur(4px);
+  color: var(--bbi-warning);
+  font-size: 10.5px;
+  line-height: 17px;
+  /* 不挡图片点击/长按 */
+  pointer-events: none;
+}
+
+/* ——— 悬浮操作组:右上角圆钮 ———
+   桌面(hover:hover):⋯ 收纳钮藏掉,一整排菜单在 stage hover/focus-within 时浮现;
+   触屏(hover:none):菜单默认隐藏,只留一颗淡显的 ⋯,点开竖排展开。 */
+
+.bbi-figure__actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+}
+
+.bbi-figure__more {
+  display: none;
+}
+
+.bbi-figure__menu {
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition:
+    opacity var(--bbi-dur) var(--bbi-ease),
+    transform var(--bbi-dur) var(--bbi-ease);
+}
+
+.bbi-figure__stage:hover .bbi-figure__menu,
+.bbi-figure__stage:focus-within .bbi-figure__menu {
+  opacity: 1;
+  transform: none;
+}
+
+@media (hover: none) {
+  .bbi-figure__actions {
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  /* ⋯ 收纳钮常驻淡显:功能入口不能没有,但存在感压到最低 */
+  .bbi-figure__more {
+    display: inline-flex;
+    opacity: 0.65;
+  }
+
+  .bbi-figure__actions[data-open='1'] .bbi-figure__more {
+    opacity: 1;
+  }
+
+  .bbi-figure__menu {
+    display: none;
+    flex-direction: column;
+    opacity: 1;
+    transform: none;
+  }
+
+  .bbi-figure__actions[data-open='1'] .bbi-figure__menu {
+    display: flex;
+  }
+}
+
+.bbi-fab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--bbi-radius-pill);
+  background: oklch(0 0 0 / 0.55);
+  backdrop-filter: blur(4px);
+  color: oklch(1 0 0 / 0.92);
+  cursor: pointer;
+  transition:
+    background var(--bbi-dur) var(--bbi-ease),
+    color var(--bbi-dur) var(--bbi-ease);
+}
+
+.bbi-fab:hover:not(:disabled) {
+  background: oklch(0 0 0 / 0.72);
+  color: oklch(1 0 0);
+}
+
+.bbi-fab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bbi-fab:focus-visible {
+  outline: 2px solid var(--bbi-accent);
+  outline-offset: 1px;
+}
+
+.bbi-fab--danger:hover:not(:disabled) {
+  background: var(--bbi-danger);
+  color: oklch(1 0 0);
+}
+
+/* 提示词面板开着时,文本钮转强调色表示「已展开」 */
+.bbi-fab--on {
+  background: var(--bbi-accent);
+  color: var(--bbi-accent-ink);
+}
+
+/* ——— 翻页器:叠在图片右下角的胶囊 ——— */
+
+.bbi-figure__pager {
   position: absolute;
   right: 8px;
   bottom: 8px;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -231,7 +333,7 @@
   backdrop-filter: blur(4px);
 }
 
-.bbi-pager-btn {
+.bbi-figure__pager-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -245,27 +347,25 @@
   cursor: pointer;
 }
 
-.bbi-pager-btn:hover:not(:disabled) {
+.bbi-figure__pager-btn:hover:not(:disabled) {
   background: oklch(1 0 0 / 0.18);
 }
 
-.bbi-pager-btn:disabled {
+.bbi-figure__pager-btn:disabled {
   opacity: 0.35;
   cursor: default;
 }
 
-.bbi-card__pager-count {
+.bbi-figure__pager-count {
   padding: 0 4px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: oklch(1 0 0 / 0.9);
 }
 
-/* ——— 骨架屏(生成中) ———
-   塌成一条细状态栏最难看,尤其自动生成时满楼都是。这里按画幅撑出真实占位,
-   微光扫过表示「在动」。 */
+/* ——— 骨架屏(无图的生成中):微光扫过占位底,表示「在动」 ——— */
 
-.bbi-card__skeleton {
+.bbi-figure__skeleton {
   position: absolute;
   top: 0;
   right: 0;
@@ -290,128 +390,85 @@
   }
 }
 
-/* 骨架上居中的状态文案 */
-.bbi-card__frame-label {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 20px 16px;
-  text-align: center;
-  color: var(--bbi-ink-muted);
-  font-size: 12px;
-}
+/* ——— 状态行:仅出错 / 提示词已改时出现,平时零占位 ——— */
 
-.bbi-card__spin {
-  width: 20px;
-  height: 20px;
-  border: 2px solid color-mix(in srgb, var(--bbi-accent) 28%, transparent);
-  border-top-color: var(--bbi-accent);
-  border-radius: 50%;
-  animation: bbi-spin 0.8s linear infinite;
-}
-
-@keyframes bbi-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .bbi-card__skeleton,
-  .bbi-card__spin {
-    animation: none;
-  }
-}
-
-/* ——— 底部信息区 ———
-   常态下这里只有一行「提示词」折叠入口,却曾占掉近 40px:
-   padding 8/10 + 行高 + toggle 自己的块级布局层层相加。
-   现在按「一行 22px 的脚注」压,有提示信息(error/stale)时才靠 gap 长出来。 */
-
-.bbi-card__foot {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 5px var(--bbi-card-pad) 6px;
-}
-
-/* 折叠入口是弱操作,不该有按钮的视觉分量;-4px 负边距把它的点击区还原成
-   视觉上贴着卡片边,同时保留 22px 的可点高度(移动端够用)。 */
-.bbi-card__prompt-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 22px;
-  margin: 0 -4px;
-  padding: 0 4px;
-  border: 0;
-  border-radius: var(--bbi-radius-sm);
-  background: none;
-  color: var(--bbi-ink-muted);
-  font-family: inherit;
-  font-size: 11.5px;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    color var(--bbi-dur) var(--bbi-ease),
-    background var(--bbi-dur) var(--bbi-ease);
-}
-
-.bbi-card__prompt-toggle:hover {
-  color: var(--bbi-accent);
-  background: var(--bbi-accent-soft);
-}
-
-.bbi-card__prompt-caret {
-  transition: transform var(--bbi-dur) var(--bbi-ease);
-}
-
-.bbi-card__prompt-caret[data-open='1'] {
-  transform: rotate(180deg);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .bbi-card__prompt-caret {
-    transition: none;
-  }
-}
-
-/* 展开区:提示词 + 右上角复制。复制按钮**绝对定位**而非并排 flex——
-   提示词是可换行长文本,并排会让按钮跟着文本高度居中飘到中间去。 */
-.bbi-card__prompt-box {
-  position: relative;
-  width: 100%;
-}
-
-.bbi-card__prompt-copy {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  /* 压在提示词之上,底色要盖住下面的文字 */
-  background: var(--bbi-surface-2);
-}
-
-.bbi-card__note {
-  margin: 0;
+.bbi-figure__status {
+  margin: 6px 2px 0;
   font-size: 12px;
   line-height: 1.6;
   color: var(--bbi-ink-muted);
 }
 
-.bbi-card__note--error {
+.bbi-figure__status--error {
   color: var(--bbi-danger);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.bbi-card__note--warn {
+.bbi-figure__status--warn {
   color: var(--bbi-warning);
 }
 
-.bbi-card__prompt {
+.bbi-figure__retry {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  margin-left: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--bbi-line-strong);
+  border-radius: var(--bbi-radius-pill);
+  background: var(--bbi-surface);
+  color: var(--bbi-accent);
+  font-family: inherit;
+  font-size: 11.5px;
+  vertical-align: baseline;
+  cursor: pointer;
+  transition:
+    border-color var(--bbi-dur) var(--bbi-ease),
+    background var(--bbi-dur) var(--bbi-ease);
+}
+
+.bbi-figure__retry:hover {
+  border-color: var(--bbi-accent);
+  background: var(--bbi-accent-soft);
+}
+
+/* ——— 提示词面板:悬浮 文本按钮唤起 ———
+   复制按钮绝对定位而非与文本并排 flex:提示词是可换行长文本,
+   并排会让按钮跟着文本高度居中飘到中间去。 */
+
+.bbi-figure__prompt-box {
+  position: relative;
+  margin-top: 6px;
+}
+
+.bbi-figure__prompt-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--bbi-line);
+  border-radius: var(--bbi-radius-pill);
+  /* 压在提示词之上,底色要盖住下面的文字 */
+  background: var(--bbi-surface);
+  color: var(--bbi-ink-muted);
+  cursor: pointer;
+  transition:
+    color var(--bbi-dur) var(--bbi-ease),
+    border-color var(--bbi-dur) var(--bbi-ease);
+}
+
+.bbi-figure__prompt-copy:hover {
+  color: var(--bbi-accent);
+  border-color: var(--bbi-accent);
+}
+
+.bbi-figure__prompt {
   margin: 0;
   /* 右侧留出复制按钮的位置(26 + 4×2),否则长 tag 会钻到按钮底下 */
   padding: 9px 40px 9px 10px;
@@ -429,7 +486,7 @@
   overflow-y: auto;
 }
 
-.bbi-card__prompt-nl {
+.bbi-figure__prompt-nl {
   display: block;
   margin-top: 8px;
   padding-top: 8px;
@@ -438,13 +495,23 @@
   font-family: var(--bbi-font-sans);
 }
 
-.bbi-card__prompt-negative {
+.bbi-figure__prompt-negative {
   color: var(--bbi-warning);
 }
 
-/* 窄屏:内边距收一号 */
-@media (max-width: 640px) {
-  .bbi-card {
-    --bbi-card-pad: 10px;
+/* ——— 尊重减少动效 ——— */
+@media (prefers-reduced-motion: reduce) {
+  .bbi-figure__skeleton,
+  .bbi-figure__spin {
+    animation: none;
+  }
+
+  .bbi-figure__menu,
+  .bbi-fab,
+  .bbi-figure__cancel,
+  .bbi-figure__generate,
+  .bbi-figure__retry,
+  .bbi-figure__prompt-copy {
+    transition: none;
   }
 }
