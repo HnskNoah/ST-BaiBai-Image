@@ -78,9 +78,16 @@ function cloneChannel(ch: ApiChannel): ApiChannel {
 // 密钥默认隐藏;每次打开/关闭弹窗都复位,避免密钥意外保持明文
 const showKey = ref(false);
 
-function normalizeAutoTagNumbers() {
+function normalizeAutoTagNumbers(changed?: 'minImages' | 'maxImages' | Event) {
   settings.autoTag.contextMessages = Math.max(1, Math.floor(Number(settings.autoTag.contextMessages) || 1));
-  settings.autoTag.maxImages = Math.max(1, Math.floor(Number(settings.autoTag.maxImages) || 1));
+  let minImages = Math.max(0, Math.floor(Number(settings.autoTag.minImages) || 0));
+  let maxImages = Math.max(1, Math.floor(Number(settings.autoTag.maxImages) || 1));
+  // 用户抬高下限时顺带抬高上限;用户压低上限时顺带压低下限。
+  // 这样正在编辑的那一格始终保留用户意图,不会出现 min > max 的瞬时脏配置。
+  if (changed === 'minImages') maxImages = Math.max(maxImages, minImages);
+  else minImages = Math.min(minImages, maxImages);
+  settings.autoTag.minImages = minImages;
+  settings.autoTag.maxImages = maxImages;
   settings.autoTag.retryCount = Math.min(5, Math.max(0, Math.floor(Number(settings.autoTag.retryCount) || 0)));
 }
 
@@ -613,17 +620,30 @@ async function confirmUpdate() {
         <p class="bbi-field-hint">按 AI 故事楼计数，目标楼计入数量；中间 user 楼一并携带，并按与柏宝书共用的正文清洗设置处理，不设置字符或 token 截断上限。</p>
 
         <label class="bbi-num-row">
+          <span class="bbi-field-label">单楼最少图片数</span>
+          <input
+            v-model.number="settings.autoTag.minImages"
+            class="bbi-input bbi-num"
+            type="number"
+            min="0"
+            :max="settings.autoTag.maxImages"
+            step="1"
+            @change="normalizeAutoTagNumbers('minImages')"
+          />
+        </label>
+
+        <label class="bbi-num-row">
           <span class="bbi-field-label">单楼最多图片数</span>
           <input
             v-model.number="settings.autoTag.maxImages"
             class="bbi-input bbi-num"
             type="number"
-            min="1"
+            :min="Math.max(1, settings.autoTag.minImages)"
             step="1"
-            @change="normalizeAutoTagNumbers"
+            @change="normalizeAutoTagNumbers('maxImages')"
           />
         </label>
-        <p class="bbi-field-hint">单楼允许模型选择的最大画面数;模型不会为了凑满上限而硬选。</p>
+        <p class="bbi-field-hint">模型必须在最少～最多范围内选图。最少设为 0 时，没有值得画的内容可以不出图；大于 0 时会从较次但仍可见的瞬间补足。最多数量始终由插件硬限制。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">失败自动重试次数</span>

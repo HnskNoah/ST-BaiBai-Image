@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import { injectImageTags, parseImagePlan } from '@/autoTag/protocol';
+import { injectImageTags, parseImagePlan as parseImagePlanWithRange } from '@/autoTag/protocol';
 
 const segments = [
   { id: 'P1', sourceLine: 0, text: '第一幕结束' },
   { id: 'P2', sourceLine: 2, text: '第二幕结束' },
 ];
+
+/** 大部分协议测试关注内容解析,沿用允许 0 张的默认范围;数量下限另列专门用例。 */
+function parseImagePlan(
+  raw: string,
+  targetSegments: typeof segments,
+  maxImages: number,
+) {
+  return parseImagePlanWithRange(raw, targetSegments, 0, maxImages);
+}
 
 describe('auto tag position protocol', () => {
   it('parses a fenced JSON response and applies the local maximum', () => {
@@ -18,6 +27,30 @@ describe('auto tag position protocol', () => {
       ],
       changes: [],
     });
+  });
+
+  it('rejects a result below the configured minimum so the runner can retry', () => {
+    expect(() =>
+      parseImagePlanWithRange(
+        '{"images":[{"position":"P1","tag":"only one"}]}',
+        segments,
+        2,
+        3,
+      ),
+    ).toThrow('少于设置的最少图片数 2');
+  });
+
+  it('accepts an empty image list when the configured minimum is zero', () => {
+    expect(parseImagePlanWithRange('{"images":[],"changes":[]}', segments, 0, 2)).toEqual({
+      images: [],
+      changes: [],
+    });
+  });
+
+  it('clamps a dirty minimum to the maximum before validating', () => {
+    const raw =
+      '{"images":[{"position":"P1","tag":"first"},{"position":"P2","tag":"second"}]}';
+    expect(parseImagePlanWithRange(raw, segments, 9, 2).images).toHaveLength(2);
   });
 
   it('accepts the legacy prompt key as an alias of tag', () => {

@@ -147,6 +147,15 @@ export async function buildAutoTagMessages(
     ? '\n   negative 是本画面专用的 danbooru 负面短 tag：只排除与正文冲突或本构图特别容易误生成的内容，可为空；禁止输出通用质量、画质、审美或技术性负面词，包括但不限于 worst quality、low quality、blurry、lowres、bad anatomy、bad hands、jpeg artifacts；不要写希望出现的内容，不得使用 @角色占位符。'
     : '';
 
+  // 设置层已维护 0 ≤ min ≤ max；这里仍做一次局部归一,让直接调用/测试传入脏对象也不会
+  // 生成自相矛盾的数量协议。上限至少 1,下限 0 表示保留「本楼无需插图」的质量优先口径。
+  const maxImages = Math.max(1, Math.floor(Number(options.maxImages)) || 1);
+  const minImages = Math.min(maxImages, Math.max(0, Math.floor(Number(options.minImages)) || 0));
+  const imageCountRule =
+    minImages === 0
+      ? `2. images 数量必须在 0～${maxImages} 之间。没有值得绘制的可见瞬间时可以返回空数组；不要为了接近上限而凑数。`
+      : `2. images 数量必须在 ${minImages}～${maxImages} 之间。下限 ${minImages} 是用户明确要求：即使最强候选不足，也必须从目标正文中较次但仍可见的单一瞬间补足，不得返回少于 ${minImages} 张或空数组。达到下限后不要为了接近上限而凑数。`;
+
   const sizeRule = `5. size 是画幅方向，只能填 "portrait"（竖构图）或 "landscape"（横构图）。先确定最终景别与主体空间分布，再选择方向；人数只是参考，不是硬规则：
    - landscape：群像、远景/全景、宽阔场景（战场、山河、街景、大殿）、横向展开的互动。
    - portrait：单人、纵向站姿、半身/特写，以及双人近距离构图。
@@ -175,8 +184,8 @@ export async function buildAutoTagMessages(
 ${outputShape}
 
 规则：
-1. 先完成角色建档与变化检查，再选图：images 可以为空，但不能因此跳过 changes 检查；无图片且无变化时返回 {"images":[],"changes":[]}。
-2. 最多返回 ${options.maxImages} 个成员，不要为了达到上限而凑数。多张图必须是剧情或视觉状态明显不同的单一瞬间，不要返回同一事件的相邻动作或换镜头版本。
+1. 先完成角色建档与变化检查，再选图；不能因为没有图片或图片数量较少而跳过 changes 检查，没有任何变化时 changes 返回空数组。
+${imageCountRule} 多张图必须是剧情或视觉状态明显不同的单一瞬间，不要返回同一事件的相邻动作或换镜头版本。
 3. position 必须是“目标正文”段尾标出的 P编号（如 P2），表示把图片 tag 插在该段之后；选择让画面所需事实刚刚完整成立、且尚未切换到下一场景的位置。不要返回此前上下文中的位置，也不要自行编造编号。
 ${contentRule}${negativeRule}
 ${sizeRule}

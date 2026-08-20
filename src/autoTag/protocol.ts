@@ -140,16 +140,23 @@ function sanitizePosition(value: unknown, index: number): string {
 /**
  * 解析并严格校验模型给出的“目标位置 ID + 提示词”列表。tag 必填;nl/negative 选填。
  * size 一律容忍:归一不出就当竖屏——为它抛错会白白吃掉 runner 的重试次数。
+ * 图片超过上限时本地硬截断;少于用户明确设置的下限则抛错,交给 runner 重试。
  * changes 全程宽容:单条坏就丢弃,绝不连累 images——角色档案漏一条只是这个角色本轮
  * 没锚定,为它作废整次输出会连图一起没有,那是更坏的结果。
  */
 export function parseImagePlan(
   raw: string,
   segments: TargetSegment[],
+  minImages: number,
   maxImages: number,
 ): ImagePlan {
   const parsed = parseObject(raw);
   if (!Array.isArray(parsed.images)) throw new Error('AI 返回的 JSON 缺少 images 数组');
+  const normalizedMax = Math.max(1, Math.floor(Number(maxImages)) || 1);
+  const normalizedMin = Math.min(
+    normalizedMax,
+    Math.max(0, Math.floor(Number(minImages)) || 0),
+  );
   const positions = new Map(segments.map(segment => [segment.id, segment.sourceLine]));
 
   const images: ImageInsertion[] = [];
@@ -174,8 +181,15 @@ export function parseImagePlan(
     images.push({ position, sourceLine, tag, nl, negative, size });
   }
 
+  const limitedImages = images.slice(0, normalizedMax);
+  if (limitedImages.length < normalizedMin) {
+    throw new Error(
+      `AI 返回了 ${limitedImages.length} 张图片，少于设置的最少图片数 ${normalizedMin}`,
+    );
+  }
+
   return {
-    images: images.slice(0, Math.max(0, Math.floor(maxImages))),
+    images: limitedImages,
     changes: parseChanges(parsed.changes, positions),
   };
 }

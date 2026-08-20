@@ -140,7 +140,8 @@ runForFloor(floor, opts)
   6. 重试循环:retryCount 次(请求异常 / 解析抛错都重试;abort 不消耗;「无画面」不算失败)
   7. protocol.parseImagePlan 严格校验(JSON 结构/目标位置 ID/禁含子标签/size 宽容降级竖屏);
      changes 全程宽容:单条坏只丢这条,绝不连累 images —— 漏一个角色档案只是它本轮没锚定,
-     为它作废整次输出会连图一起没有
+     为它作废整次输出会连图一起没有。图片数按 `minImages～maxImages` 范围:超上限本地硬截断,
+     少于下限(>0 时)抛错交给重试循环 —— 下限是用户明确要求,宁可重试也不交残缺结果
   8. changes 与柏宝书建档一起转成楼层增量 ops(extra 的 bbiCharChanges),不提前落库
   9. @占位符兜底替换:applyPositionedCharRefs 把 tag/nl 里残留的 @角色名 换成「基线 + 本楼
      ops 重放」后的库 tag。**建档(new)全楼生效**——新角色的固定外貌是本楼全程成立的事实;

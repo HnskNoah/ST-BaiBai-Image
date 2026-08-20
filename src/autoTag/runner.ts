@@ -178,7 +178,12 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           processed.delete(identity);
           return;
         }
-        plan = parseImagePlan(raw, preparedTarget.segments, settings.autoTag.maxImages);
+        plan = parseImagePlan(
+          raw,
+          preparedTarget.segments,
+          settings.autoTag.minImages,
+          settings.autoTag.maxImages,
+        );
       } catch (error) {
         if (controller.signal.aborted) {
           processed.delete(identity);

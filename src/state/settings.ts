@@ -279,6 +279,8 @@ export interface AutoTagSettings {
   enabled: boolean;
   /** 发送最近多少个 AI 故事楼及其间 user 楼的清洗后正文；目标楼计入数量。 */
   contextMessages: number;
+  /** 单楼要求模型返回的最少画面数；0 = 允许没有值得绘制的画面。 */
+  minImages: number;
   /** 单楼允许模型选择的最大画面数。 */
   maxImages: number;
   /** 生成失败自动重试次数(请求异常或返回无法解析都算),0 = 不重试,默认 1。 */
@@ -359,11 +361,11 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
    ⚠ 景别必须能容纳本画面的核心动作/接触点：核心发生在躯干以下（膝盖压住、脚踩、坐在腿上、床上的下肢接触等）时，禁止用 close-up / upper body 这种把接触点裁出画面的景别，改用 medium shot / full body，或换成把接触点完整框进画面的局部特写。
    ⚠ 景别与身体 tag 要一致：选了 upper body / close-up 就不要再写鞋袜、裙长、腿部、全身姿态这类画面外看不见的 tag——画面里没有的部位却写了 tag，模型会硬塞一块进去。
 
-2. 时代与世界观（服饰体系、建筑、器物、环境风格）——**先判断，再写最少且可见的时代锚点**。
-   依据按优先级取：世界设定（世界书）> 角色设定/主角设定 > 正文与上下文的用词器物。
-   有明确设定时必须体现，避免古代/奇幻内容被默认画成现代都市；但只写画面实际可见且足以锁定时代的内容：
-   人物可见就优先写服饰，背景明确可见才写建筑或环境，不要把 hanfu、ancient chinese architecture、
-   wuxia 等所有相关词机械堆进每张图。证据不足时不要擅自断言具体文明，使用与正文不冲突的中性可见描述。
+2. 时代与世界观（服饰体系、建筑、器物、环境风格）——**必须先判断，并主动具体化**。
+   依据按优先级取：世界设定（世界书）> 角色设定/主角设定 > 正文与上下文中的称谓、身份、器物和环境。
+   有明确设定时严格遵循；没有明确设定时，也要根据现有线索和剧情气质，主动选择一个最合理、具体且自洽的时代、文明或原创视觉体系。证据较少不是退回中性服装或默认现代都市的理由，允许为了完成画面作合理猜测。
+   将判断落实到画面实际可见的细节：人物可见时优先完善服装版型、材质和配饰，背景可见时再补建筑、家具、环境和器物。允许补充正文未写明的视觉细节，但不得覆盖或违背明确的剧情事实与角色设定。
+   架空世界可以采用原创或混合风格，但必须内部统一，不得随意堆叠相互冲突的文明元素；连续场景中保持同一套视觉判断。丰富画面靠具体细节，而不是把 hanfu、wuxia、ancient chinese architecture 等相关词机械堆进每张图。
 
 3. 角色的固定事实（性别、发色发型、瞳色、体型、标志性特征）——**严格按给定信息，不得发挥**。
    出现在【角色固定外貌库】里的角色，直接照抄库中该角色的字段值写进 tag/nl，用词一字不改（库里写 long black hair 就写 long black hair，不要换成 black long hair 或自行加词）；未建档角色按角色参考/角色设定写，都没有才可少量补基础特征。
@@ -418,11 +420,11 @@ NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag�
    ⚠ 景别必须能容纳本画面的核心动作/接触点：核心发生在躯干以下（膝盖压住、脚踩、坐在腿上、床上的下肢接触等）时，禁止用 close-up / upper body 这种把接触点裁出画面的景别，改用 medium shot / full body，或换成把接触点完整框进画面的局部特写。
    ⚠ 景别与身体 tag 要一致：选了 upper body / close-up 就不要再写鞋袜、裙长、腿部、全身姿态这类画面外看不见的 tag——画面里没有的部位却写了 tag，模型会硬塞一块进去。
 
-2. 时代与世界观（服饰体系、建筑、器物、环境风格）——**先判断，再写最少且可见的时代锚点**。
-   依据按优先级取：世界设定（世界书）> 角色设定/主角设定 > 正文与上下文的用词器物。
-   有明确设定时必须体现，避免古代/奇幻内容被默认画成现代都市；但只写画面实际可见且足以锁定时代的内容：
-   人物可见就优先写服饰，背景明确可见才写建筑或环境，不要把 hanfu、ancient chinese architecture、
-   wuxia 等所有相关词机械堆进每张图。证据不足时不要擅自断言具体文明，使用与正文不冲突的中性可见描述。
+2. 时代与世界观（服饰体系、建筑、器物、环境风格）——**必须先判断，并主动具体化**。
+   依据按优先级取：世界设定（世界书）> 角色设定/主角设定 > 正文与上下文中的称谓、身份、器物和环境。
+   有明确设定时严格遵循；没有明确设定时，也要根据现有线索和剧情气质，主动选择一个最合理、具体且自洽的时代、文明或原创视觉体系。证据较少不是退回中性服装或默认现代都市的理由，允许为了完成画面作合理猜测。
+   将判断落实到画面实际可见的细节：人物可见时优先完善服装版型、材质和配饰，背景可见时再补建筑、家具、环境和器物。允许补充正文未写明的视觉细节，但不得覆盖或违背明确的剧情事实与角色设定。
+   架空世界可以采用原创或混合风格，但必须内部统一，不得随意堆叠相互冲突的文明元素；连续场景中保持同一套视觉判断。丰富画面靠具体细节，而不是把 hanfu、wuxia、ancient chinese architecture 等相关词机械堆进每张图。
 
 3. 角色的固定事实（性别、发色发型、瞳色、体型、标志性特征）——**严格按给定信息，不得发挥**。
    出现在【角色固定外貌库】里的角色，直接照抄库中该角色的字段值写进 tag/nl，用词一字不改（库里写 long black hair 就写 long black hair，不要换成 black long hair 或自行加词）；未建档角色按角色参考/角色设定写，都没有才可少量补基础特征。
@@ -464,7 +466,7 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
 
 3. 枚举并筛选候选画面：
    - 候选必须是一个可见瞬间，有明确主体、动作或视觉状态和场景。纯对话只有在伴随值得画的表情、肢体动作、人物关系或环境变化时才保留；只跳过没有视觉变化的对话、纯心理和过渡。
-   - 按视觉明确度、剧情重要度、动作完整度、与其他候选的差异度排序；只选最强且彼此有明显区别的画面，不要把同一事件的相邻动作或不同镜头重复占满名额。
+   - 按视觉明确度、剧情重要度、动作完整度、与其他候选的差异度排序，并遵守任务协议给出的最少～最多数量：下限大于 0 时从较次但仍可见的候选中补足；达到下限后只继续选择足够强且彼此明显不同的画面，不要用同一事件的相邻动作或不同镜头凑近上限。
 
 4. 把每个入选画面冻结为单一瞬间：
    - 一张图必须能被一次快门完整拍下；不要把先后发生的多个动作、多个时间点或因果过程塞进同一画面。
@@ -473,7 +475,8 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
 
 5. 再决定怎么画：
    - 库中角色（含本轮新建档的）照抄库里的字段值，用词不改；同一角色的固定外貌一张图里只写一遍，再次提到用简短指代承接。多人各自的服装、颜色、物件和动作必须明确绑定。
-   - 先判断时代与世界观，再只补画面实际可见的最少时代锚点；有明确设定时必须体现，证据不足时不擅自断言具体文明。
+   - 必须先判断时代与世界观：有明确设定时严格遵循；证据较少时也要根据人物身份、器物与剧情气质主动选择具体、自洽的文明或原创视觉体系，不得退回中性服装或默认现代都市。视觉细节允许合理猜测，但不得与明确事实冲突。
+   - 把时代判断落实到人物服装版型、材质、配饰及可见的建筑、家具和器物；架空或混合风格必须内部统一，连续场景保持同一套视觉判断。
    - 主动确定镜头距离、构图、光线来源、色调和氛围；景别必须完整容纳核心动作与接触点。
    - 最后依据实际景别和主体空间分布决定 size。人数只是参考：群像、远景、宽阔或横向互动通常 landscape；单人、纵向构图、特写及双人近距离可 portrait。
 
@@ -481,8 +484,8 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 每个剧情 tag 都能追溯到正文/设定，每个补充 tag 都只属于允许发挥的镜头、光线、氛围或时代锚点。
    - 每张图是单一瞬间；多张图彼此不重复；人数、角色绑定、连续状态、核心动作、景别、size 和 P编号一致。
    - 没有衣物穿脱、湿身/污损、伤势、饰品或手持物的无依据复原；没有把临时状态误写进 changes。
-   - 目标正文里每个有设定的正式角色都已建档或已在库中；库中角色的外貌都照抄了字段值且每张图只写一遍；永久变化都有合法 P编号，且图片使用了该位置应有的新旧档案；tag 是英文正面短 tag、无质量词负面词；张数不超上限；要求 nl 时与 tag 描述同一画面。
-   - 没有值得画的画面时 images 为空，但仍保留应有的建档与 changes。`;
+   - 目标正文里每个有设定的正式角色都已建档或已在库中；库中角色的外貌都照抄了字段值且每张图只写一遍；永久变化都有合法 P编号，且图片使用了该位置应有的新旧档案；tag 是英文正面短 tag、无质量词负面词；张数在设定的最少～最多范围内；要求 nl 时与 tag 描述同一画面。
+   - 仅当设定的最少图片数为 0 且确实没有值得画的画面时，images 才可为空；无论图片数量如何都保留应有的建档与 changes。`;
 
 /** 预填充内置默认:以 <thinking> 开头,引导模型先过思考清单再输出 JSON。 */
 export const DEFAULT_PREFILL_PROMPT = '<thinking>';
@@ -651,6 +654,7 @@ function defaults(): ImageSettings {
     autoTag: {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
@@ -1093,16 +1097,24 @@ function normalize(raw: unknown): ImageSettings {
   const ra = (r.assignments ?? {}) as Partial<{ tagGen: string }>;
   merged.assignments = { tagGen: typeof ra.tagGen === 'string' ? ra.tagGen : '' };
   const rt = (r.autoTag ?? {}) as Partial<AutoTagSettings>;
+  // 存量配置只有 maxImages:缺少 minImages 时回落 0,完整保留「没好画面可以不出图」的旧行为。
+  // 先归一化上限,再把下限夹进 [0,上限],保证所有后续调用都能直接依赖范围不变式。
+  const maxImages =
+    typeof rt.maxImages === 'number' && Number.isFinite(rt.maxImages)
+      ? Math.max(1, Math.floor(rt.maxImages))
+      : d.autoTag.maxImages;
+  const minImages =
+    typeof rt.minImages === 'number' && Number.isFinite(rt.minImages)
+      ? Math.min(maxImages, Math.max(0, Math.floor(rt.minImages)))
+      : d.autoTag.minImages;
   merged.autoTag = {
     enabled: typeof rt.enabled === 'boolean' ? rt.enabled : d.autoTag.enabled,
     contextMessages:
       typeof rt.contextMessages === 'number' && Number.isFinite(rt.contextMessages)
         ? Math.max(1, Math.floor(rt.contextMessages))
         : d.autoTag.contextMessages,
-    maxImages:
-      typeof rt.maxImages === 'number' && Number.isFinite(rt.maxImages)
-        ? Math.max(1, Math.floor(rt.maxImages))
-        : d.autoTag.maxImages,
+    minImages,
+    maxImages,
     retryCount:
       typeof rt.retryCount === 'number' && Number.isFinite(rt.retryCount)
         ? Math.min(5, Math.max(0, Math.floor(rt.retryCount)))

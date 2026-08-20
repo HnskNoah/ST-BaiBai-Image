@@ -38,6 +38,7 @@ describe('auto tag prompt', () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 3,
       retryCount: 1,
       autoGenerate: true,
@@ -49,7 +50,8 @@ describe('auto tag prompt', () => {
     expect(messages.some(m => m.role === 'system' && m.content.includes('你是严谨的剧情画面规划与生图提示词编写员'))).toBe(true);
     expect(messages.some(m => m.content.includes('除一个 <thinking> 块和一个 JSON 对象外'))).toBe(true);
     expect(messages.some(m => m.content.includes('最终结果必须包含且只能包含一个可解析的 JSON 对象'))).toBe(true);
-    expect(messages.some(m => m.content.includes('最多返回 3 个成员'))).toBe(true);
+    expect(messages.some(m => m.content.includes('images 数量必须在 0～3 之间'))).toBe(true);
+    expect(messages.some(m => m.content.includes('没有值得绘制的可见瞬间时可以返回空数组'))).toBe(true);
     expect(messages.some(m => m.content.includes('不得包含质量词'))).toBe(true);
     expect(messages.some(m => m.content.includes('先完成角色建档与变化检查'))).toBe(true);
     expect(messages.some(m => m.content.includes('同一事件的相邻动作'))).toBe(true);
@@ -75,10 +77,28 @@ describe('auto tag prompt', () => {
     expect(messages.some(message => message.content.includes('"position"'))).toBe(true);
   });
 
+  it('turns a positive minimum into a strict image-count range', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      minImages: 2,
+      maxImages: 4,
+      retryCount: 1,
+      autoGenerate: true,
+      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+    };
+    const messages = await buildAutoTagMessages(context(), 1, options, null);
+
+    expect(messages.some(m => m.content.includes('images 数量必须在 2～4 之间'))).toBe(true);
+    expect(messages.some(m => m.content.includes('下限 2 是用户明确要求'))).toBe(true);
+    expect(messages.some(m => m.content.includes('不得返回少于 2 张或空数组'))).toBe(true);
+  });
+
   it('uses the prepared target snapshot without recomputing position IDs', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
@@ -122,6 +142,7 @@ describe('auto tag prompt', () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
@@ -154,6 +175,7 @@ describe('auto tag prompt', () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
@@ -166,6 +188,7 @@ describe('auto tag prompt', () => {
     expect(thinkingMsg?.content).toContain('不得把临时状态恢复成角色默认值');
     expect(thinkingMsg?.content).toContain('即使 images 为空也不能跳过建档与 changes 检查');
     expect(thinkingMsg?.content).toContain('视觉明确度、剧情重要度、动作完整度');
+    expect(thinkingMsg?.content).toContain('下限大于 0 时从较次但仍可见的候选中补足');
     expect(thinkingMsg?.content).toContain('一张图必须能被一次快门完整拍下');
     expect(thinkingMsg?.content).toContain('双人近距离可 portrait');
     expect(thinkingMsg?.content).toContain('只跳过没有视觉变化的对话');
@@ -174,6 +197,11 @@ describe('auto tag prompt', () => {
     expect(thinkingMsg?.content).toContain('建档在本楼全程有效');
     expect(thinkingMsg?.content).toContain('hair 与 eyes 都不得留空');
     expect(thinkingMsg?.content).toContain('变化前的图片沿用旧档');
+    expect(thinkingMsg?.content).toContain('证据较少时也要');
+    expect(thinkingMsg?.content).toContain('不得退回中性服装或默认现代都市');
+    expect(thinkingMsg?.content).toContain('连续场景保持同一套视觉判断');
+    expect(messages.some(m => m.content.includes('必须先判断，并主动具体化'))).toBe(true);
+    expect(messages.some(m => m.content.includes('允许为了完成画面作合理猜测'))).toBe(true);
     const last = messages[messages.length - 1];
     expect(last.role).toBe('assistant');
     expect(last.content).toBe('<thinking>');
@@ -183,6 +211,7 @@ describe('auto tag prompt', () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
@@ -199,6 +228,7 @@ describe('auto tag prompt', () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
@@ -221,6 +251,7 @@ describe('auto tag prompt', () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
@@ -237,6 +268,7 @@ describe('auto tag prompt', () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
@@ -261,6 +293,7 @@ describe('auto tag prompt', () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
+      minImages: 0,
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
