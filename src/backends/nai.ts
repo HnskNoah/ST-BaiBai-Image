@@ -1,5 +1,6 @@
 import { unzipSync } from 'fflate';
 
+import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { ComfyImageResult } from '@/backends/comfyui';
 import { parseSize, pickSize, type Orientation } from '@/backends/size';
 import { clampVibeStrength, loadVibeData } from '@/backends/vibeStore';
@@ -31,6 +32,7 @@ export const NAI_SAMPLERS: { value: string; label: string }[] = [
   { value: 'k_euler_ancestral', label: 'Euler Ancestral' },
   { value: 'k_dpmpp_2s_ancestral', label: 'DPM++ 2S Ancestral' },
   { value: 'k_dpmpp_2m', label: 'DPM++ 2M' },
+  { value: 'k_dpmpp_2m_sde', label: 'DPM++ 2M SDE' },
   { value: 'k_dpmpp_sde', label: 'DPM++ SDE' },
   { value: 'ddim_v3', label: 'DDIM V3' },
 ];
@@ -44,6 +46,8 @@ export const NAI_NOISE_SCHEDULES: { value: string; label: string }[] = [
 
 /** 各模型官方质量词，拼到正向提示词末尾;用户在面板改过则用其覆盖值。 */
 const QUALITY_TAGS: Record<string, string> = {
+  'nai-diffusion-5-full': 'very aesthetic, masterpiece, no text',
+  'nai-diffusion-5-curated': 'very aesthetic, masterpiece, no text',
   'nai-diffusion-4-5-full': 'location, very aesthetic, masterpiece, no text',
   'nai-diffusion-4-5-curated': 'location, masterpiece, no text, -0.8::feet::, rating:general',
   'nai-diffusion-4-full': 'no text, best quality, very aesthetic, absurdres',
@@ -53,6 +57,10 @@ const QUALITY_TAGS: Record<string, string> = {
 
 /** 各模型官方 Heavy 负面词，作为无需用户选择的通用默认;用户改过则用其覆盖值。 */
 const DEFAULT_UNDESIRED_CONTENT: Record<string, string> = {
+  'nai-diffusion-5-full':
+    'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page',
+  'nai-diffusion-5-curated':
+    'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page',
   'nai-diffusion-3':
     'lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract]',
   'nai-diffusion-4-full':
@@ -82,6 +90,27 @@ const REFERENCE_PIXEL_COUNT = 1011712;
 const SIGMA_MAGIC_NUMBER = 19;
 const SIGMA_MAGIC_NUMBER_V4_5 = 58;
 
+export function isNai5(model: string): boolean {
+  return model.includes('nai-diffusion-5');
+}
+
+export function naiSupportsVibes(model: string): boolean {
+  return !isNai5(model);
+}
+
+const NAI_V5_SAMPLERS = new Set([
+  'k_euler_ancestral',
+  'k_euler',
+  'k_dpmpp_2s_ancestral',
+  'k_dpmpp_2m_sde',
+  'k_dpmpp_2m',
+  'k_dpmpp_sde',
+]);
+
+export function naiSamplers(model: string): { value: string; label: string }[] {
+  return isNai5(model) ? NAI_SAMPLERS.filter(sampler => NAI_V5_SAMPLERS.has(sampler.value)) : NAI_SAMPLERS;
+}
+
 export function isNai45(model: string): boolean {
   return model.includes('nai-diffusion-4-5');
 }
@@ -96,7 +125,7 @@ function isNai3(model: string): boolean {
 
 /** skip_cfg_above_sigma:开 variety boost 时按尺寸与模型算;关 → null。 */
 export function skipCfgAboveSigma(width: number, height: number, model: string, varietyBoost: boolean): number | null {
-  if (!varietyBoost) return null;
+  if (!varietyBoost || isNai5(model)) return null;
   const magic = isNai45(model) ? SIGMA_MAGIC_NUMBER_V4_5 : SIGMA_MAGIC_NUMBER;
   return Math.pow((width * height) / REFERENCE_PIXEL_COUNT, 0.5) * magic;
 }
@@ -165,6 +194,8 @@ async function sha256Hex(text: string): Promise<string> {
 export interface NaiGenerateValues {
   /** 正向 tag(不含质量词)。 */
   prompt: string;
+  nl?: string;
+  characters?: ImageCharacterPrompt[];
   /** 种子;缺省随机。 */
   seed?: number;
   /** 画幅方向;缺省竖屏(与改动前的固定默认一致)。 */
@@ -198,11 +229,26 @@ export function naiArtistPrompt(nai: NaiSettings): string {
  * 字段处各调一次,两处必须同源。拼装改动一律留在本函数内部——在某个调用点单独加料会让
  * NAI3(读 input)与 NAI4/4.5(读 v4_prompt)拿到不同的提示词,且只在 NAI3 上暴露。
  */
-export function fullPositivePrompt(nai: NaiSettings, prompt: string): string {
+export function fullPositivePrompt(nai: NaiSettings, prompt: string, nl = ''): string {
   const artist = naiArtistPrompt(nai);
   const quality = nai.qualityTags.trim() || naiDefaultQualityTags(nai.model);
-  // filter(Boolean) 不能省:空画师串会产出 ', 1girl, …' 这种前导逗号,NAI 会当成一个空 tag
-  return [artist, prompt.trim(), quality].filter(Boolean).join(', ');
+  const tags = [artist, prompt.trim(), quality].filter(Boolean).join(', ');
+  return isNai5(nai.model) && nl.trim() ? `${tags}. ${nl.trim()}` : tags;
+}
+
+function characterCaption(character: ImageCharacterPrompt): string {
+  // Character Prompts identify one subject: library count tags (1girl/1boy) become girl/boy here.
+  const tag = character.tag
+    .split(',')
+    .map(part => {
+      const value = part.trim();
+      if (/^\d+\s*girls?$/i.test(value)) return 'girl';
+      if (/^\d+\s*boys?$/i.test(value)) return 'boy';
+      return value;
+    })
+    .filter(Boolean)
+    .join(', ');
+  return character.nl.trim() ? `${tag}. ${character.nl.trim()}` : tag;
 }
 
 /**
@@ -223,16 +269,17 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
   const { width, height } = parseResolution(pickSize(nai, orientation) || '832×1216');
   // 显式传入 > 面板固定种子 > 随机
   const seed = values.seed ?? (nai.seed > 0 ? nai.seed : naiRandomSeed());
-  const prompt = fullPositivePrompt(nai, values.prompt);
+  const prompt = fullPositivePrompt(nai, values.prompt, values.nl);
   const negative = fullNegativePrompt(nai);
   const skipCfg = skipCfgAboveSigma(width, height, nai.model, nai.varietyBoost);
+  const sampler = isNai5(nai.model) && !NAI_V5_SAMPLERS.has(nai.sampler) ? 'k_euler_ancestral' : nai.sampler;
 
   const params: JsonObject = {
-    params_version: 3,
+    params_version: isNai5(nai.model) ? 4 : 3,
     width,
     height,
     scale: nai.scale,
-    sampler: nai.sampler,
+    sampler,
     steps: nai.steps,
     n_samples: 1,
     // 提示词已由本地固定默认拼好；协议字段保持官方前端口径。
@@ -263,20 +310,29 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
     params.reference_information_extracted_multiple = [];
   } else {
     // NAI4/4.5:v4 caption 结构 + vibe 走编码缓存
-    params.reference_image_multiple_cached = [];
+    if (!isNai5(nai.model)) params.reference_image_multiple_cached = [];
+    const charCaptions = isNai5(nai.model)
+      ? (values.characters ?? []).map(character => ({
+          char_caption: characterCaption(character),
+          centers: [{ x: 0.5, y: 0.5 }],
+        }))
+      : [];
     params.characterPrompts = [];
     params.v4_prompt = {
-      caption: { base_caption: prompt, char_captions: [] },
+      caption: { base_caption: prompt, char_captions: charCaptions },
       use_coords: false,
       use_order: true,
     };
     params.v4_negative_prompt = {
-      caption: { base_caption: negative, char_captions: [] },
+      caption: {
+        base_caption: negative,
+        char_captions: charCaptions.map(() => ({ char_caption: '', centers: [{ x: 0.5, y: 0.5 }] })),
+      },
       legacy_uc: false,
     };
   }
 
-  if (nai.sampler === 'k_euler_ancestral') {
+  if (sampler === 'k_euler_ancestral') {
     params.deliberate_euler_ancestral_bug = false;
     params.prefer_brownian = true;
   }
@@ -285,6 +341,8 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
 
 /** vibe 模型 key:encodings 分组的键(与官方 .naiv4vibe 一致)。 */
 export function vibeModelKey(model: string): string {
+  if (model.includes('nai-diffusion-5-curated')) return 'v5curated';
+  if (model.includes('nai-diffusion-5-full')) return 'v5full';
   if (model.includes('4-5-curated')) return 'v4-5curated';
   if (model.includes('4-5-full')) return 'v4-5full';
   if (model.includes('4-curated')) return 'v4curated';
@@ -307,6 +365,7 @@ export function applyVibes(
 ): string[] {
   const active = nai.vibes.filter(v => v.enabled);
   if (!active.length) return [];
+  if (!naiSupportsVibes(nai.model)) return active.map(vibe => vibe.name);
   const skipped: string[] = [];
   const strengths = params.reference_strength_multiple as number[];
 
@@ -422,7 +481,7 @@ export async function generateNaiImage(
   if (!values.prompt.trim()) throw new NaiError('正向提示词不能为空');
 
   const params = buildNaiParameters(nai, values);
-  const activeVibes = nai.vibes.filter(vibe => vibe.enabled);
+  const activeVibes = naiSupportsVibes(nai.model) ? nai.vibes.filter(vibe => vibe.enabled) : [];
   const loaded = new Map<string, NaiVibeData>();
   for (const vibe of activeVibes) {
     try {
@@ -443,12 +502,13 @@ export async function generateNaiImage(
   }
   const skipped = applyVibes(params, nai, loaded);
   if (skipped.length) {
-    console.warn('[柏宝绘] 以下 vibe 因缺当前模型编码被跳过:', skipped);
-    toastr.warning(`vibe「${skipped.join('、')}」缺当前模型编码,已跳过`, '柏宝绘');
+    const reason = naiSupportsVibes(nai.model) ? '缺当前模型编码' : 'NAI V5 暂不支持 Vibe Transfer';
+    console.warn(`[柏宝绘] 以下 vibe 因${reason}被跳过:`, skipped);
+    toastr.warning(`vibe「${skipped.join('、')}」${reason},已跳过`, '柏宝绘');
   }
 
   const body = {
-    input: fullPositivePrompt(nai, values.prompt),
+    input: fullPositivePrompt(nai, values.prompt, values.nl),
     model: nai.model,
     action: 'generate',
     parameters: params,

@@ -1,4 +1,5 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
+import { isNai5 } from '@/backends/nai';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
   applyPositionedCharRefs,
@@ -184,6 +185,13 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           settings.autoTag.minImages,
           settings.autoTag.maxImages,
         );
+        if (
+          settings.defaultBackend === 'nai' &&
+          isNai5(settings.nai.model) &&
+          plan.changes.some(change => change.field === 'new' && !change.nl?.trim())
+        ) {
+          throw new Error('NAI V5 建档必须附带 nl 外貌描述');
+        }
       } catch (error) {
         if (controller.signal.aborted) {
           processed.delete(identity);
@@ -228,6 +236,28 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         );
         image.nl = nlRes.text;
         for (const n of nlRes.unknown) unknownNames.add(n);
+      }
+      for (const character of image.characters) {
+        const charTag = applyPositionedCharRefs(
+          character.tag,
+          anchors.entries,
+          planOps,
+          image.sourceLine,
+          'tag',
+        );
+        character.tag = charTag.text;
+        for (const n of charTag.unknown) unknownNames.add(n);
+        if (character.nl) {
+          const charNl = applyPositionedCharRefs(
+            character.nl,
+            anchors.entries,
+            planOps,
+            image.sourceLine,
+            'nl',
+          );
+          character.nl = charNl.text;
+          for (const n of charNl.unknown) unknownNames.add(n);
+        }
       }
       for (const n of tagRes.unknown) unknownNames.add(n);
     }

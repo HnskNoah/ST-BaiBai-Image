@@ -1,6 +1,7 @@
 import { reactive } from 'vue';
 
 import type { ChatMsg } from '@/api/client';
+import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { Orientation } from '@/backends/size';
 
 /**
@@ -75,6 +76,7 @@ export interface ImageRecord extends BaseRecord {
   prompt: string;
   nl: string;
   negative: string;
+  characters: ImageCharacterPrompt[];
   seed: number;
   size: Orientation;
   /** 楼层坐标:详情里据此指回是哪一楼哪个槽位。图片本身不存(见文件头)。 */
@@ -226,6 +228,7 @@ export interface ImageBegin {
   prompt: string;
   nl: string;
   negative: string;
+  characters: ImageCharacterPrompt[];
   seed: number;
   size: Orientation;
   floor: number;
@@ -247,6 +250,11 @@ export function beginImage(info: ImageBegin): number {
     prompt: truncate(info.prompt),
     nl: truncate(info.nl),
     negative: truncate(info.negative),
+    characters: info.characters.map(character => ({
+      name: truncate(character.name),
+      tag: truncate(character.tag),
+      nl: truncate(character.nl),
+    })),
     seed: info.seed,
     size: info.size,
     floor: info.floor,

@@ -6,6 +6,12 @@ import {
   type CharTagHistoryField,
 } from '@/state/charTags';
 
+export interface ImageCharacterPrompt {
+  name: string;
+  tag: string;
+  nl: string;
+}
+
 export interface ImageInsertion {
   /** 模型选择的目标正文位置 ID。 */
   position: string;
@@ -17,6 +23,7 @@ export interface ImageInsertion {
   nl: string;
   /** 本画面动态负面 tag(可空;仅在 ComfyUI 工作流使用 %negative_prompt% 时要求模型输出)。 */
   negative: string;
+  characters: ImageCharacterPrompt[];
   /** 画幅方向:模型只判横/竖,具体像素由用户在后端面板配置。漏给/乱给一律降级竖屏。 */
   size: Orientation;
 }
@@ -120,7 +127,7 @@ function parseObject(raw: string): Record<string, unknown> {
 }
 
 /** tag / nl / negative 内容里不允许出现的子标签字面量(会污染 bbi_image 内部解析)。 */
-const FORBIDDEN_SUBTAG = /<\/?(?:bbi_image|tag|nl|negative|size)\b/i;
+const FORBIDDEN_SUBTAG = /<\/?(?:bbi_image|tag|nl|negative|characters|size)\b/i;
 
 function sanitizeContent(value: unknown, field: string, index: number): string {
   const text = typeof value === 'string' ? value.trim().replace(/[\r\n]+/g, ' ') : '';
@@ -128,6 +135,25 @@ function sanitizeContent(value: unknown, field: string, index: number): string {
     throw new Error(`images[${index}].${field} 不得包含 bbi_image/tag/nl/negative/size 标签`);
   }
   return text;
+}
+
+function sanitizeCharacters(value: unknown, imageIndex: number): ImageCharacterPrompt[] {
+  if (!Array.isArray(value)) return [];
+  const characters: ImageCharacterPrompt[] = [];
+  for (let index = 0; index < value.length && characters.length < 32; index += 1) {
+    const raw = value[index];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const item = raw as Record<string, unknown>;
+    try {
+      const name = sanitizeContent(item.name, `characters[${index}].name`, imageIndex);
+      const tag = sanitizeContent(item.tag ?? item.prompt, `characters[${index}].tag`, imageIndex);
+      const nl = sanitizeContent(item.nl, `characters[${index}].nl`, imageIndex);
+      if (name && tag) characters.push({ name, tag, nl });
+    } catch {
+      // A malformed character prompt must not discard an otherwise valid image plan.
+    }
+  }
+  return characters;
 }
 
 function sanitizePosition(value: unknown, index: number): string {
@@ -176,9 +202,10 @@ export function parseImagePlan(
     if (!tag) throw new Error(`images[${index}].tag 不能为空`);
     const nl = sanitizeContent(entry.nl, 'nl', index);
     const negative = sanitizeContent(entry.negative ?? entry.negative_prompt, 'negative', index);
+    const characters = sanitizeCharacters(entry.characters, index);
     // 兼容模型按习惯返回 orientation / aspect 键
     const size = normalizeOrientation(entry.size ?? entry.orientation ?? entry.aspect);
-    images.push({ position, sourceLine, tag, nl, negative, size });
+    images.push({ position, sourceLine, tag, nl, negative, characters, size });
   }
 
   const limitedImages = images.slice(0, normalizedMax);
@@ -285,7 +312,10 @@ export function injectImageTags(source: string, images: ImageInsertion[]): strin
     for (const image of inserted) {
       const nl = image.nl ? `<nl>${image.nl}</nl>` : '';
       const negative = image.negative ? `<negative>${image.negative}</negative>` : '';
-      output += `${insertedEol}<bbi_image>${image.tag}${nl}${negative}<size>${image.size}</size></bbi_image>`;
+      const characters = image.characters.length
+        ? `<characters>${JSON.stringify(image.characters)}</characters>`
+        : '';
+      output += `${insertedEol}<bbi_image>${image.tag}${nl}${negative}${characters}<size>${image.size}</size></bbi_image>`;
     }
     output += line.eol;
   }

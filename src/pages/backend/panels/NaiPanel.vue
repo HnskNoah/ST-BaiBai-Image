@@ -15,10 +15,12 @@ import {
 import {
   buildNaiv4vibe,
   encodeVibeImage,
+  isNai5,
   naiDefaultQualityTags,
   naiDefaultUndesired,
+  naiSamplers,
+  naiSupportsVibes,
   NAI_NOISE_SCHEDULES,
-  NAI_SAMPLERS,
   parseNaiv4vibe,
   testNaiConnection,
   vibeModelKey,
@@ -89,6 +91,9 @@ async function onTestConnection() {
  * settings 是 reactive,直接把它的字段绑 v-model 即可就地编辑。
  */
 const artist = computed<NaiArtistPreset | null>(() => activeNaiArtist());
+
+/** 当前是否 V5 模型:控制画师串编辑区的 V5 差异提醒。 */
+const isV5Model = computed(() => isNai5(settings.nai.model));
 
 /** 「不使用」的下拉值。preset id 恒为 art_* 形状,空串不会与任何一条相撞,无需装箱。 */
 const NO_ARTIST = '';
@@ -161,8 +166,12 @@ function confirmRemoveArtist() {
 
 /**
  * 智绘姬(st-chatu8)的画师串预设(固定正向词)整批搬过来。
- * 与 vibe 迁移同原则:只建副本、不改源数据;检测常驻显示、迁移幂等(名字+内容去重),随时可再来。
+ * 与 vibe 迁移同原则:只建副本、不改源数据;迁移幂等(名字+内容去重),随时可再来。
  * 纯逻辑在 chatu8Vibe.ts(collect/detect/import 三件套),这里只做检测展示、弹窗预览与落盘。
+ *
+ * 刻意不做「还剩 N 个可导入」的常驻提示:去重键是名字+内容,用户改过或删过
+ * 本地副本后键就对不上,提示会反复复活,很吵。入口收进下方「从智绘姬迁移」
+ * 折叠区,手动点开弹窗时才算预览,有没有新预设一看便知。
  */
 const chatu8ArtistDetect = ref<Chatu8ArtistDetectInfo>({ found: false, total: 0 });
 const artistImportRefs = ref<Chatu8ArtistRef[]>([]);
@@ -175,20 +184,6 @@ const artistImportOpen = ref(false);
 const switchActiveArtist = ref(true);
 
 const chatu8ActiveRef = computed(() => artistImportRefs.value.find(r => r.active) ?? null);
-
-/**
- * 还没导过来的画师串数量:对当前库实时跑一遍纯函数预览(importArtistsFromChatu8 不落盘)。
- * 依赖 settings.nai.artistPresets——导入 push 完成后自动重算归零,入口随之消失。
- */
-const chatu8ArtistRemaining = computed(() => {
-  const chatu8 = getContext()?.extensionSettings?.[CHATU8_SETTINGS_KEY];
-  return importArtistsFromChatu8(settings.nai.artistPresets, chatu8).imported;
-});
-
-/** 导入入口:检测到智绘姬、且有尚未导入的预设才显示(全部导过就不再出现)。 */
-const chatu8ArtistImportable = computed(
-  () => chatu8ArtistDetect.value.found && chatu8ArtistRemaining.value > 0,
-);
 
 function isArtistDup(ref: Chatu8ArtistRef): boolean {
   const key = JSON.stringify([ref.source.trim(), ref.prompt.trim()]);
@@ -311,6 +306,8 @@ let vibeSeq = 0;
 
 /** 当前模型的 vibe 编码 key;vibe 缺此 key 时生成会被跳过,列表里给「补编码」入口。 */
 const currentVibeKey = computed(() => vibeModelKey(settings.nai.model));
+const vibesSupported = computed(() => naiSupportsVibes(settings.nai.model));
+const samplerOptions = computed(() => naiSamplers(settings.nai.model));
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -764,14 +761,7 @@ async function removeVibe(vibe: NaiVibe) {
           </span>
         </div>
 
-        <!-- 从智绘姬导入:批量外部数据操作,与上面针对「当前选中画师串」的对象操作不同级,
-             不进图标行;仅在检测到可导入时出现(带文字标签,不用裸图标,避免与下载混淆) -->
-        <div v-if="chatu8ArtistImportable" class="art-import">
-          <button class="bbi-btn bbi-btn-sm" type="button" @click="openArtistImport">
-            <Icon name="download" :size="14" />
-            从智绘姬导入画师串({{ chatu8ArtistRemaining }} 个新预设)
-          </button>
-        </div>
+        <!-- 从智绘姬导入画师串的入口在下方「从智绘姬迁移」折叠区,这里不做常驻提示 -->
 
         <!-- 内容内联编辑:画师串通常就几个 tag,让「选中哪条」与「这条写了什么」一眼同框 -->
         <template v-if="artist">
@@ -784,6 +774,10 @@ async function removeVibe(vibe: NaiVibe) {
           />
           <p class="bbi-field-hint art-hint">
             拼在正向提示词的最前面,先于画面 tag 与质量词——整幅画的画风基调由它定。
+          </p>
+          <!-- 仅 V5 模型下提醒:V5 与 4.5 的画师串响应差异大,4.5 及以下不需要这条噪音 -->
+          <p v-if="isV5Model" class="bbi-field-hint art-hint art-hint-warn">
+            NAI 5 对画师串的响应与 4.5 差异很大,旧画师串直接套用效果可能跑偏,建议重新调试。
           </p>
         </template>
         <!-- 不选画师串时无提示:下拉里「不使用」已自明 -->
@@ -862,7 +856,7 @@ async function removeVibe(vibe: NaiVibe) {
               <span class="bbi-field-label">采样器</span>
             </div>
             <select class="bbi-input bbi-select" v-model="settings.nai.sampler">
-              <option v-for="s in NAI_SAMPLERS" :key="s.value" :value="s.value">{{ s.label }}</option>
+              <option v-for="s in samplerOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
             </select>
           </div>
           <div class="bbi-field">
@@ -940,12 +934,15 @@ async function removeVibe(vibe: NaiVibe) {
       </Collapsible>
 
       <Collapsible title="Vibe 库(氛围转移)" :open="false">
-        <p class="bbi-field-hint vibe-hint">
+        <p v-if="vibesSupported" class="bbi-field-hint vibe-hint">
           上传参考图,生成时叠加其风格/氛围;编码按当前选中的模型进行,会消耗一次接口调用。
+        </p>
+        <p v-else class="bbi-field-hint vibe-hint">
+          NovelAI V5 当前不支持 Vibe Transfer;已保存的 Vibe 会保留,切回 V4.5 后可继续使用。
         </p>
 
         <div class="vibe-actions">
-          <button class="bbi-btn" type="button" :disabled="vibeEncoding" @click="vibeFileInput?.click()">
+          <button class="bbi-btn" type="button" :disabled="vibeEncoding || !vibesSupported" @click="vibeFileInput?.click()">
             <Icon name="plus" />
             {{ vibeEncoding ? '编码中…' : '上传图片编码' }}
           </button>
@@ -955,7 +952,7 @@ async function removeVibe(vibe: NaiVibe) {
           </button>
           <label class="bbi-switch-row vibe-normalize">
             <span class="bbi-field-label">强度归一化</span>
-            <input v-model="settings.nai.normalizeRefStrength" type="checkbox" class="bbi-checkbox" />
+            <input v-model="settings.nai.normalizeRefStrength" type="checkbox" class="bbi-checkbox" :disabled="!vibesSupported" />
           </label>
           <input ref="vibeFileInput" type="file" accept="image/*" hidden @change="onVibeFileChange" />
           <input ref="vibeImportInput" type="file" accept=".naiv4vibe" hidden @change="onVibeImportChange" />
@@ -1114,7 +1111,7 @@ async function removeVibe(vibe: NaiVibe) {
                       @update:model-value="onGroupPick(vibe, $event)"
                     />
                     <button
-                      v-if="!vibe.modelKeys.includes(currentVibeKey) && vibe.hasImage"
+                      v-if="vibesSupported && !vibe.modelKeys.includes(currentVibeKey) && vibe.hasImage"
                       class="bbi-btn bbi-btn-sm"
                       type="button"
                       :disabled="vibeEncoding"
@@ -1123,6 +1120,9 @@ async function removeVibe(vibe: NaiVibe) {
                     >
                       <Icon name="refresh" :size="12" /> 补当前模型编码
                     </button>
+                    <span v-else-if="!vibesSupported" class="vibe-missing">
+                      当前模型暂不支持 Vibe
+                    </span>
                     <span v-else-if="!vibe.modelKeys.includes(currentVibeKey)" class="vibe-missing">
                       缺当前模型编码且无原图,无法使用
                     </span>
@@ -1169,6 +1169,29 @@ async function removeVibe(vibe: NaiVibe) {
           </button>
         </div>
         <p v-if="migrateMsg" class="bbi-field-hint">{{ migrateMsg }}</p>
+
+        <hr class="art-divider" />
+
+        <!-- 画师串导入:与 vibe 同区同级;有没有新预设不在这里报,点开弹窗看预览 -->
+        <p class="bbi-field-hint vibe-hint">
+          画师串预设同理:复制智绘姬的全部画师串到画师串库,名字与内容都相同的自动跳过。
+        </p>
+        <p class="bbi-field-hint">
+          <template v-if="!chatu8ArtistDetect.found">未检测到智绘姬（插件未安装或未启用）。</template>
+          <template v-else-if="!chatu8ArtistDetect.total">智绘姬里没有找到画师串预设。</template>
+          <template v-else>检测到智绘姬有 {{ chatu8ArtistDetect.total }} 个画师串预设。</template>
+        </p>
+        <div class="migrate-actions">
+          <button
+            class="bbi-btn"
+            type="button"
+            :disabled="!chatu8ArtistDetect.total"
+            @click="openArtistImport"
+          >
+            <Icon name="download" />
+            导入智绘姬的画师串
+          </button>
+        </div>
       </Collapsible>
     </div>
 
@@ -1396,10 +1419,9 @@ async function removeVibe(vibe: NaiVibe) {
   margin-top: 8px;
 }
 
-/* 智绘姬导入入口:仅检测到可导入时出现的文字按钮行 */
-.art-import {
-  display: flex;
-  margin: 8px 0 12px;
+/* V5 画师串差异提醒:警示色,与常规说明区分开 */
+.art-hint-warn {
+  color: var(--bbi-warning);
 }
 /* 画师串与下方质量词/负面词的分界 */
 .art-divider {

@@ -11,6 +11,7 @@ import {
   DEFAULT_COMFY_SPEC,
   DEFAULT_JAILBREAK_PROMPT,
   DEFAULT_NAI_SPEC,
+  DEFAULT_NAI_V5_SPEC,
   DEFAULT_PREFILL_PROMPT,
   DEFAULT_THINKING_PROMPT,
   newChannel,
@@ -111,6 +112,13 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
     label: 'NAI 规范',
     hint: '默认后端为 NAI 时拼进自动 tag 请求，约束 tag 的书写规范。留空用内置默认。',
     builtin: DEFAULT_NAI_SPEC,
+    macros: [],
+  },
+  {
+    key: 'naiV5Spec',
+    label: 'NAI V5 \u89c4\u8303',
+    hint: 'Used by NAI V5 to define Base Prompt, Character Prompts, and Chinese natural language. Empty uses the built-in default.',
+    builtin: DEFAULT_NAI_V5_SPEC,
     macros: [],
   },
   {

@@ -14,6 +14,7 @@ import {
   safeHistory,
   truncate,
   HISTORY_LIMITS,
+  type ImageRecord,
   type LlmRecord,
 } from './history';
 
@@ -139,13 +140,18 @@ describe('状态流转', () => {
       prompt: '1girl',
       nl: '',
       negative: '',
+      characters: [{ name: 'A', tag: '1girl, black hair', nl: 'left' }],
       seed: 42,
       size: 'portrait',
       floor: 3,
       seq: 0,
     });
     failImage(id, '', true);
-    expect(records[0].status).toBe('aborted');
+    const record = records[0] as ImageRecord;
+    expect(record.status).toBe('aborted');
+    expect(record.characters).toEqual([
+      { name: 'A', tag: '1girl, black hair', nl: 'left' },
+    ]);
   });
 });
 

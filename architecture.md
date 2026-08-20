@@ -143,7 +143,9 @@ runForFloor(floor, opts)
   7. protocol.parseImagePlan 严格校验(JSON 结构/目标位置 ID/禁含子标签/size 宽容降级竖屏);
      changes 全程宽容:单条坏只丢这条,绝不连累 images —— 漏一个角色档案只是它本轮没锚定,
      为它作废整次输出会连图一起没有。图片数按 `minImages～maxImages` 范围:超上限本地硬截断,
-     少于下限(>0 时)抛错交给重试循环 —— 下限是用户明确要求,宁可重试也不交残缺结果
+     少于下限(>0 时)抛错交给重试循环 —— 下限是用户明确要求,宁可重试也不交残缺结果。
+     每图可选 `characters`(V5 原生多角色提示,≤32 条,name/tag/nl,宽容解析单条坏只丢这条),
+     注入时序列化进 `<characters>…</characters>` 子标签;V5 下建档(new)必须带 nl,否则 runner 抛错重试
   8. changes 与柏宝书建档一起转成楼层增量 ops(extra 的 bbiCharChanges),不提前落库
   9. @占位符兜底替换:applyPositionedCharRefs 把 tag/nl 里残留的 @角色名 换成「基线 + 本楼
      ops 重放」后的库 tag。**建档(new)全楼生效**——新角色的固定外貌是本楼全程成立的事实;
@@ -252,6 +254,11 @@ runForFloor(floor, opts)
   渠道页可见可覆盖(存空串 = 跟随模型官方词);正向拼装顺序为
   **画师串 → 画面 tag → 质量词**(画师串来自库,见 §7);
   `.naiv4vibe` 导入导出与官方互通。
+  **NAI V5(`nai-diffusion-5-*`)是另一条协议分支**:`isNai5`/`naiSupportsVibes`/`naiSamplers` 三件套
+  判定——`params_version: 4`、采样器限子集(列表随模型过滤,面板同步)、`v4_prompt` 结构里
+  `char_captions` 填来自协议的 characters(每角色一条,库数量 tag `1girl→girl` 降级、
+  tag+中文 nl 拼一条 caption,负面侧给空 caption 占位)、**不支持 Vibe Transfer**(生成时全部
+  跳过并 toastr 说明原因)、varietyBoost 无效。正向串 V5 且带 nl 时拼成 `tags. nl`(句点分隔)。
 - `chatu8Vibe.ts`:只读智绘姬的 extension_settings + IndexedDB,逐条导入 vibe(内容指纹去重、读取超时、迁移进度)。
   另有三件画师串预设函数(collectChatu8ArtistRefs / detectChatu8Artists / importArtistsFromChatu8):
   读 `yushe` 表 + `yusheid_novelai` 当前选中,positive 两段(fixedPrompt/fixedPrompt_end)按原序
@@ -383,7 +390,7 @@ runForFloor(floor, opts)
 | 设置窗口 UI | src/pages/settings/index.vue |
 | 提示词内置默认(破限/规范/思维链/预填充) | src/state/settings.ts 的 `DEFAULT_*` 常量 |
 | 自动 tag 触发条件 / 去重 / 重试 | src/autoTag/runner.ts |
-| 发给 LLM 的消息组装(顺序/内容) | src/autoTag/prompt.ts |
+| 发给 LLM 的消息组装(顺序/内容) | src/autoTag/prompt.ts(V5 走 DEFAULT_NAI_V5_SPEC:Base+Character 双提示) |
 | LLM 输出协议(JSON 形状/位置 ID/tag 格式) | src/autoTag/protocol.ts |
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
 | 柏宝书状态读取 | src/autoTag/bookMemory.ts |

@@ -98,6 +98,12 @@ function segments(record: HistoryRecord): Segment[] {
   }
   const out: Segment[] = [{ label: '正向提示词', text: record.prompt }];
   if (record.nl) out.push({ label: '自然语言', text: record.nl });
+  for (const character of record.characters ?? []) {
+    out.push({
+      label: `\u89d2\u8272: ${character.name}`,
+      text: [character.tag, character.nl].filter(Boolean).join('\n\n'),
+    });
+  }
   if (record.negative) out.push({ label: '负面', text: record.negative });
   return out;
 }

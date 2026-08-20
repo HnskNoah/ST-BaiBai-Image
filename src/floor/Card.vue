@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 
+import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import { generateComfyImage, randomSeed } from '@/backends/comfyui';
 import { generateNaiImage, naiRandomSeed } from '@/backends/nai';
 import type { Orientation } from '@/backends/size';
@@ -56,6 +57,7 @@ const props = defineProps<{
   nl: string;
   /** tag 原文解析出的动态负面部分(无则空串;生成时写入 %negative_prompt% 占位符)。 */
   negative: string;
+  characters: ImageCharacterPrompt[];
   /** 画幅方向(模型判定,随 tag 持久化):决定用渠道配置里的竖屏还是横屏尺寸。 */
   size: Orientation;
   /** tag 原文(含 <bbi_image> 壳):生成提交与 promptHash 的输入。 */
@@ -120,6 +122,9 @@ const promptText = computed(() =>
   [
     props.prompt,
     props.nl,
+    ...props.characters.map(character =>
+      [`\u89d2\u8272: ${character.name}`, character.tag, character.nl].filter(Boolean).join('\n'),
+    ),
     props.negative ? `Negative: ${props.negative}` : '',
   ].filter(Boolean).join('\n\n'),
 );
@@ -171,6 +176,7 @@ async function generate(): Promise<void> {
     prompt: props.prompt,
     nl: props.nl,
     negative: props.negative,
+    characters: props.characters.map(character => ({ ...character })),
     size: props.size,
   };
   // NAI 需要闸门排队 → 先显示「排队中」;ComfyUI 有服务端队列,直接进 generating
@@ -200,6 +206,7 @@ async function generate(): Promise<void> {
         prompt: job.prompt,
         nl: job.nl,
         negative: job.negative,
+        characters: job.characters,
         seed,
         size: job.size,
         floor: job.messageId,
@@ -207,7 +214,11 @@ async function generate(): Promise<void> {
       }),
     );
     const result = naiActive.value
-      ? await generateNaiImage(settings.nai, { prompt: job.prompt, seed, size: job.size }, signal)
+      ? await generateNaiImage(
+          settings.nai,
+          { prompt: job.prompt, nl: job.nl, characters: job.characters, seed, size: job.size },
+          signal,
+        )
       : await generateComfyImage(
           effectiveComfyConn(),
           {
@@ -454,11 +465,7 @@ onMounted(() => {
 
     <!-- 提示词面板:悬浮 文本按钮唤起,复制按钮跟着面板走 -->
     <div v-if="promptOpen && promptText" class="bbi-figure__prompt-box">
-      <pre class="bbi-figure__prompt">{{ prompt
-        }}<span v-if="nl" class="bbi-figure__prompt-nl">{{ nl }}</span><span
-          v-if="negative"
-          class="bbi-figure__prompt-nl bbi-figure__prompt-negative"
-        >Negative: {{ negative }}</span></pre>
+      <pre class="bbi-figure__prompt">{{ promptText }}</pre>
       <button class="bbi-figure__prompt-copy" type="button" title="复制提示词" @click="copyPrompt">
         <Icon name="copy" :size="14" />
       </button>

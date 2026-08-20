@@ -42,6 +42,7 @@ export function formatEntryForPrompt(entry: CharTagEntry): string {
     if (v) parts.push(`${CHAR_TAG_FIELD_LABELS[f]}=${v}`);
   }
   if (!parts.length && entry.raw.trim()) parts.push(`tag=${entry.raw.trim()}`);
+  if (entry.nl.trim()) parts.push(`nl=${entry.nl.trim()}`);
   return `- ${entry.name}: ${parts.join(', ') || '(未记录字段)'}`;
 }
 
@@ -52,7 +53,7 @@ export function formatEntryForPrompt(entry: CharTagEntry): string {
 export function buildLibraryText(entries: CharTagEntry[]): string {
   if (!entries.length) return '';
   const lines = entries.map(formatEntryForPrompt);
-  return `【角色固定外貌库(系统维护;画面 tag 中请照抄下列字段值,不要改写)】\n${lines.join('\n')}`;
+  return `【角色固定外貌库? [system-maintained; copy fields verbatim into character prompts]\n${lines.join('\n')}`;
 }
 
 /** 旧接口兼容:runner 之外仍有调用方依赖锚定文本形态。 */

@@ -82,6 +82,8 @@ export interface ComfyUISettings extends BackendConn {
 
 /** NAI 生图模型。 */
 export type NaiModel =
+  | 'nai-diffusion-5-full'
+  | 'nai-diffusion-5-curated'
   | 'nai-diffusion-4-5-full'
   | 'nai-diffusion-4-5-curated'
   | 'nai-diffusion-4-full'
@@ -89,7 +91,9 @@ export type NaiModel =
   | 'nai-diffusion-3';
 
 export const NAI_MODELS: { value: NaiModel; label: string }[] = [
-  { value: 'nai-diffusion-4-5-full', label: 'NAI 4.5 Full(最新,无过滤)' },
+  { value: 'nai-diffusion-5-full', label: 'NAI 5 Full(最新,无过滤)' },
+  { value: 'nai-diffusion-5-curated', label: 'NAI 5 Curated(有内容过滤)' },
+  { value: 'nai-diffusion-4-5-full', label: 'NAI 4.5 Full(无过滤)' },
   { value: 'nai-diffusion-4-5-curated', label: 'NAI 4.5 Curated(有内容过滤)' },
   { value: 'nai-diffusion-4-full', label: 'NAI 4 Full' },
   { value: 'nai-diffusion-4-curated-preview', label: 'NAI 4 Curated Preview' },
@@ -488,6 +492,27 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 目标正文里每个有设定的正式角色都已建档或已在库中；库中角色的外貌都照抄了字段值且每张图只写一遍；永久变化都有合法 P编号，且图片使用了该位置应有的新旧档案；tag 是英文正面短 tag、无质量词负面词；张数在设定的最少～最多范围内；要求 nl 时与 tag 描述同一画面。
    - 仅当设定的最少图片数为 0 且确实没有值得画的画面时，images 才可为空；无论图片数量如何都保留应有的建档与 changes。`;
 
+/** NAI V5 native multi-character prompt spec. */
+export const DEFAULT_NAI_V5_SPEC = `[NovelAI V5 Prompt Specification]
+Map every image to one Base Prompt plus zero or more native Character Prompts.
+
+Each image must contain:
+- tag: English comma-separated danbooru tags for the Base Prompt. Put global character counts, scene, composition, camera, lighting, atmosphere, and shared interactions here. Do not put one character's appearance, outfit, or individual action in Base.
+- nl: a coherent Chinese natural-language Base Prompt describing the whole scene, spatial relationships, camera, and overall event.
+- characters: an array of named characters actually visible in the image, ordered left-to-right then top-to-bottom. Every item is {"name":"...","tag":"...","nl":"..."}.
+
+Character Prompt rules:
+1. tag uses English danbooru tags for that character's sex, fixed appearance, current outfit, expression, pose, action, and necessary relative position. Use girl/boy rather than 1girl/2girls; numeric counts belong only in Base.
+2. nl uses Chinese natural language for the same character's appearance, outfit, action, facing, interaction, and approximate position. It may add relationship or spatial detail but must not conflict with tag.
+3. For characters in the fixed appearance library, copy the library Tag fields into that character's tag. Keep appearance wording verbatim, but convert the library sex count tag 1girl/1boy to girl/boy. Library natural-language notes may inform that character's nl. Tag fields remain canonical.
+4. For multi-character interactions, use NovelAI source# / target# / mutual# tags when they clarify actor and target. Do not use ComfyUI's multi-person segmentation convention.
+5. Do not create Character Prompts for absent named characters. Anonymous background crowds remain in Base.
+
+Both Base and Character Prompts must use Tag + Chinese natural language. Tags stabilize identity and attributes; natural language supplies complex relations and spatial semantics. Do not output quality tags, generic negative tags, artist presets, or XML. The backend adds artist and quality tags.
+
+Example:
+{"position":"P2","tag":"2girls, classroom, sunset, medium shot","nl":"\u4e24\u540d\u5c11\u5973\u7ad9\u5728\u5915\u9633\u7167\u8fdb\u6765\u7684\u6559\u5ba4\u4e2d\u3002","characters":[{"name":"Xiaoxue","tag":"girl, long black hair, blue eyes, white dress, source#waving","nl":"\u5973\u5b69\u5728\u753b\u9762\u5de6\u4fa7\u6325\u624b\u3002"}],"size":"landscape"}`;
+
 /** 预填充内置默认:以 <thinking> 开头,引导模型先过思考清单再输出 JSON。 */
 export const DEFAULT_PREFILL_PROMPT = '<thinking>';
 
@@ -499,6 +524,8 @@ export interface AutoTagPrompts {
   jailbreak: string;
   /** NAI 后端 tag 书写规范,拼在任务提示词里;留空回落内置默认(DEFAULT_NAI_SPEC)。 */
   naiSpec: string;
+  /** NAI V5 Base Prompt + Character Prompts spec. */
+  naiV5Spec: string;
   /** ComfyUI 后端 tag 书写规范,拼在任务提示词里;留空回落内置默认(DEFAULT_COMFY_SPEC)。
    *  支持 {{nl}} 宏:开启「生成自然语言」时展开为自然语言规范,关闭时置空;
    *  自定义内容不含宏时,开启开关会把自然语言规范追加在末尾(防止开关静默失效)。 */
@@ -612,13 +639,13 @@ function naiDefaults(): NaiSettings {
     key: '',
     model: 'nai-diffusion-4-5-full',
     undesiredContent: '',
-    sampler: 'k_euler',
-    steps: 28,
-    scale: 5,
+    sampler: 'k_euler_ancestral',
+    steps: 23,
+    scale: 7,
     cfgRescale: 0,
     noiseSchedule: 'karras',
     seed: 0,
-    varietyBoost: true,
+    varietyBoost: false,
     normalizeRefStrength: true,
     concurrency: 1,
     vibes: [],
@@ -659,7 +686,7 @@ function defaults(): ImageSettings {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     },
     excludes: excludesDefaults(),
     storage: { saveAsJpeg: true },
@@ -1131,6 +1158,7 @@ function normalize(raw: unknown): ImageSettings {
       return {
         jailbreak: typeof rp.jailbreak === 'string' ? rp.jailbreak : legacyJailbreak,
         naiSpec: typeof rp.naiSpec === 'string' ? rp.naiSpec : '',
+        naiV5Spec: typeof rp.naiV5Spec === 'string' ? rp.naiV5Spec : '',
         comfySpec: typeof rp.comfySpec === 'string' ? rp.comfySpec : '',
         thinking: typeof rp.thinking === 'string' ? rp.thinking : '',
         prefill: typeof rp.prefill === 'string' ? rp.prefill : '',

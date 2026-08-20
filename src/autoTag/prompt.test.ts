@@ -42,7 +42,7 @@ describe('auto tag prompt', () => {
       maxImages: 3,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '附加规则', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '附加规则', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
 
@@ -85,7 +85,7 @@ describe('auto tag prompt', () => {
       maxImages: 4,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
 
@@ -102,7 +102,7 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const messages = await buildAutoTagMessages(
       context(),
@@ -146,7 +146,7 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     };
 
     const oldTags = [...settings.excludes.customStripTags];
@@ -179,7 +179,7 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
 
@@ -215,7 +215,7 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '自定义清单', prefill: 'custom>' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '自定义清单', prefill: 'custom>' },
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
 
@@ -232,7 +232,7 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const library = '【角色固定外貌库(系统维护)】\n小雪: 1girl, long silver hair';
     const messages = await buildAutoTagMessages(context(), 1, options, null, undefined, library);
@@ -255,7 +255,7 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
 
@@ -272,7 +272,7 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const messages = await buildAutoTagMessages(
       context(),
@@ -289,6 +289,33 @@ describe('auto tag prompt', () => {
     expect(messages.some(message => message.content.includes('柏宝书本次未提供'))).toBe(false);
   });
 
+  it('uses the dedicated NAI V5 Base and Character Prompt contract', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      minImages: 0,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
+    };
+    const oldBackend = settings.defaultBackend;
+    const oldModel = settings.nai.model;
+    try {
+      settings.defaultBackend = 'nai';
+      settings.nai.model = 'nai-diffusion-5-full';
+      const messages = await buildAutoTagMessages(context(), 1, options, null);
+      expect(messages.some(message => message.content.includes('one Base Prompt plus zero or more native Character Prompts'))).toBe(true);
+      expect(messages.some(message => message.content.includes('"characters":['))).toBe(true);
+      expect(messages.some(message => message.content.includes('source# / target# / mutual#'))).toBe(true);
+      expect(messages.some(message => message.content.includes('Character tag uses girl/boy without a numeric count'))).toBe(true);
+      expect(messages.some(message => message.content.includes('every field:"new" change must include a non-empty nl'))).toBe(true);
+    } finally {
+      settings.defaultBackend = oldBackend;
+      settings.nai.model = oldModel;
+    }
+  });
+
   it('requests per-image negative tags only when the ComfyUI workflow uses %negative_prompt%', async () => {
     const options: AutoTagSettings = {
       enabled: true,
@@ -297,7 +324,7 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: { jailbreak: '', naiSpec: '', comfySpec: '', thinking: '', prefill: '' },
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
     };
     const oldBackend = settings.defaultBackend;
     // 工作流改由「当前预设」承载(见 settings.ts 工作流库);默认值恒有一条,直接改它

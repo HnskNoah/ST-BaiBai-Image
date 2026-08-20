@@ -216,6 +216,73 @@ describe('画师串拼装', () => {
   });
 });
 
+describe('NAI V5 support', () => {
+  it('uses official model defaults and params_version 4', () => {
+    for (const model of ['nai-diffusion-5-full', 'nai-diffusion-5-curated'] as const) {
+      expect(naiDefaultQualityTags(model)).toBe('very aesthetic, masterpiece, no text');
+      expect(naiDefaultUndesired(model)).toContain('dithering, halftone, screentone');
+      const params = buildNaiParameters(nai({ model }), { prompt: '1girl', seed: 42 });
+      expect(params.params_version).toBe(4);
+      expect(params.v4_prompt).toBeTruthy();
+      expect(params.skip_cfg_above_sigma).toBeNull();
+      expect(params.sampler).toBe('k_euler');
+    }
+    const fallback = buildNaiParameters(nai({ model: 'nai-diffusion-5-full', sampler: 'ddim_v3' }), {
+      prompt: '1girl',
+      seed: 42,
+    });
+    expect(fallback.sampler).toBe('k_euler_ancestral');
+  });
+
+  it('maps Base Tag + NL and native Character Prompts into the V5 caption schema', () => {
+    const settings = nai({
+      model: 'nai-diffusion-5-full',
+      qualityTags: 'very aesthetic',
+      artistPresets: [{ id: 'artist', name: 'Artist', prompt: 'artist:test' }],
+      activeArtistId: 'artist',
+    });
+    const params = buildNaiParameters(settings, {
+      prompt: '2girls, classroom, sunset',
+      nl: 'Two girls in a sunset classroom.',
+      characters: [
+        { name: 'A', tag: '1girl, black hair, white dress', nl: 'On the left, waving.' },
+        { name: 'B', tag: 'girl, silver hair, red dress', nl: '' },
+      ],
+      seed: 42,
+    });
+    const positive = params.v4_prompt as {
+      caption: { base_caption: string; char_captions: Array<{ char_caption: string; centers: unknown[] }> };
+      use_coords: boolean;
+      use_order: boolean;
+    };
+    const negative = params.v4_negative_prompt as {
+      caption: { char_captions: Array<{ char_caption: string; centers: unknown[] }> };
+    };
+    expect(positive.caption.base_caption).toBe(
+      'artist:test, 2girls, classroom, sunset, very aesthetic. Two girls in a sunset classroom.',
+    );
+    expect(positive.caption.char_captions).toEqual([
+      { char_caption: 'girl, black hair, white dress. On the left, waving.', centers: [{ x: 0.5, y: 0.5 }] },
+      { char_caption: 'girl, silver hair, red dress', centers: [{ x: 0.5, y: 0.5 }] },
+    ]);
+    expect(negative.caption.char_captions).toEqual([
+      { char_caption: '', centers: [{ x: 0.5, y: 0.5 }] },
+      { char_caption: '', centers: [{ x: 0.5, y: 0.5 }] },
+    ]);
+    expect(positive.use_coords).toBe(false);
+    expect(positive.use_order).toBe(true);
+  });
+
+  it('uses official V5 vibe keys but skips transfer while unsupported', () => {
+    expect(vibeModelKey('nai-diffusion-5-full')).toBe('v5full');
+    expect(vibeModelKey('nai-diffusion-5-curated')).toBe('v5curated');
+    const settings = nai({ model: 'nai-diffusion-5-full', vibes: [vibe({ name: 'V5 skip' })] });
+    const params = buildNaiParameters(settings, { prompt: 'x', seed: 1 });
+    expect(applyVibes(params, settings, new Map([['v1', vibeData()]]))).toEqual(['V5 skip']);
+    expect(params.reference_image_multiple_cached).toBeUndefined();
+  });
+});
+
 describe('buildNaiParameters', () => {
   it('v4 系带 v4_prompt 结构', () => {
     const p = buildNaiParameters(nai(), { prompt: '1girl', seed: 42 });

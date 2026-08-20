@@ -23,7 +23,7 @@ describe('auto tag position protocol', () => {
 \`\`\``;
     expect(parseImagePlan(raw, segments, 1)).toEqual({
       images: [
-        { position: 'P1', sourceLine: 0, tag: 'first scene', nl: '', negative: '', size: 'portrait' },
+        { position: 'P1', sourceLine: 0, tag: 'first scene', nl: '', negative: '', characters: [], size: 'portrait' },
       ],
       changes: [],
     });
@@ -53,9 +53,20 @@ describe('auto tag position protocol', () => {
     expect(parseImagePlanWithRange(raw, segments, 9, 2).images).toHaveLength(2);
   });
 
+  it('preserves natural-language appearance when creating a character profile', () => {
+    const raw = JSON.stringify({
+      images: [],
+      changes: [{
+        name: 'A', field: 'new', fields: { hair: 'long black hair', eyes: 'blue eyes' },
+        nl: 'A Chinese fixed-appearance description.', position: 'P1',
+      }],
+    });
+    expect(parseImagePlan(raw, segments, 1).changes[0].nl).toBe('A Chinese fixed-appearance description.');
+  });
+
   it('accepts the legacy prompt key as an alias of tag', () => {
     expect(parseImagePlan('{"images":[{"position":"P1","prompt":"scene"}]}', segments, 1)).toEqual({
-      images: [{ position: 'P1', sourceLine: 0, tag: 'scene', nl: '', negative: '', size: 'portrait' }],
+      images: [{ position: 'P1', sourceLine: 0, tag: 'scene', nl: '', negative: '', characters: [], size: 'portrait' }],
       changes: [],
     });
   });
@@ -70,6 +81,7 @@ describe('auto tag position protocol', () => {
           tag: '1girl',
           nl: 'A girl. She smiles.',
           negative: '',
+          characters: [],
           size: 'portrait',
         },
       ],
@@ -77,11 +89,31 @@ describe('auto tag position protocol', () => {
     });
   });
 
+
+  it('parses V5 character prompts and drops malformed character entries only', () => {
+    const raw = JSON.stringify({
+      images: [{
+        position: 'P1',
+        tag: '2girls, classroom',
+        nl: 'base scene',
+        characters: [
+          { name: 'A', tag: 'girl, black hair', nl: 'left' },
+          { name: '', tag: 'girl' },
+          { name: 'B', prompt: 'girl, silver hair' },
+        ],
+      }],
+    });
+    expect(parseImagePlan(raw, segments, 1).images[0].characters).toEqual([
+      { name: 'A', tag: 'girl, black hair', nl: 'left' },
+      { name: 'B', tag: 'girl, silver hair', nl: '' },
+    ]);
+  });
+
   it('takes the landscape orientation from the size key', () => {
     const raw = '{"images":[{"position":"P1","tag":"2girls","size":"landscape"}]}';
     expect(parseImagePlan(raw, segments, 1)).toEqual({
       images: [
-        { position: 'P1', sourceLine: 0, tag: '2girls', nl: '', negative: '', size: 'landscape' },
+        { position: 'P1', sourceLine: 0, tag: '2girls', nl: '', negative: '', characters: [], size: 'landscape' },
       ],
       changes: [],
     });
@@ -168,8 +200,8 @@ describe('auto tag position protocol', () => {
   it('inserts multiple tags after the same line in array order', () => {
     expect(
       injectImageTags('第一行\n第二行', [
-        { position: 'P1', sourceLine: 0, tag: 'prompt a', nl: '', negative: '', size: 'portrait' },
-        { position: 'P1', sourceLine: 0, tag: 'prompt b', nl: '', negative: '', size: 'landscape' },
+        { position: 'P1', sourceLine: 0, tag: 'prompt a', nl: '', negative: '', characters: [], size: 'portrait' },
+        { position: 'P1', sourceLine: 0, tag: 'prompt b', nl: '', negative: '', characters: [], size: 'landscape' },
       ]),
     ).toBe(
       '第一行\n<bbi_image>prompt a<size>portrait</size></bbi_image>\n<bbi_image>prompt b<size>landscape</size></bbi_image>\n第二行',
@@ -185,6 +217,7 @@ describe('auto tag position protocol', () => {
           tag: '1girl, moonlight',
           nl: 'A girl in moonlight.',
           negative: '',
+          characters: [],
           size: 'portrait',
         },
       ]),
@@ -202,6 +235,7 @@ describe('auto tag position protocol', () => {
           tag: '1girl',
           nl: '',
           negative: 'extra people, duplicate character',
+          characters: [],
           size: 'portrait',
         },
       ]),
@@ -210,11 +244,20 @@ describe('auto tag position protocol', () => {
     );
   });
 
+
+  it('serializes V5 character prompts as a JSON sub-tag', () => {
+    const output = injectImageTags('line', [{
+      position: 'P1', sourceLine: 0, tag: '1girl', nl: 'base', negative: '',
+      characters: [{ name: 'A', tag: 'girl, black hair', nl: 'left' }], size: 'portrait',
+    }]);
+    expect(output).toContain('<characters>[{"name":"A","tag":"girl, black hair","nl":"left"}]</characters>');
+  });
+
   it('preserves CRLF and appends correctly after the final line', () => {
     expect(
       injectImageTags('第一行\r\n\r\n第三行', [
-        { position: 'P1', sourceLine: 0, tag: 'prompt a', nl: '', negative: '', size: 'portrait' },
-        { position: 'P2', sourceLine: 2, tag: 'prompt c', nl: '', negative: '', size: 'portrait' },
+        { position: 'P1', sourceLine: 0, tag: 'prompt a', nl: '', negative: '', characters: [], size: 'portrait' },
+        { position: 'P2', sourceLine: 2, tag: 'prompt c', nl: '', negative: '', characters: [], size: 'portrait' },
       ]),
     ).toBe(
       '第一行\r\n<bbi_image>prompt a<size>portrait</size></bbi_image>\r\n\r\n第三行\r\n<bbi_image>prompt c<size>portrait</size></bbi_image>',

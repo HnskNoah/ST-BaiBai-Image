@@ -1,3 +1,4 @@
+import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import { normalizeOrientation, type Orientation } from '@/backends/size';
 import { getContext } from '@/st/context';
 
@@ -100,6 +101,7 @@ export interface ImageTagContent {
   nl: string;
   /** 本画面动态负面 tag：<negative> 子标签内容，无则空串。 */
   negative: string;
+  characters: ImageCharacterPrompt[];
   /** 画幅方向：<size> 子标签内容，无/不可识别则竖屏（存量 tag 即走这条，行为与改动前一致）。 */
   size: Orientation;
 }
@@ -120,18 +122,38 @@ export function parseImageTagContent(raw: string): ImageTagContent {
   const nl = nlMatch ? oneLine(nlMatch[1]) : '';
   const negativeMatch = inner.match(/<negative>([\s\S]*?)<\/negative>/i);
   const negative = negativeMatch ? oneLine(negativeMatch[1]) : '';
+  const charactersMatch = inner.match(/<characters>([\s\S]*?)<\/characters>/i);
+  let characters: ImageCharacterPrompt[] = [];
+  if (charactersMatch) {
+    try {
+      const parsed = JSON.parse(charactersMatch[1]);
+      if (Array.isArray(parsed)) {
+        characters = parsed.slice(0, 32).flatMap(item => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+          const rawItem = item as Record<string, unknown>;
+          const name = oneLine(typeof rawItem.name === 'string' ? rawItem.name : '');
+          const tag = oneLine(typeof rawItem.tag === 'string' ? rawItem.tag : '');
+          const nl = oneLine(typeof rawItem.nl === 'string' ? rawItem.nl : '');
+          return name && tag ? [{ name, tag, nl }] : [];
+        });
+      }
+    } catch {
+      // Invalid character JSON must not break the otherwise valid Base prompt.
+    }
+  }
   const sizeMatch = inner.match(/<size>([\s\S]*?)<\/size>/i);
   const size = normalizeOrientation(sizeMatch ? oneLine(sizeMatch[1]) : '');
   const withoutSubTags = inner
     .replace(/<nl>[\s\S]*?<\/nl>/gi, '')
     .replace(/<negative>[\s\S]*?<\/negative>/gi, '')
+    .replace(/<characters>[\s\S]*?<\/characters>/gi, '')
     .replace(/<size>[\s\S]*?<\/size>/gi, '');
   const explicit = [...withoutSubTags.matchAll(/<tag>([\s\S]*?)<\/tag>/gi)]
     .map(match => oneLine(match[1]))
     .filter(Boolean);
   const bare = oneLine(withoutSubTags.replace(/<tag>[\s\S]*?<\/tag>/gi, ''));
   const tag = [...(bare ? [bare] : []), ...explicit].join(', ');
-  return { tag, nl, negative, size };
+  return { tag, nl, negative, characters, size };
 }
 
 const MANAGED_SCRIPTS: Array<() => ManagedRegexScript> = [
