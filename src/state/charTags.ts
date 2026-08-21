@@ -4,11 +4,13 @@ import { reactive } from 'vue';
 /**
  * 角色固定外貌库。
  *
- * 真源分两层:
+ * 真源分三层:
+ * - 全局库(跨聊天):extensionSettings,由 globalCharTags.ts 管理,仅用户手动维护,
+ *   AI 的 changes 对锁定名一律无效;经 setGlobalCharTagSource 注入,本模块不反向依赖它。
  * - 手动条目/旧版快照:chatMetadata[META_KEY],不随楼层删除。
  * - 自动建档与变化:目标消息 extra[BBI_CHAR_EXTRA_KEY],随消息/swipe 一起保存和删除。
  *
- * charTagLib 只是响应式派生缓存:基线 + 按楼层物理顺序重放自动变化。
+ * charTagLib 只是响应式派生缓存:合并基线(本聊天优先,全局补同名空缺) + 按楼层物理顺序重放自动变化。
  */
 
 export type CharTagField = 'sex' | 'hair' | 'eyes' | 'skin' | 'body' | 'extra' | 'outfit';
@@ -95,7 +97,56 @@ interface CharTagStore {
 }
 
 export const charTagLib = reactive<{ entries: CharTagEntry[] }>({ entries: [] });
+/** 本聊天基线(手动层)里的名字,响应式——UI 用它判断「本聊天覆盖全局」。随 recompute 同步。 */
+export const charTagBaseNames = reactive<Set<string>>(new Set());
 let baseEntries: CharTagEntry[] = [];
+
+/**
+ * 全局角色库(跨聊天)的条目来源,由 globalCharTags.ts 启动时注入。
+ * 走注入而不是 import:全局模块要用这里的 normalize/CRUD,直接互转会成模块环。
+ */
+let globalCharTagSource: () => CharTagEntry[] = () => [];
+
+export function setGlobalCharTagSource(provider: () => CharTagEntry[]): void {
+  globalCharTagSource = provider;
+}
+
+/**
+ * 派生种子 = 本聊天基线 + 全局库补同名空缺(本聊天同名条目优先,即「本聊天覆盖全局」)。
+ */
+export function mergeCharTagSeed(
+  chatBaseEntries: CharTagEntry[],
+  globalEntries: CharTagEntry[],
+): CharTagEntry[] {
+  if (!globalEntries.length) return chatBaseEntries;
+  const chatNames = new Set(chatBaseEntries.map(entry => entry.name));
+  return [...chatBaseEntries, ...globalEntries.filter(entry => !chatNames.has(entry.name))];
+}
+
+/**
+ * 锁定名集:全局库里有、且本聊天基线没有同名条目的角色。
+ * AI 的 changes 对锁定名一律无效——全局条目只由用户手动维护,tag 有问题用户自己改。
+ * 本聊天手动建同名条目即移出锁定(用户明确要的「本聊天覆盖」,AI 可照常变更它)。
+ */
+export function computeLockedCharTagNames(
+  chatBaseEntries: CharTagEntry[],
+  globalEntries: CharTagEntry[],
+): Set<string> {
+  if (!globalEntries.length) return new Set();
+  const chatNames = new Set(chatBaseEntries.map(entry => entry.name));
+  return new Set(
+    globalEntries.filter(entry => !chatNames.has(entry.name)).map(entry => entry.name),
+  );
+}
+
+function mergedSeedEntries(): CharTagEntry[] {
+  return mergeCharTagSeed(baseEntries, globalCharTagSource());
+}
+
+/** 当前生效的锁定名集(全局 ⊖ 本聊天基线)。 */
+export function lockedCharTagNames(): ReadonlySet<string> {
+  return computeLockedCharTagNames(baseEntries, globalCharTagSource());
+}
 
 export function emptyCharFields(): Record<CharTagField, string> {
   return { sex: '', hair: '', eyes: '', skin: '', body: '', extra: '', outfit: '' };
@@ -285,9 +336,12 @@ export function applyCharTagOps(
   entries: CharTagEntry[],
   ops: CharTagAutoOp[],
   floor: number,
+  locked?: ReadonlySet<string>,
 ): CharTagEntry[] {
   const out = entries.map(cloneEntry);
   for (const op of ops) {
+    // 锁定角色(全局库)不接受 AI changes:无论 new 还是 set 一律丢弃
+    if (locked?.has(op.name)) continue;
     if (op.kind === 'new') {
       if (out.some(entry => entry.name === op.name)) continue;
       const entry: CharTagEntry = {
@@ -337,6 +391,7 @@ export function deriveCharTags(
   seedEntries: CharTagEntry[],
   chat: STMessage[],
   upToExclusive = chat.length,
+  locked?: ReadonlySet<string>,
 ): CharTagEntry[] {
   let entries = seedEntries.map(cloneEntry);
   const end = Math.min(Math.max(0, upToExclusive), chat.length);
@@ -344,14 +399,14 @@ export function deriveCharTags(
     const message = chat[floor];
     const delta = readCharTagFloorDelta(message);
     if (!delta || delta.swipe !== activeSwipe(message)) continue;
-    entries = applyCharTagOps(entries, delta.ops, floor);
+    entries = applyCharTagOps(entries, delta.ops, floor, locked);
   }
   return entries;
 }
 
 export function charTagsBeforeFloor(floor: number): CharTagEntry[] {
   const chat = getContext()?.chat ?? [];
-  return deriveCharTags(baseEntries, chat, floor);
+  return deriveCharTags(mergedSeedEntries(), chat, floor, lockedCharTagNames());
 }
 
 export function makeCharTagFloorDelta(ops: CharTagAutoOp[], swipe: number): CharTagFloorDelta | undefined {
@@ -360,7 +415,9 @@ export function makeCharTagFloorDelta(ops: CharTagAutoOp[], swipe: number): Char
 
 export function recomputeCharTags(): void {
   const chat = getContext()?.chat ?? [];
-  charTagLib.entries = deriveCharTags(baseEntries, chat);
+  charTagLib.entries = deriveCharTags(mergedSeedEntries(), chat, chat.length, lockedCharTagNames());
+  charTagBaseNames.clear();
+  for (const entry of baseEntries) charTagBaseNames.add(entry.name);
 }
 
 export function hydrateCharTags(): void {

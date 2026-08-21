@@ -15,6 +15,7 @@ import {
   createCharTagNewOp,
   createCharTagSetOp,
   emptyCharFields,
+  lockedCharTagNames,
   makeCharTagFloorDelta,
   readCharTagFloorDelta,
   recomputeCharTags,
@@ -144,8 +145,10 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
   try {
     const memory = readBookMemory(floor, context.chat[floor]?.mes ?? '', context.name1);
     const entriesBefore = charTagsBeforeFloor(floor);
+    // 锁定名(全局库 ⊖ 本聊天基线):AI 的 changes 对这些名字一律无效,库文本里带 [locked] 标记
+    const lockedNames = lockedCharTagNames();
     // 纯本地渲染:建档由主请求在同一次输出里完成(changes 的 field="new")
-    const anchors = resolveCharAnchors(entriesBefore);
+    const anchors = resolveCharAnchors(entriesBefore, lockedNames);
     const messages = await buildAutoTagMessages(
       context,
       floor,
@@ -212,7 +215,12 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     }
 
     const planOps = planChangeOps(plan);
-    const floorOps = planOps.map(item => item.op);
+    // 锁定角色(全局库)不接受 AI changes:丢弃,不写入楼层、不参与 @替换。
+    // 重放侧 applyCharTagOps 也会按锁定名再拦一次(旧消息里可能已存这类 ops)。
+    const effectiveOps = lockedNames.size
+      ? planOps.filter(item => !lockedNames.has(item.op.name))
+      : planOps;
+    const floorOps = effectiveOps.map(item => item.op);
     const previousDelta = readCharTagFloorDelta(message);
 
     // @占位符按正文位置替换：变化前图片用旧档，变化位置及之后用新档。
@@ -221,18 +229,20 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       const tagRes = applyPositionedCharRefs(
         image.tag,
         anchors.entries,
-        planOps,
+        effectiveOps,
         image.sourceLine,
         'tag',
+        lockedNames,
       );
       if (tagRes.text) image.tag = tagRes.text;
       if (image.nl) {
         const nlRes = applyPositionedCharRefs(
           image.nl,
           anchors.entries,
-          planOps,
+          effectiveOps,
           image.sourceLine,
           'nl',
+          lockedNames,
         );
         image.nl = nlRes.text;
         for (const n of nlRes.unknown) unknownNames.add(n);
@@ -241,9 +251,10 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         const charTag = applyPositionedCharRefs(
           character.tag,
           anchors.entries,
-          planOps,
+          effectiveOps,
           image.sourceLine,
           'tag',
+          lockedNames,
         );
         character.tag = charTag.text;
         for (const n of charTag.unknown) unknownNames.add(n);
@@ -251,9 +262,10 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           const charNl = applyPositionedCharRefs(
             character.nl,
             anchors.entries,
-            planOps,
+            effectiveOps,
             image.sourceLine,
             'nl',
+            lockedNames,
           );
           character.nl = charNl.text;
           for (const n of charNl.unknown) unknownNames.add(n);

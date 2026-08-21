@@ -48,6 +48,18 @@ describe('formatEntryForPrompt / buildLibraryText', () => {
   it('returns empty string for no entries', () => {
     expect(buildLibraryText([])).toBe('');
   });
+
+  it('marks locked entries and declares immutability in the header', () => {
+    const text = buildLibraryText(
+      [entry('小雪', { sex: '1girl' }), entry('张三', { sex: '1boy' })],
+      new Set(['小雪']),
+    );
+    expect(text).toContain('- 小雪 [locked]: 性别=1girl');
+    expect(text).toContain('- 张三: 性别=1boy');
+    expect(text).toContain('[locked] are global and immutable');
+    // 无锁定名时头部保持原样(不带锁定说明)
+    expect(buildLibraryText([entry('小雪', { sex: '1girl' })])).not.toContain('immutable');
+  });
 });
 
 describe('applyCharRefs', () => {
@@ -161,5 +173,20 @@ describe('positioned character state', () => {
       unknown: [],
     });
     expect(applyPositionedCharRefs('@阿黛尔, standing', [], ops, 2).text).toBe(expected);
+  });
+
+  it('ignores AI changes targeting locked (global) names', () => {
+    const base = [entry('玩家', { sex: '1boy', hair: 'short black hair' })];
+    const dye = createCharTagSetOp('玩家', 'hair', 'long red hair', '染发')!;
+    const ops = [{ op: dye, sourceLine: 0 }];
+    const locked = new Set(['玩家']);
+    // 锁定:set 被丢弃,始终用库中值
+    expect(applyPositionedCharRefs('@玩家, standing', base, ops, 5, 'tag', locked).text).toBe(
+      '1boy, short black hair, standing',
+    );
+    // 不锁定:照旧按位置生效
+    expect(applyPositionedCharRefs('@玩家, standing', base, ops, 5).text).toBe(
+      '1boy, long red hair, standing',
+    );
   });
 });

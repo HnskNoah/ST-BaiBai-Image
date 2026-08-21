@@ -34,7 +34,10 @@ src/
 │   ├── ui.ts          # 窗口开关/主题/导航/悬浮球;activePage 存 localStorage
 │   │                  # (纯浏览态都走 localStorage:渠道页签记忆同理,在 backend/index.vue)
 │   ├── history.ts     # 请求历史(LLM 推理+生图)模块级内存 store,刻意不持久化
-│   └── charTags.ts    # 角色固定外貌库 v3:手动基线(chatMetadata)+ AI 楼层增量(消息 extra)两层
+│   ├── charTags.ts    # 角色固定外貌库:本聊天基线(chatMetadata)+ AI 楼层增量(消息 extra),
+│   │                  # 全局库经 setGlobalCharTagSource 注入合并;锁定名拦截 AI changes
+│   └── globalCharTags.ts # 全局角色库(extensionSettings,跨聊天/跨设备):仅手动维护的冻结模板,
+│                      # AI 永不可写;提升为全局/复制回本聊天两条迁移路径
 ├── api/
 │   └── client.ts      # LLM 请求:副 API 走 ST 服务端代理 / 跟随主 API 走 generateRaw
 ├── autoTag/           # ★ 链路 A:自动生 tag(独立 LLM 请求 → 协议校验 → 注入正文)
@@ -71,7 +74,7 @@ src/
 ├── pages/             # 主窗口的分页(注册表在 pages/registry.ts)
 │   ├── backend/index.vue      # 「渠道」页:页签(webui 已隐藏)+ 各后端面板
 │   │   └── panels/            # ComfyUIPanel / NaiPanel / WebUIPanel(隐藏,代码保留)
-│   ├── characters/index.vue   # 「角色管理」页:固定外貌 tag 库 CRUD
+│   ├── characters/index.vue   # 「角色管理」页:全局/本聊天两区卡片式外貌库 CRUD + 历史回滚
 │   ├── history/index.vue      # 「请求历史」页:调试辅助(LLM 提示词/响应/生图元信息)
 │   └── settings/index.vue     # 「设置」页:渠道管理/自动 tag/提示词编辑/界面偏好(最大页)
 ├── components/       # 通用组件:BbiSelect/BbiTextarea/Collapsible/ConfirmDialog/FloatingOrb/Icon/ModalMask/NavBar
@@ -106,7 +109,8 @@ src/
 | `extensionSettings['baibai_image']` | state/settings.ts | 本插件设置(全局,跨设备同步) |
 | `extensionSettings['baibai_api_channels']` | state/settings.ts | 跨「柏宝」插件共享的副 API 渠道(revision + 广播事件同步) |
 | `extensionSettings.regex` | st/imageTagRegex.ts | 托管两条正则(固定 id,幂等注册/覆盖) |
-| `chatMetadata['baibai_image_char_tags']` | state/charTags.ts | 角色库**手动基线**(仅当前聊天);AI 自动变化存各消息 extra `bbiCharChanges` |
+| `chatMetadata['baibai_image_char_tags']` | state/charTags.ts | 角色库**本聊天手动基线**;AI 自动变化存各消息 extra `bbiCharChanges` |
+| `extensionSettings['baibai_image_char_global']` | state/globalCharTags.ts | **全局角色库**(跨聊天,revision + 广播事件);仅手动维护,AI changes 按锁定名丢弃 |
 | ST 事件 | 各 bind 处 | `CHARACTER_MESSAGE_RENDERED / USER_MESSAGE_RENDERED / MESSAGE_UPDATED / MESSAGE_SWIPED / MESSAGE_DELETED / CHAT_CHANGED` |
 | `generateRaw` | api/client.ts | 跟随主 API 的一次性补全(ST 稳定 API) |
 | `getWorldInfoPrompt` / 动态 import `checkWorldInfo` | autoTag/context.ts | 世界书激活(后者拿条目对象可逐条渲染;取不到自动降级前者) |
@@ -238,7 +242,8 @@ runForFloor(floor, opts)
 到 `modalHost`(需要 `--bbi-*` 变量),不能挂卡片自己的 shadow——会被 `.mes_text` 的层叠上下文裁掉。
 
 **存储(floor/storage.ts)**,两层分离:
-- 图片二进制 → ST 文件系统 `user/files/bbi_<chatId>_<swipeId>_<promptHash>-<genId>.<ext>`;
+- 图片二进制 → ST 文件系统 `user/files/bbi_<角色名哈希>_<swipeId>_<promptHash>-<genId>.<ext>`
+  (角色名经 promptHash 稳定哈希,避免中文/空格被替换成连串下划线;同角色跨聊天落同一前缀);
 - 元数据 → `message.extra.bbiImage = { [swipeId]: { [promptHash]: BbiImageEntry[] } }`
   (历史时间正序,卡片翻页;`slotSeq` 隔离同楼多 tag)。
 - 写回用 CAS 循环(`mutateStore`,引用比对 + `saveChat`);保存顺序:先文件后指针 / 删时先指针后文件。
@@ -349,13 +354,22 @@ runForFloor(floor, opts)
   共享存储创建时播种默认条目名规则 `\[mvu[\s\S]*?\]`(只发一次,删了不补回)。
 - **ui(本机 + 同步)**:窗口开关/当前页(activePage 存 localStorage)是纯本机态;
   主题/导航/悬浮球属真设置,写入 `settings.ui` 走跨设备同步。
-- **charTags(仅当前聊天,version 3,两层真源)**:
-  - **手动基线**:存 `chatMetadata['baibai_image_char_tags']`,手动编辑/回滚/旧版快照落这里,
+- **charTags(三层真源:全局库 + 本聊天手动基线 + AI 楼层增量)**:
+  - **全局库**:存 `extensionSettings['baibai_image_char_global']`(globalCharTags.ts,
+    协议同共享渠道:revision + 指纹 + 广播事件),跨聊天/跨设备。定位是**冻结模板**:
+    只由用户手动增删改或「提升为全局」写入,不记 history;AI 的 changes 对锁定名
+    (全局独有、本聊天无同名条目的角色)一律丢弃——重放(applyCharTagOps)与
+    @替换(applyPositionedCharRefs)双侧拦截,runner 写楼层增量前也先滤一遍;
+    库文本里锁定条目带 [locked] 标记,提示词声明其不可变。本聊天手动建同名条目
+    即覆盖全局并解锁(「复制到本聊天」按钮走的就是这条);「提升为全局」把当前生效值
+    快照进全局后删本聊天副本、清同名楼层 ops,由全局接管。
+  - **本聊天手动基线**:存 `chatMetadata['baibai_image_char_tags']`,手动编辑/回滚/旧版快照落这里,
     不随楼层删除。
   - **AI 楼层增量**:自动建档与 changes 写进目标消息 `extra['bbiCharChanges']`
     (CharTagFloorDelta: v/swipe/ops;op 分 new/set 两种),与正文同一 CAS 写回成功才落盘,
     楼层/swipe 删除时自然失效(增量带 swipe 匹配)。
-  - `charTagLib` 只是响应式派生缓存:基线 + 按楼层物理顺序重放增量(deriveCharTags);
+  - `charTagLib` 只是响应式派生缓存:合并种子(本聊天优先,全局补同名空缺,
+    mergeCharTagSeed)+ 按楼层物理顺序重放增量(deriveCharTags,带锁定名过滤);
     `charTagsBeforeFloor(floor)` 取楼层时刻快照;MESSAGE_DELETED/MESSAGE_SWIPED 后重算。
   - 手动编辑/删除 = 用户接管:detachFromExistingFloors 清掉该角色在旧楼层里的同名操作
     (压进手动基线),之后新楼层仍可继续被 AI 变更。

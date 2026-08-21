@@ -13,7 +13,7 @@ import { settings } from '@/state/settings';
  *   最新在末尾，卡片翻页浏览）；水合时用当前 tag 原文重算 hash 做 stale 检测。
  *
  * 命名平铺（实测修正：validateAssetFileName 只允许 [a-zA-Z0-9_.-]，拒绝斜杠子目录）：
- *   bbi_<chatId>_<swipeId>_<promptHash>-<generationId>.<ext>
+ *   bbi_<characterNameHash>_<swipeId>_<promptHash>-<generationId>.<ext>
  */
 
 export interface BbiImageEntry {
@@ -57,16 +57,16 @@ export function generationId(): string {
   return `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
-/** 平铺文件名：chatId 中的非法字符（非字母数字 _ -）替换为 _。 */
+/** 平铺文件名：角色卡名称哈希化，避免中文名称被替换成连续下划线。 */
 export function imageFileName(
-  chatId: string,
+  characterName: string,
   swipeId: number,
   hash: string,
   genId: string,
   ext: string,
 ): string {
-  const safeChatId = chatId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return `bbi_${safeChatId}_${swipeId}_${hash}-${genId}.${ext}`;
+  const characterHash = promptHash(characterName.trim() || 'unknown');
+  return `bbi_${characterHash}_${swipeId}_${hash}-${genId}.${ext}`;
 }
 
 /* —— extra 读写（纯函数） —— */
@@ -305,7 +305,7 @@ export async function saveImageResult(
   const genId = generationId();
   // 先按设置决定落盘格式(开关开启时重编码为 JPG)，文件名后缀跟随实际格式
   const { base64, format } = await prepareImageForStorage(result);
-  const name = imageFileName(chatId, swipeId, hash, genId, format);
+  const name = imageFileName(ctx.name2?.trim() || chatId, swipeId, hash, genId, format);
   const path = await uploadImageFile(name, base64);
 
   const entry: BbiImageEntry = {

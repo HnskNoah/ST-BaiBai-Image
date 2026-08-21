@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BBI_CHAR_EXTRA_KEY,
+  applyCharTagOps,
+  computeLockedCharTagNames,
   createCharTagNewOp,
   createCharTagSetOp,
   deriveCharTags,
   emptyCharFields,
+  mergeCharTagSeed,
   normalizeCharTagStore,
   type CharTagAutoOp,
 } from '@/state/charTags';
@@ -175,5 +178,63 @@ describe('floor-owned character changes', () => {
       desc: '',
     })!;
     expect(deriveCharTags([], [floorMessage([create], 1, 0)])).toEqual([]);
+  });
+});
+
+describe('global library merge & lock', () => {
+  const globalEntry = (name: string, fields: Record<string, string>) => ({
+    name,
+    fields: { ...emptyCharFields(), ...fields },
+    raw: '',
+    nl: '',
+    source: 'manual' as const,
+    desc: '',
+    history: [],
+  });
+
+  it('mergeCharTagSeed: 本聊天同名条目优先,全局只补同名空缺', () => {
+    const chat = [globalEntry('小雪', { hair: 'short red hair' })];
+    const global = [globalEntry('小雪', { hair: 'long black hair' }), globalEntry('玩家', { sex: '1boy' })];
+    const merged = mergeCharTagSeed(chat, global);
+    expect(merged).toHaveLength(2);
+    expect(merged.find(e => e.name === '小雪')?.fields.hair).toBe('short red hair');
+    expect(merged.find(e => e.name === '玩家')?.fields.sex).toBe('1boy');
+    // 无全局时原样返回(零开销路径)
+    expect(mergeCharTagSeed(chat, [])).toBe(chat);
+  });
+
+  it('computeLockedCharTagNames: 只有「全局独有」的名字被锁定;本聊天同名即解锁', () => {
+    const global = [globalEntry('玩家', { sex: '1boy' }), globalEntry('小雪', { sex: '1girl' })];
+    expect([...computeLockedCharTagNames([], global)].sort()).toEqual(['小雪', '玩家']);
+    expect([...computeLockedCharTagNames([globalEntry('小雪', { sex: '1girl' })], global)]).toEqual(['玩家']);
+    expect(computeLockedCharTagNames([], []).size).toBe(0);
+  });
+
+  it('applyCharTagOps: 锁定名的 new 与 set 一律丢弃', () => {
+    const locked = new Set(['玩家']);
+    const create = createCharTagNewOp({
+      name: '玩家',
+      fields: { ...emptyCharFields(), sex: '1boy', hair: 'short black hair' },
+      raw: '',
+      nl: '',
+      source: 'ai',
+      desc: '',
+    })!;
+    const dye = createCharTagSetOp('玩家', 'hair', 'long red hair', '染发')!;
+    const base = [globalEntry('玩家', { sex: '1boy', hair: 'short black hair' })];
+    const out = applyCharTagOps(base, [create, dye], 3, locked);
+    expect(out[0].fields.hair).toBe('short black hair');
+    expect(out[0].history).toEqual([]);
+    // 不传 locked 时旧行为不变
+    const out2 = applyCharTagOps(base, [dye], 3);
+    expect(out2[0].fields.hair).toBe('long red hair');
+  });
+
+  it('deriveCharTags: 旧消息里针对锁定角色的楼层 ops 重放时失效', () => {
+    const dye = createCharTagSetOp('玩家', 'hair', 'long red hair', '染发')!;
+    const chat = [floorMessage([dye])];
+    const base = [globalEntry('玩家', { sex: '1boy', hair: 'short black hair' })];
+    expect(deriveCharTags(base, chat, chat.length, new Set(['玩家']))[0].fields.hair).toBe('short black hair');
+    expect(deriveCharTags(base, chat)[0].fields.hair).toBe('long red hair');
   });
 });

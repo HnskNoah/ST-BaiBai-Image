@@ -4,6 +4,7 @@ import { bindTagActionButtons } from '@/floor/actionButton';
 import { bindFloorHydration } from '@/floor/hydrate';
 import { injectMenuButton } from '@/menu';
 import { bindCharTagSync } from '@/state/charTags';
+import { initGlobalCharTags } from '@/state/globalCharTags';
 import { hydrateSettings } from '@/state/settings';
 import { ui } from '@/state/ui';
 import { guardEditableArrowKeys } from '@/st/keyboard';
@@ -94,6 +95,8 @@ async function hydrateWhenReady(attempt = 0) {
   if ((window as unknown as { SillyTavern?: { getContext?: unknown } }).SillyTavern?.getContext) {
     try {
       await hydrateSettings();
+      // 全局库必须在 bindCharTagSync 之前初始化:首次重算就要把全局条目合进派生库
+      initGlobalCharTags();
       bindCharTagSync();
       ensureImageTagRegexRegistered();
       bindAutoTagging();

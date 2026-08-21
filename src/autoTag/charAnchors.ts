@@ -34,8 +34,8 @@ import { getTagGenChannel } from '@/state/settings';
  * 主流程顺序:先落 changes(本楼发生的变化当楼生效) → 再兜底替换残留的 @占位符。
  */
 
-/** 把库条目渲染成给 AI 看的一行(字段式明细 + 占位符提示)。 */
-export function formatEntryForPrompt(entry: CharTagEntry): string {
+/** 把库条目渲染成给 AI 看的一行(字段式明细 + 占位符提示);锁定条目带 [locked] 标记。 */
+export function formatEntryForPrompt(entry: CharTagEntry, locked = false): string {
   const parts: string[] = [];
   for (const f of CHAR_TAG_FIELDS) {
     const v = entry.fields[f]?.trim();
@@ -43,22 +43,25 @@ export function formatEntryForPrompt(entry: CharTagEntry): string {
   }
   if (!parts.length && entry.raw.trim()) parts.push(`tag=${entry.raw.trim()}`);
   if (entry.nl.trim()) parts.push(`nl=${entry.nl.trim()}`);
-  return `- ${entry.name}: ${parts.join(', ') || '(未记录字段)'}`;
+  return `- ${entry.name}${locked ? ' [locked]' : ''}: ${parts.join(', ') || '(未记录字段)'}`;
 }
 
 /**
  * 库文本:发给 AI 的角色库部分。AI 依据它决定 changes,并在 tag/nl 中照抄对应字段;
- * 名单与字段值都由插件生成,AI 只读。
+ * 名单与字段值都由插件生成,AI 只读。锁定名(全局库)带 [locked] 标记并在头部声明不可变。
  */
-export function buildLibraryText(entries: CharTagEntry[]): string {
+export function buildLibraryText(entries: CharTagEntry[], lockedNames?: ReadonlySet<string>): string {
   if (!entries.length) return '';
-  const lines = entries.map(formatEntryForPrompt);
-  return `【角色固定外貌库? [system-maintained; copy fields verbatim into character prompts]\n${lines.join('\n')}`;
+  const lines = entries.map(entry => formatEntryForPrompt(entry, lockedNames?.has(entry.name) ?? false));
+  const lockedNote = lockedNames?.size
+    ? '; entries marked [locked] are global and immutable: never report changes for them, always copy their fields as-is'
+    : '';
+  return `【角色固定外貌库】[system-maintained; copy fields verbatim into character prompts${lockedNote}]\n${lines.join('\n')}`;
 }
 
 /** 旧接口兼容:runner 之外仍有调用方依赖锚定文本形态。 */
-export function buildAnchorText(entries: CharTagEntry[]): string {
-  return buildLibraryText(entries);
+export function buildAnchorText(entries: CharTagEntry[], lockedNames?: ReadonlySet<string>): string {
+  return buildLibraryText(entries, lockedNames);
 }
 
 /* ============ 中文外貌 → 结构化字段 的批量转换 ============ */
@@ -174,8 +177,11 @@ export interface ResolvedCharAnchors {
   entries: CharTagEntry[];
 }
 
-export function resolveCharAnchors(entriesBefore: CharTagEntry[]): ResolvedCharAnchors {
-  const text = buildLibraryText(entriesBefore);
+export function resolveCharAnchors(
+  entriesBefore: CharTagEntry[],
+  lockedNames?: ReadonlySet<string>,
+): ResolvedCharAnchors {
+  const text = buildLibraryText(entriesBefore, lockedNames);
   return { text: text || null, entries: entriesBefore };
 }
 
@@ -251,9 +257,10 @@ export function applyPositionedCharRefs(
   ops: PositionedCharOp[],
   sourceLine: number,
   mode: 'tag' | 'nl' = 'tag',
+  locked?: ReadonlySet<string>,
 ): { text: string; unknown: string[] } {
   const activeOps = ops
     .filter(item => item.op.kind === 'new' || item.sourceLine <= sourceLine)
     .map(item => item.op);
-  return applyCharRefs(text, applyCharTagOps(entries, activeOps, -1), mode);
+  return applyCharRefs(text, applyCharTagOps(entries, activeOps, -1, locked), mode);
 }

@@ -60,15 +60,16 @@ describe('promptHash', () => {
 });
 
 describe('imageFileName', () => {
-  it('builds a flat name with sanitized chatId', () => {
-    expect(imageFileName('chat-12', 0, 'a3f9c2', 'g_1723', 'png')).toBe(
-      'bbi_chat-12_0_a3f9c2-g_1723.png',
+  it('uses a stable character-name hash in the flat filename', () => {
+    expect(imageFileName('\u67cf\u5b9d', 0, 'a3f9c2', 'g_1723', 'png')).toBe(
+      `bbi_${promptHash('\u67cf\u5b9d')}_0_a3f9c2-g_1723.png`,
     );
   });
 
-  it('replaces illegal characters in chatId (files API only allows [a-zA-Z0-9_.-])', () => {
-    // 空格、/、中文各占一个非法字符 → 各自替换为一个 _
-    expect(imageFileName('chat 12/群聊', 1, 'h', 'g', 'png')).toBe('bbi_chat_12____1_h-g.png');
+  it('does not expose unsupported characters from the character name', () => {
+    expect(imageFileName('\u67cf\u5b9d/\u6d4b\u8bd5 \u5361', 1, 'h', 'g', 'png')).toMatch(
+      /^bbi_[0-9a-f]{14}_1_h-g\.png$/,
+    );
   });
 });
 
