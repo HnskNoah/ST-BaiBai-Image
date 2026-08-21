@@ -415,6 +415,8 @@ runForFloor(floor, opts)
 - **纯函数可测**:解析/协议/参数构造均为纯函数,配 `*.test.ts`(vitest,与被测文件同目录)。
   改协议/后端参数时跑 `pnpm test` 保底;
 - **渠道二选一**:`getTagGenChannel()` 有指派 → 副 API(服务端代理);否则跟随主 API(generateRaw)。
+- **随机段一律走 `randomUuid()`**(src/randomUuid.ts):ST 常在非安全上下文(http)下运行,
+  那里 `crypto.randomUUID` 直接抛错;vibe 缓存键/文件名随机段只是防撞,不需要密码学强度。
 
 ## 9. 任务定位索引(改需求先查这里)
 

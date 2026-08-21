@@ -1,5 +1,6 @@
 import { deleteUploadedFile, uploadBase64File } from '@/floor/upload';
 import type { NaiVibe, NaiVibeData, NaiVibeEncodings } from '@/state/settings';
+import { randomUuid } from '@/randomUuid';
 
 const FETCH_TIMEOUT_MS = 20_000;
 const LOCAL_DB_NAME = 'baibai_image_vibes';
@@ -77,7 +78,7 @@ function safeFileKey(key: string): string {
 
 function storageFileName(path?: string, key = ''): string {
   const current = path?.split('/').pop();
-  return current || `bbi-vibe-${safeFileKey(key) || crypto.randomUUID()}.json`;
+  return current || `bbi-vibe-${safeFileKey(key) || randomUuid()}.json`;
 }
 
 function thumbnailFileName(dataUrl: string, path?: string, key = ''): string {
@@ -85,7 +86,7 @@ function thumbnailFileName(dataUrl: string, path?: string, key = ''): string {
   if (current) return current;
   const format = dataUrl.match(/^data:image\/([^;,]+)/i)?.[1]?.toLowerCase();
   const extension = format === 'jpeg' ? 'jpg' : format || 'jpg';
-  return `bbi-vibe-thumb-${safeFileKey(key) || crypto.randomUUID()}.${extension}`;
+  return `bbi-vibe-thumb-${safeFileKey(key) || randomUuid()}.${extension}`;
 }
 
 function dataUrlBase64(dataUrl: string): string {
@@ -153,7 +154,7 @@ export async function saveVibeFiles(
 ): Promise<{ dataPath: string; thumbnailPath: string }> {
   const localKey = current?.dataPath.startsWith(LOCAL_PATH_PREFIX)
     ? current.dataPath.slice(LOCAL_PATH_PREFIX.length)
-    : safeFileKey(key) || crypto.randomUUID();
+    : safeFileKey(key) || randomUuid();
   if (current?.dataPath.startsWith(LOCAL_PATH_PREFIX)) {
     return { dataPath: await writeLocalData(localKey, data), thumbnailPath: current.thumbnailPath };
   }

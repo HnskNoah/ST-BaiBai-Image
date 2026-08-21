@@ -1,4 +1,5 @@
 import { unzipSync } from 'fflate';
+import { randomUuid } from '@/randomUuid';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { ComfyImageResult } from '@/backends/comfyui';
@@ -394,7 +395,7 @@ export function applyVibes(
       skipped.push(vibe.name);
       continue;
     }
-    cached.push({ cache_secret_key: crypto.randomUUID(), data: enc.encoding });
+    cached.push({ cache_secret_key: randomUuid(), data: enc.encoding });
     picked.push(vibe.strength);
   }
   // 归一化:总强度 > 1 时按比例压回 1(st-chatu8 同口径;4.5 开归一化时官方端也会自动处理)
@@ -622,7 +623,7 @@ export async function buildNaiv4vibe(vibe: NaiVibe, data: NaiVibeData): Promise<
       },
     };
   }
-  const id = data.image ? await sha256Hex(data.image) : crypto.randomUUID();
+  const id = data.image ? await sha256Hex(data.image) : randomUuid();
   return JSON.stringify({
     identifier: 'novelai-vibe-transfer',
     version: 1,
