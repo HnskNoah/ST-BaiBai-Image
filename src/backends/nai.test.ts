@@ -273,13 +273,17 @@ describe('NAI V5 support', () => {
     expect(positive.use_order).toBe(true);
   });
 
-  it('uses official V5 vibe keys but skips transfer while unsupported', () => {
+  it('uses model-specific V5 vibe encodings', () => {
     expect(vibeModelKey('nai-diffusion-5-full')).toBe('v5full');
     expect(vibeModelKey('nai-diffusion-5-curated')).toBe('v5curated');
-    const settings = nai({ model: 'nai-diffusion-5-full', vibes: [vibe({ name: 'V5 skip' })] });
+    const settings = nai({ model: 'nai-diffusion-5-full', vibes: [vibe({ name: 'V5 vibe' })] });
     const params = buildNaiParameters(settings, { prompt: 'x', seed: 1 });
-    expect(applyVibes(params, settings, new Map([['v1', vibeData()]]))).toEqual(['V5 skip']);
-    expect(params.reference_image_multiple_cached).toBeUndefined();
+    const data = vibeData({ encodings: { v5full: { encoding: 'djU=', infoExtracted: 1 } } });
+    expect(applyVibes(params, settings, new Map([['v1', data]]))).toEqual([]);
+    expect(params.reference_image_multiple_cached).toEqual([
+      { cache_secret_key: expect.any(String), data: 'djU=' },
+    ]);
+    expect(params.reference_strength_multiple).toEqual([0.6]);
   });
 });
 

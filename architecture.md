@@ -257,8 +257,10 @@ runForFloor(floor, opts)
   **NAI V5(`nai-diffusion-5-*`)是另一条协议分支**:`isNai5`/`naiSupportsVibes`/`naiSamplers` 三件套
   判定——`params_version: 4`、采样器限子集(列表随模型过滤,面板同步)、`v4_prompt` 结构里
   `char_captions` 填来自协议的 characters(每角色一条,库数量 tag `1girl→girl` 降级、
-  tag+中文 nl 拼一条 caption,负面侧给空 caption 占位)、**不支持 Vibe Transfer**(生成时全部
-  跳过并 toastr 说明原因)、varietyBoost 无效。正向串 V5 且带 nl 时拼成 `tags. nl`(句点分隔)。
+  tag+中文 nl 拼一条 caption,负面侧给空 caption 占位)、varietyBoost 无效。
+  **Vibe 对 V5 同样可用**:`vibeModelKey` 已含 v5full/v5curated 键,V5 走与 v4 系相同的编码
+  缓存分支(`reference_image_multiple_cached` 无条件初始化);仅**非 NAI 家族模型**才不支持。
+  正向串 V5 且带 nl 时拼成 `tags. nl`(句点分隔)。
 - `chatu8Vibe.ts`:只读智绘姬的 extension_settings + IndexedDB,逐条导入 vibe(内容指纹去重、读取超时、迁移进度)。
   另有三件画师串预设函数(collectChatu8ArtistRefs / detectChatu8Artists / importArtistsFromChatu8):
   读 `yushe` 表 + `yusheid_novelai` 当前选中,positive 两段(fixedPrompt/fixedPrompt_end)按原序

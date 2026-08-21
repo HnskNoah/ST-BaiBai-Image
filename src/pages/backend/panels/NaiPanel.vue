@@ -938,7 +938,7 @@ async function removeVibe(vibe: NaiVibe) {
           上传参考图,生成时叠加其风格/氛围;编码按当前选中的模型进行,会消耗一次接口调用。
         </p>
         <p v-else class="bbi-field-hint vibe-hint">
-          NovelAI V5 当前不支持 Vibe Transfer;已保存的 Vibe 会保留,切回 V4.5 后可继续使用。
+          Current model does not support Vibe Transfer.
         </p>
 
         <div class="vibe-actions">

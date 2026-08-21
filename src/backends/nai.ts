@@ -95,7 +95,7 @@ export function isNai5(model: string): boolean {
 }
 
 export function naiSupportsVibes(model: string): boolean {
-  return !isNai5(model);
+  return isNai3(model) || isNai4Family(model) || isNai5(model);
 }
 
 const NAI_V5_SAMPLERS = new Set([
@@ -309,8 +309,8 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
     params.reference_image_multiple = [];
     params.reference_information_extracted_multiple = [];
   } else {
-    // NAI4/4.5:v4 caption 结构 + vibe 走编码缓存
-    if (!isNai5(nai.model)) params.reference_image_multiple_cached = [];
+    // NAI4/4.5/V5: v4 caption structure; Vibe uses a model-specific cached encoding.
+    params.reference_image_multiple_cached = [];
     const charCaptions = isNai5(nai.model)
       ? (values.characters ?? []).map(character => ({
           char_caption: characterCaption(character),
@@ -502,7 +502,7 @@ export async function generateNaiImage(
   }
   const skipped = applyVibes(params, nai, loaded);
   if (skipped.length) {
-    const reason = naiSupportsVibes(nai.model) ? '缺当前模型编码' : 'NAI V5 暂不支持 Vibe Transfer';
+    const reason = naiSupportsVibes(nai.model) ? '缺当前模型编码' : '当前模型不支持 Vibe Transfer';
     console.warn(`[柏宝绘] 以下 vibe 因${reason}被跳过:`, skipped);
     toastr.warning(`vibe「${skipped.join('、')}」${reason},已跳过`, '柏宝绘');
   }
