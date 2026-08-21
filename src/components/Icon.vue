@@ -39,6 +39,9 @@ const PATHS: Record<string, string> = {
   // 请求历史:时钟 + 左上回拨箭头(时间倒流)。墨迹 3.5~20.5,与 characters/settings 同量级
   history:
     '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5v4h4"/><path d="M12 7.5V12l3 1.8"/>',
+  // 图库:叠放的图片(后卡露边 + 前卡山日),区别于 generate 的单张图
+  gallery:
+    '<path d="M7.5 3.5H19a1.5 1.5 0 0 1 1.5 1.5v11"/><rect x="3.5" y="6.5" width="13.5" height="12" rx="1.5"/><circle cx="7.3" cy="10.3" r="1.2"/><path d="M4 15.8 8 12l2.8 2.8 2-2 3.7 3.7"/>',
   // NPC 名册(导航):双人像,区别于单人 characters
   npcs:
     '<circle cx="9" cy="8" r="3"/><path d="M3.5 19.5c0-3 2.4-5 5.5-5s5.5 2 5.5 5"/><path d="M16 5.6a3 3 0 0 1 0 4.8"/><path d="M17 14.8c2.3.5 3.9 2.3 3.9 4.7"/>',

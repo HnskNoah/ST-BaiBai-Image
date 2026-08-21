@@ -7,6 +7,7 @@ import {
   type PositionedCharOp,
 } from '@/autoTag/charAnchors';
 import { prepareTargetText } from '@/autoTag/clean';
+import { beginGeneration, clearGeneration, consumeGeneration } from '@/autoTag/generationGate';
 import { buildAutoTagMessages } from '@/autoTag/prompt';
 import {
   BBI_CHAR_EXTRA_KEY,
@@ -29,10 +30,10 @@ import { getContext, type STMessage } from '@/st/context';
 import { stripImageTags } from '@/st/imageTagRegex';
 import { getTagGenChannel, isCurrentChatExcluded, settings } from '@/state/settings';
 
-const ignoredRenderTypes = new Set(['extension', 'first_message', 'command', 'impersonate']);
 const processed = new Set<string>();
 const running = new Map<string, AbortController>();
 let bound = false;
+const scheduled = new Set<ReturnType<typeof setTimeout>>();
 
 function activeSwipeId(message: STMessage): number | null {
   if (!Array.isArray(message.swipes)) return null;
@@ -341,8 +342,20 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
 }
 
 function cancelAll(): void {
+  clearGeneration();
+  for (const timer of scheduled) clearTimeout(timer);
+  scheduled.clear();
   for (const controller of running.values()) controller.abort();
   running.clear();
+}
+
+function scheduleForGeneratedFloor(floor: number, chatId: string): void {
+  const timer = setTimeout(() => {
+    scheduled.delete(timer);
+    if (getContext()?.getCurrentChatId?.() !== chatId) return;
+    void runForFloor(floor);
+  }, 0);
+  scheduled.add(timer);
 }
 
 /**
@@ -353,19 +366,30 @@ export async function requestFloorTags(floor: number, opts: { replace?: boolean 
   await runForFloor(floor, { manual: true, replace: opts.replace });
 }
 
-/** 监听 ST 的最终角色消息渲染事件；不回扫旧聊天，只处理绑定之后新落地的正文。 */
+/** Only pair automatic tagging with the final render of a real ST generation. */
 export function bindAutoTagging(): void {
   if (bound) return;
   const context = getContext();
-  if (!context?.eventSource || !context.eventTypes.CHARACTER_MESSAGE_RENDERED) return;
+  const events = context?.eventTypes;
+  if (!context?.eventSource || !events?.GENERATION_STARTED || !events.CHARACTER_MESSAGE_RENDERED) return;
   bound = true;
 
-  context.eventSource.on(context.eventTypes.CHARACTER_MESSAGE_RENDERED, (messageId: unknown, type: unknown) => {
-    if (typeof type === 'string' && ignoredRenderTypes.has(type)) return;
+  context.eventSource.on(
+    events.GENERATION_STARTED,
+    (type: unknown, _options: unknown, dryRun: unknown) => {
+      const chatId = getContext()?.getCurrentChatId?.() ?? '';
+      beginGeneration(chatId, type, dryRun);
+    },
+  );
+  context.eventSource.on(events.CHARACTER_MESSAGE_RENDERED, (messageId: unknown, type: unknown) => {
+    const chatId = getContext()?.getCurrentChatId?.() ?? '';
+    if (!consumeGeneration(chatId, type)) return;
     const floor = typeof messageId === 'number' ? messageId : Number(messageId);
     if (!Number.isInteger(floor) || floor < 0) return;
-    // 让 ST 先完成本次消息/swipe 的内部同步，再截取稳定正文。
-    setTimeout(() => void runForFloor(floor), 0);
+    // Do not block ST finalization, and pin the deferred run to the originating chat.
+    scheduleForGeneratedFloor(floor, chatId);
   });
-  context.eventSource.on(context.eventTypes.CHAT_CHANGED, cancelAll);
+  if (events.GENERATION_ENDED) context.eventSource.on(events.GENERATION_ENDED, clearGeneration);
+  if (events.GENERATION_STOPPED) context.eventSource.on(events.GENERATION_STOPPED, clearGeneration);
+  context.eventSource.on(events.CHAT_CHANGED, cancelAll);
 }

@@ -42,6 +42,7 @@ src/
 │   └── client.ts      # LLM 请求:副 API 走 ST 服务端代理 / 跟随主 API 走 generateRaw
 ├── autoTag/           # ★ 链路 A:自动生 tag(独立 LLM 请求 → 协议校验 → 注入正文)
 │   ├── runner.ts      # 事件监听、去重、重试、编排(入口)
+│   ├── generationGate.ts # 生成门:把自动 tag 与真实生成配对(GENERATION_STARTED 武装 → 最终 RENDERED 消费)
 │   ├── prompt.ts      # 组装消息:破限/角色/人设/世界书/规范/协议/思维链/预填充
 │   ├── protocol.ts    # 段尾位置 ID、JSON 严格解析校验、tag 注入格式
 │   ├── clean.ts       # 历史/目标正文清洗(共享排除标签;历史保留 bbi_image)
@@ -50,6 +51,8 @@ src/
 │   └── charAnchors.ts # 角色库:库文本注入 → 兜底替换残留 @占位符(AI 照抄字段值,不用占位符)
 ├── backends/          # 出图后端(链路 B 的生成端)+ 共享尺寸工具
 │   ├── comfyui.ts     # ComfyUI:工作流模板 %占位符% 渲染、浏览器直连/ST 转发自动回退
+│   ├── comfyTemplates.ts # 简易模式:模板族(checkpoint/flux/anima) + 参数组装 API JSON(无占位符)
+│   ├── comfyObjectInfo.ts # 拉模型/LoRA/采样器列表(直连 /object_info,回退 ST 转发四个端点)
 │   ├── comfyWorkflowAssistant.ts # AI 自动定位工作流节点(片段 ID 协议,不复制原文)
 │   ├── nai.ts         # NovelAI:参数构造、vibe 编码/叠加、画师串前置拼装、.naiv4vibe 导入导出
 │   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe / 画师串预设
@@ -75,9 +78,11 @@ src/
 │   ├── backend/index.vue      # 「渠道」页:页签(webui 已隐藏)+ 各后端面板
 │   │   └── panels/            # ComfyUIPanel / NaiPanel / WebUIPanel(隐藏,代码保留)
 │   ├── characters/index.vue   # 「角色管理」页:全局/本聊天两区卡片式外貌库 CRUD + 历史回滚
+│   ├── gallery/index.vue      # 「图库」页:占位(制作中)。定为依赖柏宝库的可选增强页,接口成型后落地
 │   ├── history/index.vue      # 「请求历史」页:调试辅助(LLM 提示词/响应/生图元信息)
 │   └── settings/index.vue     # 「设置」页:渠道管理/自动 tag/提示词编辑/界面偏好(最大页)
-├── components/       # 通用组件:BbiSelect/BbiTextarea/Collapsible/ConfirmDialog/FloatingOrb/Icon/ModalMask/NavBar
+├── components/       # 通用组件:BbiSelect/BbiCombo/BbiTextarea/Collapsible/ConfirmDialog/FloatingOrb/Icon/ModalMask/NavBar
+│                     # (BbiCombo = 可输入可过滤下拉,与副 API 模型框同交互,菜单 Teleport 防裁剪)
 ├── styles/           # base.css(全局基础样式)、theme.css(主题变量,data-theme 切换)
 ├── menu.ts           # 魔杖菜单入口注入(轮询等懒加载)
 ├── topbar.ts         # ST 顶栏快速打开按钮(受 ui.showTopBar 开关控制)
@@ -127,7 +132,10 @@ src/
 
 ## 5. 链路 A:自动生 tag(autoTag/)
 
-触发:`CHARACTER_MESSAGE_RENDERED`(排除 extension/first_message/command/impersonate 等渲染类型)→ `runner.ts` 的 `runForFloor`。
+触发:与 ST 真实生成配对,不信任渲染类型字符串 —— `GENERATION_STARTED` 时 `beginGeneration`
+(过滤 dryRun/quiet/impersonate,记 chatId+type),最终 `CHARACTER_MESSAGE_RENDERED` 时
+`consumeGeneration` 同 run 同聊天才消费并调度 `runForFloor`(setTimeout 0 等 ST 内部同步完,
+期间换聊天则作废);CHAT_CHANGED 全量清空。
 
 ```
 runForFloor(floor, opts)
@@ -249,11 +257,19 @@ runForFloor(floor, opts)
 - 写回用 CAS 循环(`mutateStore`,引用比对 + `saveChat`);保存顺序:先文件后指针 / 删时先指针后文件。
 
 **出图后端(backends/)**:
-- `comfyui.ts`:API 格式工作流模板,支持 `%prompt% %negative_prompt% %seed% %nl% %width% %height%`
-  占位符(不支持即报错);请求通道自动选择 —— **浏览器直连优先,仅网络级失败(CORS/拒连)回退 ST
-  服务端转发**;排队拿到 prompt_id 后轮询失败不重发(避免重复生图)。
-  入参类型是收窄后的 `ComfyRunConn`(url + 单套工作流 + 横竖尺寸),**不认整个 `ComfyUISettings`**——
-  后端层只该知道「这一次出图用什么」,不该知道用户存了几套。
+- `comfyui.ts`:两种互斥模式在 `generateComfyImage` 里分叉,汇合点是「拿到可提交 JSON」:
+  - **custom**:API 格式工作流模板,支持 `%prompt% %negative_prompt% %seed% %nl% %width% %height%`
+    占位符(不支持即报错);
+  - **simple**(comfyTemplates.ts):选模型/LoRA + 填参数,按架构模板族组装 JSON,**无占位符**。
+    模板族刻意收敛为 checkpoint 系 / Flux / Anima(Qwen 链路),新架构 = 加一条模板数据 + 一个组装分支;
+    正向 = 固定正面 + (nl 优先 || tag),负面 = 固定负面 + AI 动态负面(Flux 无真实负面输入,恒空)。
+  请求通道自动选择 —— **浏览器直连优先,仅网络级失败(CORS/拒连)回退 ST 服务端转发**;
+  排队拿到 prompt_id 后轮询失败不重发(避免重复生图)。
+  入参类型是收窄后的 `ComfyRunConn`(url + 单套预设的 mode/workflow/simple + 横竖尺寸),
+  **不认整个 `ComfyUISettings`**——后端层只该知道「这一次出图用什么」,不该知道用户存了几套。
+- `comfyObjectInfo.ts`:简易模式的候选列表。直连 `GET /object_info` 一次拿全(含 LoRA/CLIP);
+  回退 ST 转发只有 `/api/sd/comfy/models|samplers|schedulers|vaes`(服务端摘 object_info 字段,
+  **没有 loras/clips 端点**),转发通道下这两组降级为手输。session 级缓存,「刷新」强制重拉。
 - `nai.ts`:协议与官方一致(浏览器直连,url 可指第三方兼容站,自动补 `/ai` 前缀);v4 系走
   `v4_prompt` 结构 + vibe 编码缓存;NAI3 直接发参考原图;质量词/负面词按模型给默认值,
   渠道页可见可覆盖(存空串 = 跟随模型官方词);正向拼装顺序为
@@ -283,9 +299,12 @@ runForFloor(floor, opts)
   `ready` 守门标志防默认值覆盖服务器设置;deep watch → 防抖 `saveSettingsDebounced()`。
   订阅者用 `onSettingsReady(cb)` 等 hydrate 完成(如 ui.ts 回灌主题)。
 - **ComfyUI 工作流库**:`settings.comfyui.workflows`(`ComfyWorkflowPreset[]`)+ `activeWorkflowId`。
-  - 一条预设 = 名字 + 工作流 JSON + `naturalLanguage` + 横竖尺寸。这三项跟着工作流走而非留在渠道级,
-    因为它们是**底模的属性**(Illustrious 要短 tag + 832×1216,Flux 要自然语言 + 1024 方图);
-    留在渠道级的话每次切工作流还得手改两处。`url` 反过来仍是渠道级(一台服务器跑所有工作流)。
+  - 一条预设 = 名字 + `mode`(custom/simple 互斥)+ 工作流 JSON + `simple` 参数 + `naturalLanguage` + 横竖尺寸。
+    这些跟着工作流走而非留在渠道级,因为它们是**底模的属性**(Illustrious 要短 tag + 832×1216,
+    Flux 要自然语言 + 1024 方图);留在渠道级的话每次切工作流还得手改两处。
+    `url` 反过来仍是渠道级(一台服务器跑所有工作流)。
+    两模式的字段都常驻(切模式不丢另一边的配置),只是出图时只生效一边;
+    存量预设没有 mode/simple 字段,normalize 补 `custom` + 简易默认值。
   - **不变式:`workflows` 恒非空**。`comfyDefaults()` 出生即带一条空预设(只用一套的人感觉不到「库」的存在),
     `normalizeComfyUI()` 收尾再兜一次;`activeWorkflowId` 悬空时回落第一条。
     消费方一律走 `activeComfyPreset()` / `effectiveComfyConn()`,不直接摸数组,故无需到处判空。
@@ -405,7 +424,7 @@ runForFloor(floor, opts)
 | 设置项(新增字段/默认值/迁移) | src/state/settings.ts(类型 + defaults + normalize 三处) |
 | 设置窗口 UI | src/pages/settings/index.vue |
 | 提示词内置默认(破限/规范/思维链/预填充) | src/state/settings.ts 的 `DEFAULT_*` 常量 |
-| 自动 tag 触发条件 / 去重 / 重试 | src/autoTag/runner.ts |
+| 自动 tag 触发条件 / 去重 / 重试 | src/autoTag/runner.ts + generationGate.ts(生成门配对) |
 | 发给 LLM 的消息组装(顺序/内容) | src/autoTag/prompt.ts(V5 走 DEFAULT_NAI_V5_SPEC:Base+Character 双提示) |
 | LLM 输出协议(JSON 形状/位置 ID/tag 格式) | src/autoTag/protocol.ts |
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
@@ -415,6 +434,8 @@ runForFloor(floor, opts)
 | 副 API 请求(代理/SSE/超时/测试) | src/api/client.ts |
 | 跟随主 API | src/api/client.ts 的 requestViaMainApi |
 | ComfyUI 工作流 / 出图 / 通道回退 | src/backends/comfyui.ts |
+| ComfyUI 简易模式(模板组装/校验) | src/backends/comfyTemplates.ts(UI 在 ComfyUIPanel.vue) |
+| ComfyUI 模型/LoRA 列表拉取 | src/backends/comfyObjectInfo.ts |
 | ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe / 智绘姬画师串导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |

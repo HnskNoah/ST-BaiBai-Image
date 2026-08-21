@@ -137,9 +137,13 @@ describe('ComfyUI 工作流库迁移', () => {
     await hydrateSettings();
 
     expect(activeComfyPreset().name).toBe('B');
+    const { simpleDefaults } = await import('@/backends/comfyTemplates');
     expect(effectiveComfyConn()).toEqual({
       url: 'http://example:8188',
       workflow: '{"2":{}}',
+      // 存量预设没有 mode/simple 字段 → custom + 简易模式默认值
+      mode: 'custom',
+      simple: simpleDefaults(),
       portraitSize: '1024×1024',
       landscapeSize: '1024×1024',
     });

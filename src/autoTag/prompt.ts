@@ -1,4 +1,5 @@
 import type { ChatMsg } from '@/api/client';
+import { templateSupportsNegative } from '@/backends/comfyTemplates';
 import { getWorkflowPlaceholders } from '@/backends/comfyui';
 import { isNai5 } from '@/backends/nai';
 import {
@@ -124,12 +125,18 @@ export async function buildAutoTagMessages(
   const naiV5On = settings.defaultBackend === 'nai' && isNai5(settings.nai.model);
   const comfyPreset = comfyOn ? activeComfyPreset() : null;
   const nlOn = !!comfyPreset?.naturalLanguage || naiV5On;
+  // 动态负面词门槛:custom 模式看工作流是否含 %negative_prompt%;
+  // simple 模式由模板决定(Flux 无真实负面输入,请求了也没地方写)。
   let negativeOn = false;
-  if (comfyPreset && comfyPreset.workflow.trim()) {
-    try {
-      negativeOn = getWorkflowPlaceholders(comfyPreset.workflow).includes('negative_prompt');
-    } catch {
-      // 工作流无效时由渠道面板负责提示；自动 tag 降级为不请求动态负面词。
+  if (comfyPreset) {
+    if (comfyPreset.mode === 'simple') {
+      negativeOn = templateSupportsNegative(comfyPreset.simple.template);
+    } else if (comfyPreset.workflow.trim()) {
+      try {
+        negativeOn = getWorkflowPlaceholders(comfyPreset.workflow).includes('negative_prompt');
+      } catch {
+        // 工作流无效时由渠道面板负责提示；自动 tag 降级为不请求动态负面词。
+      }
     }
   }
   // 示例一律写实际外貌串:@占位符已撤回(见 charAnchors.ts 文件头),

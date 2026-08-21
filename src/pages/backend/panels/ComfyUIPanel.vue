@@ -1,10 +1,25 @@
 <script setup lang="ts">
+import {
+  COMFY_TEMPLATE_OPTIONS,
+  COMFY_TEMPLATES,
+  isComfyTemplateId,
+  simpleDefaults,
+  validateSimpleConfig,
+  type ComfyPresetMode,
+} from '@/backends/comfyTemplates';
+import {
+  FALLBACK_SAMPLERS,
+  FALLBACK_SCHEDULERS,
+  fetchComfyModelLists,
+  type ComfyModelLists,
+} from '@/backends/comfyObjectInfo';
 import { getWorkflowPlaceholders, testComfyConnection } from '@/backends/comfyui';
 import {
   configureWorkflowWithAi,
   type WorkflowAssistResult,
   type WorkflowBindingPurpose,
 } from '@/backends/comfyWorkflowAssistant';
+import BbiCombo from '@/components/BbiCombo.vue';
 import BbiSelect from '@/components/BbiSelect.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Collapsible from '@/components/Collapsible.vue';
@@ -17,7 +32,7 @@ import {
   newComfyWorkflow,
   settings,
 } from '@/state/settings';
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 
 const testing = ref(false);
 const configuring = ref(false);
@@ -82,11 +97,16 @@ function addWorkflow() {
 }
 
 function duplicateWorkflow() {
-  // 拷全部字段(JSON/开关/尺寸一起复制),只换 id 与名字;id 生成仍由 settings 统一口径
+  // 拷全部字段(JSON/开关/尺寸一起复制),只换 id 与名字;id 生成仍由 settings 统一口径。
+  // simple 是嵌套对象(含 loras 数组),必须深拷——浅拷会让两套预设共享同一份参数。
   const preset = {
     ...active.value,
     id: newComfyWorkflow().id,
     name: `${active.value.name} 副本`,
+    simple: {
+      ...active.value.simple,
+      loras: active.value.simple.loras.map(lora => ({ ...lora })),
+    },
   };
   settings.comfyui.workflows.push(preset);
   switchTo(preset);
@@ -102,6 +122,134 @@ function confirmRemoveWorkflow() {
   // 删掉的是当前项:接位到原位置那一条(已是最后一条则退一格)
   settings.comfyui.activeWorkflowId = list[Math.min(index, list.length - 1)].id;
 }
+
+/* ============ 简易模式:选模型填参数 ============ */
+
+// 分段开关文案要短(括注会让小药丸挤变形),含义靠下方的表单本身说明;
+// 顺序:默认项 custom 在左(与「存量预设/新预设都是自定义工作流」的口径一致)
+const modeOptions: Array<{ value: ComfyPresetMode; label: string }> = [
+  { value: 'custom', label: '自定义工作流' },
+  { value: 'simple', label: '简易参数' },
+];
+
+const templateOptions = COMFY_TEMPLATE_OPTIONS;
+
+/** 当前模板的元数据(决定表单显示哪些字段)。 */
+const meta = computed(() => COMFY_TEMPLATES[active.value.simple.template] ?? COMFY_TEMPLATES.checkpoint);
+
+const lists = ref<ComfyModelLists | null>(null);
+const fetching = ref(false);
+const fetchError = ref('');
+
+async function onFetchModels(silent = false) {
+  if (fetching.value) return;
+  fetching.value = true;
+  fetchError.value = '';
+  try {
+    lists.value = await fetchComfyModelLists(settings.comfyui.url, { force: !!lists.value });
+    if (!silent) {
+      toastr.success(
+        lists.value.mode === 'server'
+          ? '已拉取模型列表(ST 转发;LoRA/CLIP 需手输文件名)'
+          : '已拉取模型列表',
+        '柏宝绘',
+      );
+    }
+  } catch (error) {
+    fetchError.value = errorMessage(error);
+    if (!silent) toastr.error(fetchError.value, '拉取模型列表失败');
+  } finally {
+    fetching.value = false;
+  }
+}
+
+// 进入简易模式且手上没有列表时自动拉一次(静默,失败只在状态行留原因)
+watch(
+  () => [active.value.id, active.value.mode] as const,
+  () => {
+    if (active.value.mode === 'simple' && !lists.value && !fetching.value && settings.comfyui.url.trim()) {
+      void onFetchModels(true);
+    }
+  },
+  { immediate: true },
+);
+
+// 状态行只在「有话要说」时出现:直连拉成功是常态,静默(候选已进 datalist);
+// 转发模式要提醒 LoRA/CLIP 拿不到;失败要留原因。手动点按钮的正反馈由 toastr 负责。
+const fetchStatus = computed(() => {
+  if (fetchError.value) return `拉取失败:${fetchError.value}`;
+  if (!lists.value || lists.value.mode === 'browser') return '';
+  return 'ST 转发拿不到 LoRA/CLIP 列表,这两项需手输(ComfyUI 加 --enable-cors-header 可直连)';
+});
+
+const modelOptions = computed(() => {
+  if (!lists.value) return [];
+  return meta.value.modelKind === 'checkpoint'
+    ? lists.value.checkpoints
+    : [...lists.value.unets, ...lists.value.ggufs];
+});
+const vaeOptions = computed(() => lists.value?.vaes ?? []);
+const clipOptions = computed(() => lists.value?.clips ?? []);
+const loraOptions = computed(() => lists.value?.loras ?? []);
+const samplerOptions = computed(() =>
+  lists.value?.samplers.length ? lists.value.samplers : FALLBACK_SAMPLERS,
+);
+const schedulerOptions = computed(() =>
+  lists.value?.schedulers.length ? lists.value.schedulers : FALLBACK_SCHEDULERS,
+);
+
+// 选了列表里的 GGUF 文件自动勾选 GGUF;选回普通 unet 自动取消(手输的名字不动开关)
+watch(
+  () => active.value.simple.model,
+  name => {
+    if (!lists.value || meta.value.modelKind !== 'unet') return;
+    if (lists.value.ggufs.includes(name)) active.value.simple.gguf = true;
+    else if (lists.value.unets.includes(name)) active.value.simple.gguf = false;
+  },
+);
+
+/**
+ * 切架构模板:采样参数换成新模板推荐值,模型/VAE/CLIP 清空(列表不同源),
+ * LoRA 与固定正负词保留(与架构无关)。尺寸若还是旧模板默认值则跟着换,
+ * 用户自己改过的尺寸不动。
+ */
+function onTemplateChange(id: string) {
+  if (!isComfyTemplateId(id)) return;
+  const current = active.value.simple;
+  if (current.template === id) return;
+  const prevMeta = COMFY_TEMPLATES[current.template];
+  const nextMeta = COMFY_TEMPLATES[id];
+  if (active.value.portraitSize === prevMeta.portraitSize) active.value.portraitSize = nextMeta.portraitSize;
+  if (active.value.landscapeSize === prevMeta.landscapeSize) active.value.landscapeSize = nextMeta.landscapeSize;
+  active.value.simple = {
+    ...simpleDefaults(id),
+    loras: current.loras,
+    positive: current.positive,
+    negative: current.negative,
+  };
+}
+
+function addLora() {
+  active.value.simple.loras.push({ name: '', strength: 1 });
+}
+
+function removeLora(index: number) {
+  active.value.simple.loras.splice(index, 1);
+}
+
+/** 简易模式状态药丸:与出图组装同一口径(validateSimpleConfig)。 */
+const simpleState = computed(() => {
+  const invalid = validateSimpleConfig(active.value.simple);
+  return invalid
+    ? { tone: 'error', text: '未就绪', detail: invalid }
+    : { tone: 'ok', text: '有效', detail: '' };
+});
+
+const nlHint = computed(() =>
+  active.value.mode === 'simple'
+    ? '额外生成一段自然语言描述;简易模式下优先于 tag 作为正向提示词(Flux/Anima 建议开启)'
+    : '额外生成一段自然语言描述,随 %nl% 注入工作流',
+);
 
 /** 药丸只显示一个词,具体原因放 title 悬浮提示,不占版面。 */
 const workflowState = computed(() => {
@@ -305,13 +453,37 @@ function applyAssist() {
         <!-- 分界:线以下的开关、尺寸与 JSON 均跟随当前选中的这一套 -->
         <hr class="wf-divider" />
 
+        <!-- 配置方式:分段开关二选一(复用全局 bbi-segmented;两个选项用下拉太重),状态药丸居右 -->
+        <div class="wf-mode-bar">
+          <div class="bbi-segmented" role="tablist" aria-label="配置方式">
+            <button
+              v-for="opt in modeOptions"
+              :key="opt.value"
+              class="bbi-seg"
+              :class="{ 'is-on': active.mode === opt.value }"
+              type="button"
+              role="tab"
+              :aria-selected="active.mode === opt.value"
+              @click="active.mode = opt.value"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+          <span
+            v-if="active.mode === 'simple'"
+            class="bbi-prompt-state wf-state"
+            :class="`is-${simpleState.tone}`"
+            :title="simpleState.detail || undefined"
+          >
+            {{ simpleState.text }}
+          </span>
+        </div>
+
         <label class="bbi-switch-row">
           <span class="bbi-field-label">生成自然语言</span>
           <input v-model="active.naturalLanguage" type="checkbox" class="bbi-checkbox" />
         </label>
-        <p class="bbi-field-hint wf-switch-hint">
-          额外生成一段自然语言描述,随 %nl% 注入工作流
-        </p>
+        <p class="bbi-field-hint wf-switch-hint">{{ nlHint }}</p>
 
         <div class="bbi-num-row">
           <span class="bbi-field-label">竖屏尺寸(宽×高)</span>
@@ -347,6 +519,175 @@ function applyAssist() {
           </datalist>
         </div>
 
+        <!-- 简易模式:选模型填参数,JSON 由插件按模板组装。
+             分组排布(模型/LoRA/采样/提示词),字段行统一「短标签列 + 输入列」网格,避免长标签把输入框挤得参差不棁。 -->
+        <template v-if="active.mode === 'simple'">
+          <section class="wf-group">
+            <div class="wf-group-head">
+              <span class="bbi-field-label">模型</span>
+              <span class="wf-group-tools">
+                <span v-if="fetchStatus" class="bbi-field-hint">{{ fetchStatus }}</span>
+                <button
+                  class="bbi-btn bbi-btn-sm"
+                  type="button"
+                  :disabled="fetching"
+                  @click="onFetchModels()"
+                >
+                  <Icon name="refresh" :size="12" />
+                  {{ fetching ? '拉取中…' : lists ? '刷新列表' : '拉取模型列表' }}
+                </button>
+              </span>
+            </div>
+
+            <div class="wf-field">
+              <span class="wf-field-tag">架构</span>
+              <BbiSelect
+                class="wf-tpl"
+                :model-value="active.simple.template"
+                :options="templateOptions"
+                aria-label="模型架构"
+                @update:model-value="onTemplateChange"
+              />
+            </div>
+            <div class="wf-field">
+              <span class="wf-field-tag">模型</span>
+              <BbiCombo
+                v-model="active.simple.model"
+                :options="modelOptions"
+                placeholder="safetensors / gguf 文件名"
+                aria-label="模型文件"
+              />
+              <label
+                v-if="meta.modelKind === 'unet'"
+                class="wf-gguf"
+                title="模型是 GGUF 格式(用 UnetLoaderGGUF 加载);从列表选择会自动识别"
+              >
+                <input v-model="active.simple.gguf" type="checkbox" class="bbi-checkbox" />
+                GGUF
+              </label>
+            </div>
+            <div class="wf-field">
+              <span class="wf-field-tag">VAE</span>
+              <BbiCombo
+                v-model="active.simple.vae"
+                :options="vaeOptions"
+                :placeholder="meta.vaePlaceholder"
+                aria-label="VAE 文件"
+              />
+            </div>
+            <div v-for="clip in meta.clips" :key="clip.key" class="wf-field">
+              <span class="wf-field-tag">{{ clip.label }}</span>
+              <BbiCombo
+                v-model="active.simple[clip.key]"
+                :options="clipOptions"
+                placeholder="clip 文件名"
+                :aria-label="clip.label"
+              />
+            </div>
+          </section>
+
+          <section class="wf-group">
+            <div class="wf-group-head">
+              <span class="bbi-field-label">LoRA</span>
+              <button
+                class="bbi-icon-btn wf-op"
+                type="button"
+                title="添加 LoRA(可多个串联)"
+                aria-label="添加 LoRA"
+                @click="addLora"
+              >
+                <Icon name="plus" :size="14" />
+              </button>
+            </div>
+            <div v-for="(lora, index) in active.simple.loras" :key="index" class="wf-lora-row">
+              <BbiCombo
+                v-model="lora.name"
+                :options="loraOptions"
+                placeholder="lora 文件名"
+                aria-label="LoRA 文件"
+              />
+              <input
+                class="bbi-input wf-lora-str"
+                type="number"
+                v-model.number="lora.strength"
+                min="0"
+                max="2"
+                step="0.05"
+                title="强度"
+                aria-label="LoRA 强度"
+              />
+              <button
+                class="bbi-icon-btn wf-op wf-remove"
+                type="button"
+                title="删除此 LoRA"
+                aria-label="删除此 LoRA"
+                @click="removeLora(index)"
+              >
+                <Icon name="trash" :size="14" />
+              </button>
+            </div>
+            <p v-if="active.simple.loras.length" class="bbi-field-hint wf-lora-hint">
+              LoRA 的触发词要自己写进固定正面或 tag 里。
+            </p>
+          </section>
+
+          <section class="wf-group">
+            <div class="wf-group-head">
+              <span class="bbi-field-label">采样</span>
+            </div>
+            <div class="wf-params">
+              <label class="wf-param">
+                <span>步数</span>
+                <input class="bbi-input" type="number" v-model.number="active.simple.steps" min="1" max="150" />
+              </label>
+              <label class="wf-param" v-if="active.simple.template !== 'flux'">
+                <span>CFG</span>
+                <input class="bbi-input" type="number" v-model.number="active.simple.cfg" min="1" max="30" step="0.5" />
+              </label>
+              <label class="wf-param" v-if="active.simple.template === 'flux'" title="FluxGuidance 强度;1 = 不加该节点">
+                <span>Guidance</span>
+                <input class="bbi-input" type="number" v-model.number="active.simple.guidance" min="1" max="10" step="0.1" />
+              </label>
+              <label class="wf-param" v-if="active.simple.template === 'anima'" title="ModelSamplingAuraFlow 的 shift">
+                <span>Shift</span>
+                <input class="bbi-input" type="number" v-model.number="active.simple.shift" min="0" max="10" step="0.1" />
+              </label>
+              <label class="wf-param">
+                <span>采样器</span>
+                <BbiCombo v-model="active.simple.sampler" :options="samplerOptions" placeholder="euler" aria-label="采样器" />
+              </label>
+              <label class="wf-param">
+                <span>调度器</span>
+                <BbiCombo v-model="active.simple.scheduler" :options="schedulerOptions" placeholder="normal" aria-label="调度器" />
+              </label>
+            </div>
+          </section>
+
+          <section class="wf-group">
+            <div class="wf-group-head">
+              <span class="bbi-field-label">提示词</span>
+            </div>
+            <div class="wf-prompts">
+              <BbiTextarea
+                v-model="active.simple.positive"
+                :rows="2"
+                :max-rows="6"
+                placeholder="固定正面:质量词/风格词等,拼在 AI 生成内容之前"
+              />
+              <BbiTextarea
+                v-if="meta.supportsNegative"
+                v-model="active.simple.negative"
+                :rows="2"
+                :max-rows="6"
+                placeholder="固定负面:通用负面词;AI 生成的动态负面追加在后"
+              />
+            </div>
+          </section>
+
+        </template>
+
+        <!-- 自定义模式:粘贴 API 格式 JSON -->
+        <template v-else>
         <div class="wf-json-head">
           <span class="bbi-field-label">工作流 JSON</span>
           <span class="wf-json-tools">
@@ -379,6 +720,7 @@ function applyAssist() {
         <p class="bbi-field-hint wf-hint">
           「Save (API Format)」导出；可用 %prompt% %negative_prompt% %seed% %nl% %width% %height%
         </p>
+        </template>
       </Collapsible>
     </div>
 
@@ -494,6 +836,98 @@ function applyAssist() {
 .wf-size {
   width: 130px;
   flex: 0 0 auto;
+}
+/* 配置方式:分段开关在左、状态药丸在右 */
+.wf-mode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 0 6px;
+}
+/* 架构下拉不吃满(同 .wf-select 的理由) */
+.wf-tpl {
+  width: auto;
+  max-width: 320px;
+  min-width: 0;
+}
+/* 简易模式分组:组标题带虚线分隔,组间距固定;组内字段行统一「短标签列+输入列+尾部」网格 */
+.wf-group {
+  padding: 10px 0 2px;
+}
+.wf-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px dashed var(--bbi-line);
+}
+.wf-group-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.wf-group-tools .bbi-field-hint {
+  margin: 0;
+}
+.wf-field {
+  display: grid;
+  grid-template-columns: 4.5em minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+.wf-field-tag {
+  color: var(--bbi-ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.wf-gguf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--bbi-ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* LoRA 行:文件名吃满、强度定宽、删除收尾(与字段行同节奏) */
+.wf-lora-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px 30px;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+}
+.wf-lora-hint {
+  margin: 4px 0 2px;
+}
+/* 采样参数:多列网格,标签在上输入在下(与 NaiPanel 的 be-row 同款语义) */
+.wf-params {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px 12px;
+}
+.wf-param {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.wf-param > span {
+  color: var(--bbi-ink-soft);
+  font-size: 12px;
+}
+.wf-prompts {
+  display: grid;
+  gap: 8px;
+}
+@media (max-width: 640px) {
+  .wf-params {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 /* JSON 头部行:标签在左,状态药丸与 AI 按钮作为「工具组」在右(textarea 是块级,头部行即它的工具栏) */
 .wf-json-head {

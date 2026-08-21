@@ -350,4 +350,35 @@ describe('auto tag prompt', () => {
       preset.workflow = oldWorkflow;
     }
   });
+
+  it('简易模式的动态负面词门槛由模板决定:checkpoint/anima 请求,flux 不请求', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      minImages: 0,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      prompts: { jailbreak: '', naiSpec: '', naiV5Spec: '', comfySpec: '', thinking: '', prefill: '' },
+    };
+    const oldBackend = settings.defaultBackend;
+    const preset = activeComfyPreset();
+    const oldMode = preset.mode;
+    const oldTemplate = preset.simple.template;
+    try {
+      settings.defaultBackend = 'comfyui';
+      preset.mode = 'simple';
+      preset.simple.template = 'checkpoint';
+      const messages = await buildAutoTagMessages(context(), 1, options, null);
+      expect(messages.some(message => message.content.includes('"negative":"extra people'))).toBe(true);
+
+      preset.simple.template = 'flux';
+      const fluxMessages = await buildAutoTagMessages(context(), 1, options, null);
+      expect(fluxMessages.some(message => message.content.includes('"negative":"extra people'))).toBe(false);
+    } finally {
+      settings.defaultBackend = oldBackend;
+      preset.mode = oldMode;
+      preset.simple.template = oldTemplate;
+    }
+  });
 });

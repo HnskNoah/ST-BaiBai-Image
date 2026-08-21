@@ -1,3 +1,9 @@
+import {
+  normalizeSimpleConfig,
+  simpleDefaults,
+  type ComfyPresetMode,
+  type ComfySimpleConfig,
+} from '@/backends/comfyTemplates';
 import { naiDefaultUndesired } from '@/backends/nai';
 import { parseSize, type SizePair } from '@/backends/size';
 import {
@@ -55,8 +61,16 @@ export interface ComfyWorkflowPreset extends SizePair {
   id: string;
   /** 显示名(下拉列表与切换用;允许重名,以 id 为键)。 */
   name: string;
-  /** Save (API Format) 导出的 JSON；动态值用 %prompt% 等占位符标记。 */
+  /**
+   * 配置方式,两模式互斥:
+   * - custom:粘贴 Save (API Format) 的 JSON,动态值用 %prompt% 等占位符;
+   * - simple:选模型/LoRA + 填基础参数,出图时由 comfyTemplates 组装 JSON,无占位符。
+   */
+  mode: ComfyPresetMode;
+  /** custom 模式的工作流 JSON;simple 模式下保留但不生效(切回不丢)。 */
   workflow: string;
+  /** simple 模式的参数;custom 模式下保留但不生效(切回不丢)。 */
+  simple: ComfySimpleConfig;
   /** 生成自然语言:开=自动 tag 以连贯短句写正向提示词(Flux/SD3.5 等);关=逗号分隔 tag。 */
   naturalLanguage: boolean;
 }
@@ -70,6 +84,8 @@ export interface ComfyWorkflowPreset extends SizePair {
 export interface ComfyRunConn extends SizePair {
   url: string;
   workflow: string;
+  mode: ComfyPresetMode;
+  simple: ComfySimpleConfig;
 }
 
 /** ComfyUI 连接与工作流库。 */
@@ -600,7 +616,9 @@ export function newComfyWorkflow(name = DEFAULT_WORKFLOW_NAME): ComfyWorkflowPre
   return {
     id: `wf_${Date.now()}_${workflowSeq}`,
     name,
+    mode: 'custom',
     workflow: '',
+    simple: simpleDefaults(),
     naturalLanguage: false,
     portraitSize: DEFAULT_PORTRAIT_SIZE,
     landscapeSize: DEFAULT_LANDSCAPE_SIZE,
@@ -763,6 +781,8 @@ export function effectiveComfyConn(): ComfyRunConn {
   return {
     url: settings.comfyui.url,
     workflow: preset.workflow,
+    mode: preset.mode,
+    simple: preset.simple,
     portraitSize: preset.portraitSize,
     landscapeSize: preset.landscapeSize,
   };
@@ -822,7 +842,10 @@ function normalizeWorkflowPreset(raw: unknown, seq: number): ComfyWorkflowPreset
   return {
     id: typeof o.id === 'string' && o.id ? o.id : `wf_${Date.now()}_${seq}`,
     name: typeof o.name === 'string' && o.name ? o.name : DEFAULT_WORKFLOW_NAME,
+    // 存量预设没有 mode 字段 → custom(它们都是粘 JSON 的);simple 逐字段清洗出全量默认值
+    mode: o.mode === 'simple' ? 'simple' : 'custom',
     workflow: typeof o.workflow === 'string' ? o.workflow : '',
+    simple: normalizeSimpleConfig(o.simple),
     naturalLanguage: typeof o.naturalLanguage === 'boolean' ? o.naturalLanguage : false,
     portraitSize: size(o.portraitSize, DEFAULT_PORTRAIT_SIZE),
     landscapeSize: size(o.landscapeSize, DEFAULT_LANDSCAPE_SIZE),

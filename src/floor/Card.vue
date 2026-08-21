@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
+import { validateSimpleConfig } from '@/backends/comfyTemplates';
 import { generateComfyImage, randomSeed } from '@/backends/comfyui';
 import { generateNaiImage, naiRandomSeed } from '@/backends/nai';
 import type { Orientation } from '@/backends/size';
@@ -108,13 +109,17 @@ const queueAhead = computed(() => record.value?.queueAhead ?? null);
 
 const comfyActive = computed(() => settings.defaultBackend === 'comfyui');
 const naiActive = computed(() => settings.defaultBackend === 'nai');
-const configured = computed(() =>
-  comfyActive.value
-    ? !!settings.comfyui.url.trim() && !!activeComfyPreset().workflow.trim()
-    : naiActive.value
-      ? !!settings.nai.url.trim() && !!settings.nai.key.trim()
-      : false,
-);
+// ComfyUI 门槛按模式分:custom 要有工作流 JSON;simple 要模型/VAE/CLIP 选齐
+ // (与出图组装同一口径 validateSimpleConfig,避免「卡片能点、出图才报错」)。
+const configured = computed(() => {
+  if (comfyActive.value) {
+    if (!settings.comfyui.url.trim()) return false;
+    const preset = activeComfyPreset();
+    return preset.mode === 'simple' ? !validateSimpleConfig(preset.simple) : !!preset.workflow.trim();
+  }
+  if (naiActive.value) return !!settings.nai.url.trim() && !!settings.nai.key.trim();
+  return false;
+});
 
 const current = computed(() => props.history[index.value] ?? null);
 /** 提示词全文:复制、灯箱、展开区共用。 */

@@ -1,3 +1,4 @@
+import { buildSimpleWorkflow } from '@/backends/comfyTemplates';
 import { parseSize, pickSize, type Orientation } from '@/backends/size';
 import { getContext } from '@/st/context';
 import { type ComfyRunConn } from '@/state/settings';
@@ -487,7 +488,25 @@ export async function generateComfyImage(
   const size = values.width && values.height
     ? { width: values.width, height: values.height }
     : parseSize(pickSize(conn, values.size ?? 'portrait'));
-  const workflow = renderWorkflowTemplate(conn.workflow, { ...values, ...size });
+  // 两模式互斥的分叉点:simple 由模板组装(无占位符),custom 走宏渲染。
+  // 汇合点即「拿到可提交 JSON」,之后的排队/轮询/取消完全共用。
+  let workflow: ComfyWorkflow;
+  if (conn.mode === 'simple') {
+    try {
+      workflow = buildSimpleWorkflow(conn.simple, {
+        prompt: values.prompt,
+        nl: values.nl,
+        negative: values.negative_prompt,
+        seed: values.seed ?? randomSeed(),
+        width: size?.width ?? 0,
+        height: size?.height ?? 0,
+      });
+    } catch (error) {
+      throw new ComfyUIError(error instanceof Error ? error.message : String(error));
+    }
+  } else {
+    workflow = renderWorkflowTemplate(conn.workflow, { ...values, ...size });
+  }
 
   // 通道自动选择:浏览器直连优先;仅当请求根本没送达 ComfyUI(网络级失败)时回退 ST 后端转发。
   // 回退只发生在「排队」之前——拿到 prompt_id 后任务已入队,轮询阶段的任何失败都不重发,避免重复生图。

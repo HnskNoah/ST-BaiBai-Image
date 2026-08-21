@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { simpleDefaults } from '@/backends/comfyTemplates';
 import {
   generateComfyImage,
   ComfyUIError,
@@ -281,5 +282,87 @@ describe('generateComfyImage 取消', () => {
       });
       expect(calls.find(c => c.url.includes('/interrupt'))?.body).toEqual({ prompt_id: 'pid-1' });
     });
+  });
+});
+
+/**
+ * 简易模式:预设不带 JSON,由 comfyTemplates 按模板组装。
+ * 与 custom 模式在「拿到可提交 JSON」处汇合,故这里只验提交体是组装结果。
+ */
+describe('generateComfyImage 简易模式', () => {
+  const SIMPLE_CONN = {
+    url: 'http://127.0.0.1:8188',
+    workflow: '',
+    mode: 'simple',
+    simple: {
+      ...simpleDefaults(),
+      model: 'illustrious.safetensors',
+      positive: 'masterpiece',
+      negative: 'worst quality',
+    },
+    portraitSize: '832×1216',
+    landscapeSize: '1216×832',
+  } as unknown as Parameters<typeof generateComfyImage>[0];
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  function stubSuccessFetch() {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const json = (data: unknown) => ({ ok: true, json: async () => data, text: async (): Promise<string> => '' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: { body?: string }) => {
+        const url = String(input);
+        const body = init?.body ? JSON.parse(init.body) : undefined;
+        calls.push({ url, body });
+        if (url.endsWith('/prompt')) return json({ prompt_id: 'pid-1' });
+        if (url.includes('/history/')) {
+          return json({
+            'pid-1': {
+              status: { completed: true },
+              outputs: { '8': { images: [{ filename: 'BaiBai_00001_.png', type: 'output' }] } },
+            },
+          });
+        }
+        if (url.includes('/view')) {
+          return { ok: true, blob: async () => new Blob(['png'], { type: 'image/png' }), text: async (): Promise<string> => '' };
+        }
+        return json({});
+      }),
+    );
+    return calls;
+  }
+
+  it('提交的是组装出的工作流(固定词+生成词拼接,尺寸取自预设)', async () => {
+    const calls = stubSuccessFetch();
+    const result = await generateComfyImage(SIMPLE_CONN, {
+      prompt: '1girl',
+      negative_prompt: 'extra people',
+      seed: 42,
+      size: 'portrait',
+    });
+    expect(result.filename).toBe('BaiBai_00001_.png');
+
+    const submit = calls.find(c => c.url.endsWith('/prompt'));
+    const prompt = (submit?.body as { prompt: Record<string, { class_type: string; inputs: Record<string, unknown> }> }).prompt;
+    expect(prompt['1'].class_type).toBe('CheckpointLoaderSimple');
+    expect(prompt['1'].inputs.ckpt_name).toBe('illustrious.safetensors');
+    expect(prompt['3'].inputs.text).toBe('masterpiece, 1girl');
+    expect(prompt['4'].inputs.text).toBe('worst quality, extra people');
+    expect(prompt['5'].inputs).toMatchObject({ width: 832, height: 1216 });
+    expect(prompt['6'].inputs.seed).toBe(42);
+    result.revoke();
+  });
+
+  it('配置不齐(未选模型)时走 ComfyUIError,不发请求', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = {
+      ...SIMPLE_CONN,
+      simple: { ...simpleDefaults(), model: '' },
+    } as unknown as Parameters<typeof generateComfyImage>[0];
+    await expect(generateComfyImage(conn, { prompt: '1girl' })).rejects.toThrow(ComfyUIError);
+    await expect(generateComfyImage(conn, { prompt: '1girl' })).rejects.toThrow('模型');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
