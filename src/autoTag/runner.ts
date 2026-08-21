@@ -34,6 +34,28 @@ const processed = new Set<string>();
 const running = new Map<string, AbortController>();
 let bound = false;
 const scheduled = new Set<ReturnType<typeof setTimeout>>();
+const DIAGNOSTIC_PREFIX = '[BBI][AutoTagDebug]';
+
+function diagnostic(event: string, payload: unknown = null): void {
+  const seen = new WeakSet<object>();
+  let detail: string;
+  try {
+    const json = JSON.stringify(payload, (_key, value: unknown) => {
+      if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack };
+      if (typeof value === 'bigint') return String(value);
+      if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`;
+      if (value && typeof value === 'object') {
+        if (seen.has(value)) return '[Circular]';
+        seen.add(value);
+      }
+      return value;
+    });
+    detail = json ?? String(payload);
+  } catch (error) {
+    detail = JSON.stringify({ stringifyError: error instanceof Error ? error.message : String(error) });
+  }
+  console.info(`${DIAGNOSTIC_PREFIX} ${event} ${detail}`);
+}
 
 function activeSwipeId(message: STMessage): number | null {
   if (!Array.isArray(message.swipes)) return null;
@@ -107,36 +129,91 @@ function planChangeOps(plan: ImagePlan): PositionedCharOp[] {
 
 async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> {
   const context = getContext();
-  if (!context || !settings.enabled) return;
-  if (!opts.manual && !settings.autoTag.enabled) return;
+  diagnostic('runForFloor:enter', {
+    floor,
+    manual: Boolean(opts.manual),
+    replace: Boolean(opts.replace),
+    chatId: context?.getCurrentChatId?.() ?? '',
+    extensionEnabled: settings.enabled,
+    autoTagEnabled: settings.autoTag.enabled,
+  });
+  if (!context) {
+    diagnostic('runForFloor:skip', { floor, reason: 'missing-context' });
+    return;
+  }
+  if (!settings.enabled) {
+    diagnostic('runForFloor:skip', { floor, reason: 'extension-disabled' });
+    return;
+  }
+  if (!opts.manual && !settings.autoTag.enabled) {
+    diagnostic('runForFloor:skip', { floor, reason: 'auto-tag-disabled' });
+    return;
+  }
   // 排除角色闸门(与柏宝书同名单):该角色名所在聊天的自动 tag 全流程停用,
   // 手动按钮也在 actionButton 层隐藏,这里做兜底(手动触发时给反馈)。
   if (isCurrentChatExcluded()) {
+    diagnostic('runForFloor:skip', { floor, reason: 'chat-excluded' });
     if (opts.manual) toastr.warning('该角色已被排除，不生成生图 tag', '柏宝绘');
     return;
   }
   const message = context.chat[floor];
-  if (!isAiStoryMessage(message)) return;
+  const messageDiagnostic = message
+    ? {
+        isUser: message.is_user,
+        isSystem: message.is_system,
+        textLength: typeof message.mes === 'string' ? message.mes.length : -1,
+        extraType: message.extra?.type ?? null,
+      }
+    : null;
+  if (!isAiStoryMessage(message)) {
+    diagnostic('runForFloor:skip', {
+      floor,
+      reason: 'not-ai-story-message',
+      message: messageDiagnostic,
+    });
+    return;
+  }
   const rawSource = message.mes;
   if (/<\/?bbi_image\b/i.test(rawSource) && !opts.replace) {
+    diagnostic('runForFloor:skip', { floor, reason: 'already-has-image-tag' });
     // 手动路径在按钮层已弹过「重新生成」确认,到这里仍不带 replace = 用户没确认或状态已变,静默放弃
     if (!opts.manual) console.debug(`[柏宝绘] 第 ${floor} 楼已经含有 bbi_image tag，跳过自动分析`);
     return;
   }
   // replace:分析和注入都基于剔除旧 tag 后的正文;写回时旧 tag 随之消失
   const source = opts.replace ? stripImageTags(rawSource) : rawSource;
-  if (!source.trim()) return;
+  if (!source.trim()) {
+    diagnostic('runForFloor:skip', { floor, reason: 'empty-source' });
+    return;
+  }
   const preparedTarget = prepareTargetText(source, settings.excludes.customStripTags);
-  if (!preparedTarget.segments.length) return;
+  if (!preparedTarget.segments.length) {
+    diagnostic('runForFloor:skip', { floor, reason: 'no-target-segments', sourceLength: source.length });
+    return;
+  }
 
   const chatId = context.getCurrentChatId?.() ?? '';
-  if (!chatId) return;
+  if (!chatId) {
+    diagnostic('runForFloor:skip', { floor, reason: 'missing-chat-id' });
+    return;
+  }
   const swipeId = activeSwipeId(message);
   const identity = `${chatId}\u0000${floor}\u0000${swipeId ?? 'none'}\u0000${textHash(source)}`;
   // 手动是显式意图:即使同一正文自动流程已处理过(比如结论是无需插图)也照跑,
   // 但仍写入 processed,防止自动流程随后对同一正文重复请求。
-  if (!opts.manual && processed.has(identity)) return;
+  if (!opts.manual && processed.has(identity)) {
+    diagnostic('runForFloor:skip', { floor, reason: 'already-processed', chatId, swipeId, identity });
+    return;
+  }
   processed.add(identity);
+  diagnostic('runForFloor:start', {
+    floor,
+    chatId,
+    swipeId,
+    identity,
+    sourceLength: source.length,
+    segmentCount: preparedTarget.segments.length,
+  });
 
   const slot = `${chatId}\u0000${floor}`;
   running.get(slot)?.abort();
@@ -342,6 +419,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
 }
 
 function cancelAll(): void {
+  diagnostic('cancelAll', { scheduled: scheduled.size, running: running.size });
   clearGeneration();
   for (const timer of scheduled) clearTimeout(timer);
   scheduled.clear();
@@ -350,9 +428,12 @@ function cancelAll(): void {
 }
 
 function scheduleForGeneratedFloor(floor: number, chatId: string): void {
+  diagnostic('schedule', { floor, chatId });
   const timer = setTimeout(() => {
     scheduled.delete(timer);
-    if (getContext()?.getCurrentChatId?.() !== chatId) return;
+    const currentChatId = getContext()?.getCurrentChatId?.() ?? '';
+    diagnostic('schedule:fire', { floor, chatId, currentChatId, sameChat: currentChatId === chatId });
+    if (currentChatId !== chatId) return;
     void runForFloor(floor);
   }, 0);
   scheduled.add(timer);
@@ -368,28 +449,69 @@ export async function requestFloorTags(floor: number, opts: { replace?: boolean 
 
 /** Only pair automatic tagging with the final render of a real ST generation. */
 export function bindAutoTagging(): void {
-  if (bound) return;
+  if (bound) {
+    diagnostic('bind:skip', { reason: 'already-bound' });
+    return;
+  }
   const context = getContext();
   const events = context?.eventTypes;
-  if (!context?.eventSource || !events?.GENERATION_STARTED || !events.CHARACTER_MESSAGE_RENDERED) return;
+  if (!context?.eventSource || !events?.GENERATION_STARTED || !events.CHARACTER_MESSAGE_RENDERED) {
+    diagnostic('bind:skip', {
+      reason: 'missing-events',
+      hasContext: Boolean(context),
+      hasEventSource: Boolean(context?.eventSource),
+      generationStarted: events?.GENERATION_STARTED ?? null,
+      characterRendered: events?.CHARACTER_MESSAGE_RENDERED ?? null,
+    });
+    return;
+  }
   bound = true;
 
+  diagnostic('bind', {
+    generationStarted: events.GENERATION_STARTED,
+    characterRendered: events.CHARACTER_MESSAGE_RENDERED,
+    generationEnded: events.GENERATION_ENDED ?? null,
+    generationStopped: events.GENERATION_STOPPED ?? null,
+    chatChanged: events.CHAT_CHANGED,
+  });
   context.eventSource.on(
     events.GENERATION_STARTED,
-    (type: unknown, _options: unknown, dryRun: unknown) => {
+    (type: unknown, options: unknown, dryRun: unknown) => {
       const chatId = getContext()?.getCurrentChatId?.() ?? '';
+      const eligible = Boolean(
+        chatId && !dryRun && typeof type === 'string' && type !== 'quiet' && type !== 'impersonate',
+      );
+      diagnostic('GENERATION_STARTED', { chatId, type, dryRun, eligible, options });
       beginGeneration(chatId, type, dryRun);
     },
   );
   context.eventSource.on(events.CHARACTER_MESSAGE_RENDERED, (messageId: unknown, type: unknown) => {
     const chatId = getContext()?.getCurrentChatId?.() ?? '';
-    if (!consumeGeneration(chatId, type)) return;
+    const matched = consumeGeneration(chatId, type);
+    diagnostic('CHARACTER_MESSAGE_RENDERED', { chatId, messageId, type, matched });
+    if (!matched) return;
     const floor = typeof messageId === 'number' ? messageId : Number(messageId);
-    if (!Number.isInteger(floor) || floor < 0) return;
+    if (!Number.isInteger(floor) || floor < 0) {
+      diagnostic('render:skip', { chatId, messageId, type, reason: 'invalid-floor' });
+      return;
+    }
     // Do not block ST finalization, and pin the deferred run to the originating chat.
     scheduleForGeneratedFloor(floor, chatId);
   });
-  if (events.GENERATION_ENDED) context.eventSource.on(events.GENERATION_ENDED, clearGeneration);
-  if (events.GENERATION_STOPPED) context.eventSource.on(events.GENERATION_STOPPED, clearGeneration);
-  context.eventSource.on(events.CHAT_CHANGED, cancelAll);
+  if (events.GENERATION_ENDED) {
+    context.eventSource.on(events.GENERATION_ENDED, (...args: unknown[]) => {
+      // ST may emit this before the final CHARACTER_MESSAGE_RENDERED; that render consumes the gate.
+      diagnostic('GENERATION_ENDED', { args, action: 'keep-pending-until-final-render' });
+    });
+  }
+  if (events.GENERATION_STOPPED) {
+    context.eventSource.on(events.GENERATION_STOPPED, (...args: unknown[]) => {
+      diagnostic('GENERATION_STOPPED', { args });
+      clearGeneration();
+    });
+  }
+  context.eventSource.on(events.CHAT_CHANGED, (...args: unknown[]) => {
+    diagnostic('CHAT_CHANGED', { args, currentChatId: getContext()?.getCurrentChatId?.() ?? '' });
+    cancelAll();
+  });
 }

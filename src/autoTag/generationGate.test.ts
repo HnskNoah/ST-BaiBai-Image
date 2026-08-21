@@ -34,7 +34,7 @@ describe('automatic tag generation gate', () => {
     expect(consumeGeneration('chat-a', 'impersonate')).toBe(false);
   });
 
-  it('can be cancelled when the chat changes or generation ends', () => {
+  it('can be cancelled when the chat changes or generation stops', () => {
     beginGeneration('chat-a', 'swipe', false);
     clearGeneration();
 
