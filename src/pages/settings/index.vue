@@ -9,11 +9,13 @@ import { fetchModels, testChannel } from '@/api/client';
 import {
   BACKENDS,
   DEFAULT_COMFY_SPEC,
+  DEFAULT_COMFY_THINKING,
   DEFAULT_JAILBREAK_PROMPT,
   DEFAULT_NAI_SPEC,
+  DEFAULT_NAI_THINKING,
   DEFAULT_NAI_V5_SPEC,
+  DEFAULT_NAI_V5_THINKING,
   DEFAULT_PREFILL_PROMPT,
-  DEFAULT_THINKING_PROMPT,
   newChannel,
   sanitizeTagName,
   settings,
@@ -99,19 +101,29 @@ interface TagPromptMeta {
   macros: { token: string; desc: string }[];
 }
 
+// 规范与思维链按后端成对排列:两者必须配对使用(思维链槽位要填的字段,
+// 得在同后端规范里有判据和词表),列在一起是为了改一个时能看见另一个。
+// 不按当前后端过滤——过滤会让「现在用的是哪份」变成隐式状态,反而更难排查。
 const TAG_PROMPT_METAS: TagPromptMeta[] = [
   {
     key: 'jailbreak',
     label: '破限词',
-    hint: '作为置顶 system 附加在自动 tag 请求里，降低副 API 拒答率。留空则用内置默认（与柏宝书同款文本）。',
+    hint: '作为置顶 system 附加在自动 tag 请求里，降低副 API 拒答率。留空则用内置默认（与柏宝书同款文本）。全后端通用。',
     builtin: DEFAULT_JAILBREAK_PROMPT,
     macros: [],
   },
   {
     key: 'naiSpec',
     label: 'NAI 规范',
-    hint: '默认后端为 NAI 时拼进自动 tag 请求，约束 tag 的书写规范。留空用内置默认。',
+    hint: '默认后端为 NAI、且模型是 V5 以下时拼进自动 tag 请求，约束 tag 的书写规范。留空用内置默认。',
     builtin: DEFAULT_NAI_SPEC,
+    macros: [],
+  },
+  {
+    key: 'naiThinking',
+    label: 'NAI 思维链',
+    hint: '默认后端为 NAI、且模型是 V5 以下时使用的输出前思考清单，作为 system 压在任务消息之后（解析时会自动剥掉思考块）。与「NAI 规范」配套。留空用内置默认。',
+    builtin: DEFAULT_NAI_THINKING,
     macros: [],
   },
   {
@@ -119,6 +131,13 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
     label: 'NAI V5 \u89c4\u8303',
     hint: 'Used by NAI V5 to define Base Prompt, Character Prompts, and Chinese natural language. Empty uses the built-in default.',
     builtin: DEFAULT_NAI_V5_SPEC,
+    macros: [],
+  },
+  {
+    key: 'naiV5Thinking',
+    label: 'NAI V5 思维链',
+    hint: '默认后端为 NAI、且模型是 V5 时使用的输出前思考清单。槽位块是「Base 块 + 每角色一块」，对应 V5 的 characters[] 协议，与另两份的单串形态不通用。留空用内置默认。',
+    builtin: DEFAULT_NAI_V5_THINKING,
     macros: [],
   },
   {
@@ -134,16 +153,16 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
     ],
   },
   {
-    key: 'thinking',
-    label: '思维链',
-    hint: '输出前思考检查清单，作为 system 消息压在任务消息之后，要求模型先在 <thinking> 内过检查点再输出 JSON（解析时会自动剥掉思考块）。留空用内置默认。',
-    builtin: DEFAULT_THINKING_PROMPT,
+    key: 'comfyThinking',
+    label: 'ComfyUI 思维链',
+    hint: '默认后端为 ComfyUI 时使用的输出前思考清单，作为 system 压在任务消息之后（解析时会自动剥掉思考块）。与「ComfyUI 规范」配套。留空用内置默认。',
+    builtin: DEFAULT_COMFY_THINKING,
     macros: [],
   },
   {
     key: 'prefill',
     label: '预填充',
-    hint: 'assistant 预填充，以 <thinking> 开头引导模型从思维链续写；随渠道「发送预填充」开关生效。留空用内置默认。',
+    hint: 'assistant 预填充，以 <thinking> 开头引导模型从思维链续写；随渠道「发送预填充」开关生效。留空用内置默认。全后端通用。',
     builtin: DEFAULT_PREFILL_PROMPT,
     macros: [],
   },
@@ -1042,7 +1061,7 @@ async function confirmUpdate() {
 
         <p class="bbi-modal-label">{{ editingTagPrompt.hint }}</p>
 
-        <!-- 可用宏:点一下插入到光标处(当前各条暂无宏,留空不显示) -->
+        <!-- 可用宏:点一下插入到光标处(仅 ComfyUI 规范有 {{nl}};无宏的条目不显示这一栏) -->
         <div v-if="editingTagPrompt.macros.length" class="bbi-macro-bar">
           <span class="bbi-macro-tip">点击插入宏:</span>
           <button

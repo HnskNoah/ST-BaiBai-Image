@@ -22,11 +22,13 @@ import {
   activeComfyPreset,
   DEFAULT_COMFY_NL_SPEC,
   DEFAULT_COMFY_SPEC,
+  DEFAULT_COMFY_THINKING,
   DEFAULT_JAILBREAK_PROMPT,
   DEFAULT_NAI_SPEC,
+  DEFAULT_NAI_THINKING,
   DEFAULT_NAI_V5_SPEC,
+  DEFAULT_NAI_V5_THINKING,
   DEFAULT_PREFILL_PROMPT,
-  DEFAULT_THINKING_PROMPT,
   settings,
 } from '@/state/settings';
 
@@ -55,6 +57,23 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiV5On: boo
       : (options.prompts?.naiSpec ?? '').trim() || DEFAULT_NAI_SPEC;
   }
   return '';
+}
+
+/**
+ * 按默认后端取思维链,与 backendPromptSpec 一一配对。
+ *
+ * 拆成三份是因为思维链的槽位块要求填的每个字段,都得在同后端规范里有判据和词表:
+ * V5 的规范讲的是 Base + Character Prompts,没有景别词表、没有横竖判据,也明令禁止
+ * 邻接绑定——共用一份 ComfyUI 口径的思维链会让它被要求填规范从未教过的东西。
+ * webui 暂无专属规范,回落 comfy 那份(该后端尚未接入)。
+ */
+function backendThinkingPrompt(options: AutoTagSettings, naiV5On: boolean): string {
+  if (settings.defaultBackend === 'nai') {
+    return naiV5On
+      ? (options.prompts?.naiV5Thinking ?? '').trim() || DEFAULT_NAI_V5_THINKING
+      : (options.prompts?.naiThinking ?? '').trim() || DEFAULT_NAI_THINKING;
+  }
+  return (options.prompts?.comfyThinking ?? '').trim() || DEFAULT_COMFY_THINKING;
 }
 
 function isContextMessage(message: STContext['chat'][number] | undefined): boolean {
@@ -168,12 +187,12 @@ export async function buildAutoTagMessages(
   sampleImage.size = 'portrait';
   const outputShape = JSON.stringify({ images: [sampleImage], changes: [] });
   const contentRule = naiV5On
-    ? '4. Every image must include Base tag, Chinese Base nl, and characters. Base contains only global counts, scene, composition, lighting, and shared relations. Give each visible named character one Character Prompt ordered left-to-right then top-to-bottom; name/tag/nl are all required. Character tag uses girl/boy without a numeric count and contains that character appearance, outfit, and action. Do not include quality tags, negative tags, or XML.'
+    ? '4. Every image must include Base tag, Chinese Base nl, and characters. Base contains only global counts, scene, composition, lighting, and shared relations — this applies to the Base nl as much as to the Base tag. Give each visible named character one Character Prompt ordered left-to-right then top-to-bottom; name/tag/nl are all required. Character tag uses girl/boy without a numeric count and contains that character appearance, outfit, and action. Do not include quality tags, negative tags, or XML.'
     : nlOn
     ? '4. tag 与 nl 是同一画面的两种写法：tag 是 danbooru 短 tag，nl 是连贯的自然语言；二者都只含正面内容，不得包含质量词、负面词、JSON 以外的说明或 <bbi_image>/<tag>/<nl>/<size> 标签。'
     : '4. tag 只能是该画面的正面内容提示词；不得包含质量词、负面词、JSON 以外的说明或 <bbi_image> 标签。';
   const negativeRule = negativeOn
-    ? '\n   negative 是本画面专用的 danbooru 负面短 tag：只排除与正文冲突或本构图特别容易误生成的内容，可为空；禁止输出通用质量、画质、审美或技术性负面词，包括但不限于 worst quality、low quality、blurry、lowres、bad anatomy、bad hands、jpeg artifacts；不要写希望出现的内容，不得使用 @角色占位符。'
+    ? '\n   negative 是本画面专用的 danbooru 负面短 tag：只排除与正文冲突或本构图特别容易误生成的内容，可为空；禁止输出通用质量、画质、审美或技术性负面词，包括但不限于 worst quality、low quality、blurry、lowres、bad anatomy、bad hands、jpeg artifacts；不要写希望出现的内容，不得使用 @角色占位符。\n   negative 里绝不能出现正文已明确成立的事实，也不能否定你自己刚写进本图 tag/nl 的任何东西：正文写了在下雨、或你自己的 nl 写了 drizzle，就绝不许在 negative 写 rain；写了角色戴眼镜就不许写 glasses——那是在抹掉画面本该有的东西。写完 negative 逐词回看本图的 tag 与 nl，凡是能在里面找到对应内容的词一律删掉。拿不准时留空，空的 negative 永远比抵消正文的 negative 安全。'
     : '';
 
   // 设置层已维护 0 ≤ min ≤ max；这里仍做一次局部归一,让直接调用/测试传入脏对象也不会
@@ -185,27 +204,30 @@ export async function buildAutoTagMessages(
       ? `2. images 数量必须在 0～${maxImages} 之间。没有值得绘制的可见瞬间时可以返回空数组；不要为了接近上限而凑数。`
       : `2. images 数量必须在 ${minImages}～${maxImages} 之间。下限 ${minImages} 是用户明确要求：即使最强候选不足，也必须从目标正文中较次但仍可见的单一瞬间补足，不得返回少于 ${minImages} 张或空数组。达到下限后不要为了接近上限而凑数。`;
 
-  const sizeRule = `5. size 是画幅方向，只能填 "portrait"（竖构图）或 "landscape"（横构图）。先确定最终景别与主体空间分布，再选择方向；人数只是参考，不是硬规则：
-   - landscape：群像、远景/全景、宽阔场景（战场、山河、街景、大殿）、横向展开的互动。
-   - portrait：单人、纵向站姿、半身/特写，以及双人近距离构图。
-   两人同框不等于必须横屏；size 必须与 tag/nl 中的实际构图一致。
-   拿不准就填 "portrait"。`;
+  // 画幅方向的判定口径写在后端规范的「画幅方向」段;这里只声明键的合法值,不重复规则。
+  const sizeRule = `5. size 是画幅方向，只能填 "portrait"（竖构图）或 "landscape"（横构图），判定口径见后端规范；拿不准就填 "portrait"。`;
 
   const libraryReferenceRule = naiV5On
     ? '- If a visible character exists in the fixed appearance library or is created in this changes array, copy the fixed fields into that character own characters[].tag; keep appearance wording verbatim but convert 1girl/1boy to girl/boy. Do not put them in Base or assign them to another character. Library natural-language notes may inform that character nl.'
     : '- 画面中的角色只要已在【角色固定外貌库】，或在本次 changes 中建了档，tag 与 nl 就必须照抄库中/刚建档的字段值，用词一字不改，不得自行改写或增删其固定外貌。\n   - 同一角色的固定外貌在一张图里只写一遍：同一图内再次提到他时用简短指代（the boy、the silver-haired girl）承接，禁止把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成互不相连的几块。';
   const newCharacterNlRule = naiV5On
-    ? '\n   - NAI V5 profile requirement: every field:"new" change must include a non-empty nl containing a concise Chinese natural-language description of the character fixed appearance. Example: {"name":"Xiaoxue","field":"new","fields":{"sex":"1girl","hair":"long black hair","eyes":"blue eyes"},"nl":"Chinese description of the same fixed appearance","position":"P2","reason":"first appearance"}.'
+    ? '\n   - NAI V5 profile requirement: every field:"new" change must include a non-empty nl containing a concise Chinese natural-language description of the character fixed appearance. Describe only fixed appearance: no current outfit, pose, or location — temporary states never enter the profile. Example: {"name":"Xiaoxue","field":"new","fields":{"sex":"1girl","hair":"long black hair","eyes":"blue eyes"},"nl":"Chinese description of the same fixed appearance","position":"P2","reason":"first appearance"}.'
     : '';
   const newCharacterRule = `
    - **建档先于画图**：先通读目标正文，找出每个有名有姓、且【角色固定外貌库】里还没有的正式角色——只要角色卡、世界书、柏宝书或持续剧情为他给出了设定，或他是持续参与剧情的角色，首次出场就必须建档，不论他是否入选本次图片。判断依据是发给你的全部设定内容，由你自己通读判断。一次性无名路人不建。
+   - “已建档”只能按【角色固定外貌库】区块中的同名条目判断：只有名字实际列在该区块中才算已建档；世界书、角色卡、柏宝书或正文里的详细设定只是建档依据，绝不等于已经在库。每个在场正式角色必须二选一：指出库中的同名条目，或在 changes 中输出 field:"new"。
    - 建档写法：{"name":"角色名","field":"new","fields":{"sex":"1girl","hair":"long black hair","eyes":"blue eyes"},"position":"P2","reason":"首次出场建档"}；position 填他首次出现的位置，仅作记录——建档在本楼全程有效，本楼任意位置的图片都可以立即使用这套外貌。
    - 建档字段只放**长期不变的身体特征**：sex/hair/eyes/skin/body/extra 填性别、发色发型、瞳色、肤色、体型、标志特征；outfit 只填该角色**固定不换的招牌着装**。动作、姿势、所在场景、临时状态（lying on carpet、standing、sitting、unzipped、湿身、伤势等）一律不得写进任何字段——档案会在他之后每一张图里被照抄，把姿势写进去会让他在所有画面里都保持那个姿势。
    - 建档取值优先级：目标正文明确的当前外貌 > 柏宝书当前角色状态 > 角色卡/世界书明确人设 > 合理补全。人设明确写了颜色时必须原样转换，不得擅改；hair 与 eyes 必填，hair 至少包含发色和长度/发型，eyes 必须包含瞳色，缺任一项该条建档会被丢弃。
-   - 如果设定没写发色或瞳色，根据世界观、种族、身份、性格和其余角色设定补出简洁、协调、可长期复用的颜色；这是一次性建档决定，后续不得重新随机。
+   - 如果设定没写发色、发型或瞳色，根据世界观、种族、身份、性格和其余角色设定补出简洁、协调、可长期复用的颜色与发型；这是一次性建档决定，后续不得重新随机。
    - 建完档就直接用：同一次输出里，先在 changes 里确立该角色的固定外貌，再在图片 ${naiV5On ? 'characters[].tag' : 'tag'} 中照抄这套外貌，并围绕它补充服装、动作、场景等其余 tag；同一张图里这套外貌只写一遍。${newCharacterNlRule}`;
+  const multiCharacterBindingRule = naiV5On
+    ? '- 多人画面中，每个角色的发色、瞳色、体型、服装、物件和个人动作都必须放进各自的 characters[].tag，禁止放进 Base 或分配给其他角色。'
+    : '- 多人画面中，每个角色的发色、瞳色、体型、服装、物件和个人动作都必须使用该角色的区分性称谓邻接绑定，禁止把两人的外貌特征散放成无法归属的一串公共 tag。';
   const characterRule = `7. 角色状态与 changes：${newCharacterRule}
    ${libraryReferenceRule}
+   - 按正文 P 位置为每个角色维护临时服装状态：正文未明确初始穿着时可以合理决定一次；没有穿上、脱下、换装、衣物损坏或场景/时间跳跃时沿用上一状态，发生明确变化后从对应 P 位置起更新。首次确定一套临时服装时，必须冻结足以复现款式的“服装视觉指纹”：服装类别之外，再固定版型/剪裁、主色和关键部件，涉及裤袜时固定颜色与透明度；例如不能只写 school uniform, pantyhose，而应具体到 navy school blazer, white collared shirt, red ribbon, dark pleated skirt, opaque white pantyhose。只补少量关键特征，不堆无关装饰。相同状态复用同一视觉指纹；镜头外不可见的部件可以省略，但省略不等于脱掉，后续重新可见且中间没有变化时必须恢复。每张图的 tag 与 nl 都要写出当前镜头可见的关键服装特征。临时穿着不得写进固定 outfit，除非设定明确它是长期不换的招牌着装。
+   ${multiCharacterBindingRule}
    - 库中已有角色发生**永久外貌变化**（染发、剪发、留疤、长大、永久变身、固定造型改变等）时，必须通过 changes 报告：{"name":"角色名","field":"hair","value":"short red hair","position":"P4","reason":"在此处染发并剪短"}；field 只能是 sex/hair/eyes/skin/body/extra/outfit。
    - 库中带 [locked] 标记的角色是全局锁定档案：无论剧情如何发展，其固定外貌永不变化，**不得为其报告任何 changes**（报了也会被丢弃），画面中始终照抄锁定字段值。
    - 永久变化的 position 是新状态开始生效的位置：该位置之前的图片使用旧档案，该位置及之后使用新档案；多次变化按正文先后分别报告。
@@ -241,10 +263,11 @@ ${characterRule}
   if (spec) messages.push({ role: 'system', content: spec });
   messages.push({ role: 'system', content: fixedContract });
   // 思维链:压在任务协议之后,要求模型先在 <thinking> 里过检查点再输出 JSON。
-  // 解析端(protocol.ts)会先剥掉 think 块再取 JSON,二者配套;留空回落内置默认。
-  const thinking = (options.prompts?.thinking ?? '').trim() || DEFAULT_THINKING_PROMPT;
+  // 解析端(protocol.ts)会先剥掉 think 块再取 JSON,二者配套;按后端取对应的那一份。
+  const thinking = backendThinkingPrompt(options, naiV5On);
   if (thinking) messages.push({ role: 'system', content: thinking });
-  const userContent = `${memoryText}\n\n${library ? `${library}\n\n` : ''}${previous ? `${previous}\n\n` : ''}--- 目标正文｜${roleLabel(context, targetFloor)} ---\n${preparedTarget.promptText}`;
+  const libraryBlock = library?.trim() || `【角色固定外貌库】[system-maintained; currently empty]\n（当前为空，没有任何角色已建档。世界书、角色卡、柏宝书和正文只提供建档依据；未列在本区块中的正式角色必须通过 field:"new" 建档。）`;
+  const userContent = `${memoryText}\n\n${libraryBlock}\n\n${previous ? `${previous}\n\n` : ''}--- 目标正文｜${roleLabel(context, targetFloor)} ---\n${preparedTarget.promptText}`;
   messages.push({ role: 'user', content: userContent });
   // 预填充:以 <thinking> 开头,强制模型从思考清单续写;渠道「发送预填充」关闭时由 client 丢弃。
   const prefill = (options.prompts?.prefill ?? '').trim() || DEFAULT_PREFILL_PROMPT;
