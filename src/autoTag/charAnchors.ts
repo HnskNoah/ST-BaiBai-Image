@@ -72,7 +72,7 @@ const CONVERT_SPEC = `你是外貌 tag 转换器。把给出的角色中文外�
 - sex(性别):1girl / 1boy / androgynous 等
 - hair(头发):long black hair / short silver hair 等
 - eyes(眼睛):red eyes / blue eyes 等
-- skin(肤色):pale skin / tan 等(没提就留空)
+- skin(肤色):tan / dark skin 等(没提就留空;白皙是默认肤色,不需要记录)
 - body(体型):petite / tall / slim / small breasts 等
 - extra(标志特征):heterochromia / scar on cheek / pointy ears 等(没提就留空)
 

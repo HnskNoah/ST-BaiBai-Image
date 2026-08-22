@@ -373,6 +373,7 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
 - 各自不同的动作/姿态也用同一个绑定手法写进 tag：写 "black hair girl waving, silver hair girl eating dango"，不要写成 "waving, eating dango" 这种无法分配的裸动作（模型会随机安到人头上）；多人共同参与的互动（holding hands、hug 等）直接写。
 - 表情与视线同样是**每人各一份、必须绑定**的特征：写 "black hair girl smiling, silver hair girl looking at another"，不要把 smile、looking at another 裸写在串里——两人同框时裸写的表情/视线只会落到其中一人身上，另一人变成默认木脸。两人表情或视线恰好相同时也各写一份带称谓的，不适用「共有特征只写一次」。
 - 体型词（petite、tall、muscular 等）不是锚点，必须绑定到具体角色，不要裸写：写 "petite on silver hair girl"，不要让 petite 飘在串里——飘着的体型词会被模型摊到同框每个人身上。发色、瞳色本身是用来指认角色的锚点，照常裸列即可，不需要（也无法）自我绑定。
+- 肤色词默认一个都不写：模型的默认肤色已经足够白，pale skin、white skin、fair skin 这类白皙词一律禁止——再叠一层会白得发灰、像僵尸一样失真。只有角色明显是晒黑或深肤色时才写 tan、dark skin 这类词（同样绑定到具体角色）；从角色库照抄字段时，白皙类肤色词也跳过不抄。
 - 场景词 1~2 个即可，多了会抢角色主体；背景不重要时用 blurred background 类词压住。
 
 多人 tag 示例（对照上面的规则看写法）：
@@ -426,7 +427,7 @@ nl 与 tag 描述的是同一画面：tag 覆盖实体与属性关键词，nl �
 核心动作要写到「谁的身体部位 + 接触点」的具体程度（如 her knee pressing against the tented blanket），姿态词（kneeling、sitting）只是辅助，不得拿姿态替代核心动作。
 多人画面按三段组织：先一句总起（人数 + as the main focus + 构图，把主体锁在角色上）→ 再每人一句分述，先主动方后被动方 → 最后一句环境氛围，以 blurred in the background 收尾。
 每句分述都要带上该角色的**区分性称谓**（the green-haired girl with green eyes ...）——模型不跨句记忆，用 she/they 这类指代会丢失配对；tag 里的绑定写法（谁穿什么颜色、谁在做什么动作）在这里用完整句子再写一遍，即使 tag 被重排也能兜底。
-区分性称谓 = 足以把此人和同框其他人分开的最短说法（发色 + 瞳色通常就够），不是把他的整串固定外貌重新念一遍：写 the black-haired girl with blue eyes，不要写 1girl, long black hair, blue eyes, pale skin, petite, white dress 这种把 tag 串塞进句子的写法——那会让模型以为画面里有多个同样的人。
+区分性称谓 = 足以把此人和同框其他人分开的最短说法（发色 + 瞳色通常就够），不是把他的整串固定外貌重新念一遍：写 the black-haired girl with blue eyes，不要写 1girl, long black hair, blue eyes, petite, white dress 这种把 tag 串塞进句子的写法——那会让模型以为画面里有多个同样的人。
 多人 nl 示例（与上面 tag 示例是同一画面）：
 Two girls as the main focus, medium shot, in a park at sunset. The black-haired girl with blue eyes wears a white dress and waves at the viewer. The silver-haired girl with red eyes wears a red dress and eats a skewer of dango. Warm sunset light across the park, the trees softly blurred in the background.`;
 
@@ -573,6 +574,7 @@ E. 选段
    - 每张图的 tag 覆盖了它自己那一块的全部非 "-" 槽位，没有漏掉表情、视线或环境光；要求 nl 时与 tag 描述同一画面。
    - 每个剧情 tag 都能追溯到正文/设定；地形、地面、道路、天气和环境状态 tag 没依据就删除。
    - 多人画面里服装、体型、物件、表情、视线和个人动作都已绑定到各自角色，没有散落的无主特征；每个在场角色的服装都在 tag 里实际出现了，没有谁的衣服只写在槽位里却没进 tag，也没有 school uniform、pantyhose 这类没主人的笼统孤立词；每个在场角色都各有一个绑定到自己的表情词和视线词，没有谁只有动作没有表情。
+   - 没有 pale skin、white skin、fair skin 这类白皙肤色词混进任何一张图（角色库字段里有也跳过不抄）：默认肤色已经够白，写了会白得发灰失真；角色真是晒黑/深肤色时用的 tan、dark skin 不在此列。
    - 这一层只核对、不改决定：发现问题就在落 tag 时直接改对，不要在思考里写出「超限，需精简」「让位」「改为」这类修订过程。张数在 E 段就已经定死，这里不该再变。
    - 每个同人角色的 tag 串里都有 B 段定下的 character name \\(copyright name\\) 身份 tag（人数/构图之后、普通外貌之前，括号已转义），原创角色没有被误加作品名。
    - 若本图协议含 negative 键：negative 已逐词对照本图的 tag 与 nl，凡是能在其中找到对应内容的词都已删掉，没有抵消正文已成立的事实；拿不准的已留空。协议不含 negative 键时本项直接跳过。

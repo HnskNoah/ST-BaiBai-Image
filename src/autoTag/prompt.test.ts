@@ -247,6 +247,11 @@ describe('auto tag prompt', () => {
     // 建档的 hair 必须带长度/发型:只写颜色的旧措辞会让模型以 black hair 过关。
     expect(thinkingMsg?.content).toContain('hair 必须同时带发色和长度/发型');
     expect(thinkingMsg?.content).not.toContain('hair 与 eyes 都不得留空');
+    // 白皙肤色词禁令(ComfyUI 默认肤色已够白,叠 pale skin 会白得失真):
+    // 规范给禁令,思维链第三层给落笔前的检查位;tan/dark skin 是豁免项。
+    expect(messages.some(m => m.content.includes('白皙词一律禁止'))).toBe(true);
+    expect(thinkingMsg?.content).toContain('白皙肤色词混进任何一张图');
+    expect(thinkingMsg?.content).toContain('tan、dark skin 不在此列');
     // 建档字段的详细写法瘦身后只留在任务协议一份,thinking 不再复述。
     expect(messages.some(m => m.content.includes('建档写法：{"name":"角色名","field":"new"'))).toBe(true);
     // 新旧档案的 position 语义、时代判断的发挥边界:瘦身后各自只留一份权威副本
@@ -389,6 +394,9 @@ describe('auto tag prompt', () => {
       expect(text).toContain('实际提示词形态为 character name \\(copyright name\\)');
       expect(text).toContain('"character name \\\\(copyright name\\\\)"');
       expect(text).not.toContain('形态为 character name (copyright name)');
+      // 白皙肤色词禁令只给 ComfyUI:本地模型默认肤色已够白,再叠 pale skin 会白得失真。
+      expect(text).toContain('白皙词一律禁止');
+      expect(text).toContain('白皙肤色词混进任何一张图');
 
       // NAI 4 系:身份 tag 不转义 + 显式 NSFW 解剖落点(从有变无的回归,此处补回)。
       // 负面词由后端按模型固定附加,AI 不写 negative——不该有 negative 条件自查。
@@ -403,6 +411,9 @@ describe('auto tag prompt', () => {
       expect(text).toContain('若本图是显式 NSFW 场景');
       expect(text).not.toContain('若本图协议含 negative 键');
       expect(text).not.toContain('成年人');
+      // NAI 侧用户没有白痘问题,不引入这条禁令。
+      expect(text).not.toContain('白皙肤色词');
+      expect(text).not.toContain('白皙词一律禁止');
 
       // NAI V5:身份 tag 落点是 characters[].tag 首位;NSFW 按 Base/角色块分工;
       // contentRule 明令禁止 negative tags,不该有 negative 条件自查。
@@ -416,6 +427,7 @@ describe('auto tag prompt', () => {
       expect(text).toContain('若本图是显式 NSFW 场景');
       expect(text).not.toContain('若本图协议含 negative 键');
       expect(text).not.toContain('成年人');
+      expect(text).not.toContain('白皙肤色词');
     } finally {
       settings.defaultBackend = oldBackend;
       settings.nai.model = oldModel;
