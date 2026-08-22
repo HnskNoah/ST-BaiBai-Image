@@ -353,6 +353,11 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
 从重要到次要排列：人数/主体 → 镜头构图 → 外貌 → 服饰 → 动作姿态 → 场景 → 光线氛围；单个画面控制在 40 个 tag 以内。
 动作姿态内部再排：本画面核心动作（谁做了什么、身体部位接触了什么）必须是动作区第一条独立短 tag；辅助姿态（坐着、站着、跪着等）排后面。同一动作词不得重复写两遍。
 
+同人角色身份 tag：
+- 若角色明确来自已有动漫、游戏、小说等作品，必须在人数/构图之后、普通外貌之前写模型可识别的英文 Danbooru 身份 tag，格式为 character name \(copyright name\)。角色名与作品名使用其通行英文 tag，不得直译中文、缩写作品名或只写角色名。
+- ComfyUI 会把未转义圆括号当作权重语法，所以身份 tag 的括号必须转义。实际提示词形态为 character name \(copyright name\)；由于最终输出是 JSON，tag 字符串中必须写成 "character name \\(copyright name\\)"，JSON 解析后才会保留单个反斜杠。
+- 原创角色不写身份 tag；无法从角色卡、世界书或正文可靠确定作品时不得猜测作品名，按原创角色处理。
+
 多人画面（两人及以上）额外规则：
 - 人数 tag 必须明确（2girls、1boy 1girl 等）；缺了模型会漏画或多画。
 - 构图词（medium shot、full body 等，只写一个）紧跟人数 tag 写在前面，把画面主体锁在角色身上。
@@ -425,6 +430,8 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
 1girl, long hair, school uniform, sitting by window, classroom, warm sunlight
 从重要到次要排列：人数/主体 → 外貌 → 服饰 → 动作姿态 → 场景 → 光线氛围 → 镜头构图；单个画面控制在 40 个 tag 以内。
 动作姿态内部再排：本画面核心动作（谁做了什么、身体部位接触了什么）必须是动作区第一条独立短 tag；辅助姿态（坐着、站着、跪着等）排后面。同一动作词不得重复写两遍。
+同人角色身份 tag：若角色明确来自已有动漫、游戏、小说等作品，必须在人数之后、普通外貌之前写模型可识别的英文 Danbooru 身份 tag，格式为 character name (copyright name)。角色名与作品名使用其通行英文 tag，不转义圆括号，不得直译中文、缩写作品名或只写角色名。原创角色不写；无法可靠确定作品时不得猜测，按原创角色处理。
+显式场景 tag：当正文明确是 NSFW/性行为画面时，不能只写 nsfw、nude、sex 或含蓄动作。逐个写出画面中实际可见、与动作有关的身体部位和性器官（如 breasts、nipples、penis、pussy、anus、testicles），并用准确的 Danbooru 动作/接触 tag 说明谁的什么部位接触或进入哪里；性器官被衣物、身体或镜头完全遮住时不要虚构为可见。
 NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag（1girl、2boys 等）；需要特定画风时可加艺术家/风格 tag。
 
 画面补全（重要）：
@@ -478,6 +485,7 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
 2. 先处理角色状态，再决定是否出图：
    - 通读目标正文，逐个列出实际在场且有名有姓的角色。不能只看最终入选图片里的人，也不能漏掉世界书、角色卡或柏宝书为其给出了设定的角色。
    - 逐个对照【角色固定外貌库】：库里没有、但属于正式角色（有设定或持续参与剧情）的，首次出场就用 field:"new" 建档，不论他是否入选本次图片；明确的一次性无名路人不建。
+   - 逐个判断正式角色是原创角色还是同人角色：只有角色卡、世界书、正文或通行角色名能可靠指向某个已有作品时才判为同人；证据不足时按原创处理，不猜作品。对每个同人角色确定模型可识别的英文 Danbooru 角色名与作品名，准备 character name (copyright name) 身份 tag；具体括号转义方式严格服从当前后端规范。
    - 新建档优先采用目标正文与人设明确给出的当前外貌；明确写了发色/瞳色就原样转换。缺少颜色时，根据世界观、种族、身份、性格和其余角色设定一次性补全，hair 与 eyes 都不得留空。
    - 建档字段只放长期不变的身体特征与固定招牌着装；动作、姿势、所在场景、临时状态（lying on carpet、standing、unzipped、湿身、伤势等）一律不写进档案——档案会在之后每张图里被照抄。
    - 建档在本楼全程有效：确立后，本楼任意位置的图片都直接照抄该角色的字段值，不要在同一楼里对同一角色给出两套不同外貌。
@@ -496,6 +504,7 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
 
 5. 再决定怎么画：
    - 库中角色（含本轮新建档的）照抄库里的字段值，用词不改；同一角色的固定外貌一张图里只写一遍，再次提到用简短指代承接。多人各自的服装、颜色、物件和动作必须明确绑定。
+   - 当前后端是 NAI 且正文明确为成年人之间的显式 NSFW 场景时，逐人列出镜头中实际可见的性器官、身体部位及接触关系，再转成准确 tag；不得只用 nsfw、nude、sex 或含蓄措辞代替关键解剖信息，也不得把被完全遮挡或画面外的部位写成可见。
    - 必须先判断时代与世界观：有明确设定时严格遵循；证据较少时也要根据人物身份、器物与剧情气质主动选择具体、自洽的文明或原创视觉体系，不得退回中性服装或默认现代都市。视觉细节允许合理猜测，但不得与明确事实冲突。
    - 把时代判断落实到人物服装版型、材质、配饰及可见的建筑、家具和器物；架空或混合风格必须内部统一，连续场景保持同一套视觉判断。
    - 主动确定镜头距离、构图、光线来源、色调和氛围；景别必须完整容纳核心动作与接触点。
@@ -505,7 +514,7 @@ export const DEFAULT_THINKING_PROMPT = `【输出前思考清单】
    - 每个剧情 tag 都能追溯到正文/设定，每个补充 tag 都只属于允许发挥的镜头、光线、氛围或时代锚点。
    - 每张图是单一瞬间；多张图彼此不重复；人数、角色绑定、连续状态、核心动作、景别、size 和 P编号一致。
    - 没有衣物穿脱、湿身/污损、伤势、饰品或手持物的无依据复原；没有把临时状态误写进 changes。
-   - 目标正文里每个有设定的正式角色都已建档或已在库中；库中角色的外貌都照抄了字段值且每张图只写一遍；永久变化都有合法 P编号，且图片使用了该位置应有的新旧档案；tag 是英文正面短 tag、无质量词负面词；张数在设定的最少～最多范围内；要求 nl 时与 tag 描述同一画面。
+   - 目标正文里每个有设定的正式角色都已建档或已在库中；每个同人角色都带有当前后端要求的 character name (copyright name) 身份 tag，原创角色没有被误加作品名；库中角色的外貌都照抄了字段值且每张图只写一遍；永久变化都有合法 P编号，且图片使用了该位置应有的新旧档案；tag 是英文正面短 tag、无质量词负面词；NAI 的成年人显式场景已明确写出实际可见的性器官和接触关系，没有只写泛化 NSFW 词；张数在设定的最少～最多范围内；要求 nl 时与 tag 描述同一画面。
    - 仅当设定的最少图片数为 0 且确实没有值得画的画面时，images 才可为空；无论图片数量如何都保留应有的建档与 changes。`;
 
 /** NAI V5 native multi-character prompt spec. */
@@ -518,11 +527,15 @@ Each image must contain:
 - characters: an array of named characters actually visible in the image, ordered left-to-right then top-to-bottom. Every item is {"name":"...","tag":"...","nl":"..."}.
 
 Character Prompt rules:
-1. tag uses English danbooru tags for that character's sex, fixed appearance, current outfit, expression, pose, action, and necessary relative position. Use girl/boy rather than 1girl/2girls; numeric counts belong only in Base.
-2. nl uses Chinese natural language for the same character's appearance, outfit, action, facing, interaction, and approximate position. It may add relationship or spatial detail but must not conflict with tag.
-3. For characters in the fixed appearance library, copy the library Tag fields into that character's tag. Keep appearance wording verbatim, but convert the library sex count tag 1girl/1boy to girl/boy. Library natural-language notes may inform that character's nl. Tag fields remain canonical.
-4. For multi-character interactions, use NovelAI source# / target# / mutual# tags when they clarify actor and target. Do not use ComfyUI's multi-person segmentation convention.
-5. Do not create Character Prompts for absent named characters. Anonymous background crowds remain in Base.
+1. tag uses English danbooru tags for that character's identity, sex, fixed appearance, current outfit, expression, pose, action, visible anatomy, and necessary relative position. Use girl/boy rather than 1girl/2girls; numeric counts belong only in Base.
+2. First decide whether the named character is an original character or a fandom character. Treat a character as fandom only when the character card, lorebook, story, or an unambiguous well-known name reliably identifies an existing anime, game, novel, or other work. If the work is uncertain, do not guess; treat the character as original.
+3. For every fandom character, put the model-recognized English Danbooru identity tag first in that character's tag, formatted exactly as character name (copyright name). Do not escape the parentheses for NovelAI, do not translate the names literally, do not abbreviate the copyright, and do not put this per-character identity tag in Base. Original characters receive no copyright identity tag.
+4. For an explicit NSFW scene. Do not rely on vague tags such as nsfw, nude, or sex: name each actually visible, action-relevant anatomical feature or genital in the owning character's tag, such as breasts, nipples, penis, pussy, anus, or testicles. Do not claim fully covered or out-of-frame anatomy is visible.
+5. Put the shared sexual act and overall contact in Base. Use source# / target# / mutual# tags in Character Prompts when they clarify who acts, which body part is involved, and who or what receives the action. The tags must describe the exact visible contact rather than euphemize it.
+6. nl uses Chinese natural language for the same character's appearance, outfit, action, facing, interaction, visible anatomy, and approximate position. It may add relationship or spatial detail but must not conflict with tag.
+7. For characters in the fixed appearance library, copy the library Tag fields into that character's tag after any fandom identity tag. Keep appearance wording verbatim, but convert the library sex count tag 1girl/1boy to girl/boy. Library natural-language notes may inform that character's nl. Tag fields remain canonical.
+8. For other multi-character interactions, use NovelAI source# / target# / mutual# tags when they clarify actor and target. Do not use ComfyUI's multi-person segmentation convention.
+9. Do not create Character Prompts for absent named characters. Anonymous background crowds remain in Base.
 
 Both Base and Character Prompts must use Tag + Chinese natural language. Tags stabilize identity and attributes; natural language supplies complex relations and spatial semantics. Do not output quality tags, generic negative tags, artist presets, or XML. The backend adds artist and quality tags.
 
