@@ -193,6 +193,8 @@ runForFloor(floor, opts)
 定位 `.mes[mesid] .mes_text` → `parseImageTags(message.mes)` 与 DOM 锚点**按序配对** →
 每个锚点 `attachShadow` 后 `render(h(Card,...), shadowRoot)`,记录进 `SlotRegistry`(key = chatId|mesid|swipeId|seq)。
 重水合前先 `render(null, container)` 显式卸载,全程幂等。MESSAGE_DELETED / CHAT_CHANGED 全量重建。
+事件后的水合走 `scheduleHydration`:setTimeout 0 先水合一次、~100ms 后再查一次——其他 ST 监听器
+可能在事件后替换 `.mes_text`(晚班时锚点未变只走 props patch,零重建);换聊天则作废。
 
 **卡片为什么在 shadow DOM 里**:楼层活在 ST 的 light DOM,ST 全局样式与用户装的美化主题
 会直接改到卡片上。每个锚点各自 `attachShadow` → 样式双向隔离(与 index.ts 主窗口同构,

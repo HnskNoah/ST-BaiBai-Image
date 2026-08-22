@@ -191,21 +191,46 @@ export function hydrateMessage(messageId: number, ctx: STContext): void {
   }
 }
 
-/** 全量重水合：先卸载全部，再逐条水合。切聊天 / 删除楼层后调用。 */
-export function hydrateAll(ctx: STContext): void {
-  unmountAll();
+/** Hydrate currently displayed messages without tearing down cards that still have the same anchors. */
+function hydrateVisible(ctx: STContext): void {
   for (let messageId = 0; messageId < ctx.chat.length; messageId++) {
     hydrateMessage(messageId, ctx);
   }
 }
 
+/** Full rebuild for chat changes or message deletion. */
+export function hydrateAll(ctx: STContext): void {
+  unmountAll();
+  hydrateVisible(ctx);
+}
+
+const LATE_HYDRATION_DELAY = 100;
+
 /**
- * 绑定 ST 渲染事件并水合现有楼层（幂等，可重复调用）。
- * 事件并集（DESIGN-FLOOR-UI.md §6.1）：
- * - CHARACTER_MESSAGE_RENDERED / USER_MESSAGE_RENDERED：新楼层渲染
- * - MESSAGE_UPDATED：编辑保存后重渲染
- * - MESSAGE_SWIPED：滑动后重渲染
- * - MESSAGE_DELETED / CHAT_CHANGED：楼层结构变化，全量重建
+ * Other ST listeners may still replace .mes_text after an event. Hydrate at the end of the
+ * event loop, then check once more; an unchanged anchor only receives a cheap Vue props patch.
+ */
+function scheduleHydration(
+  task: (ctx: STContext) => void,
+  lateTask: (ctx: STContext) => void = task,
+): void {
+  const chatId = getContext()?.getCurrentChatId();
+  const run = () => {
+    const current = getContext();
+    if (!current || current.getCurrentChatId() !== chatId) return;
+    task(current);
+  };
+  setTimeout(run, 0);
+  setTimeout(() => {
+    const current = getContext();
+    if (!current || current.getCurrentChatId() !== chatId) return;
+    lateTask(current);
+  }, LATE_HYDRATION_DELAY);
+}
+
+/**
+ * Bind message rendering plus the two recovery events used by ST for generation finalization
+ * and loading older history.
  */
 export function bindFloorHydration(): boolean {
   if (bound) return true;
@@ -217,26 +242,33 @@ export function bindFloorHydration(): boolean {
   const onMessage = (messageId: unknown) => {
     const id = Number(messageId);
     if (!Number.isInteger(id)) return;
-    const current = getContext();
-    if (current) hydrateMessage(id, current);
+    scheduleHydration(current => hydrateMessage(id, current));
+  };
+  const onVisibleReload = () => scheduleHydration(hydrateVisible);
+  const onGenerationEnded = (messageCount: unknown) => {
+    const id = Number(messageCount) - 1;
+    if (Number.isInteger(id) && id >= 0) scheduleHydration(current => hydrateMessage(id, current));
+    else onVisibleReload();
   };
   const onFullReload = () => {
     clearAutoGenerateFlags();
-    // 切聊天/删楼:在途生成任务已无归属,一并中止清空(否则结果会写回错的楼层)
+    // A deleted/switched chat no longer owns in-flight generation work.
     clearAllGen();
-    const current = getContext();
-    if (current) hydrateAll(current);
+    scheduleHydration(hydrateAll, hydrateVisible);
   };
 
   eventSource.on(eventTypes.CHARACTER_MESSAGE_RENDERED, onMessage);
   eventSource.on(eventTypes.USER_MESSAGE_RENDERED, onMessage);
   eventSource.on(eventTypes.MESSAGE_UPDATED, onMessage);
   eventSource.on(eventTypes.MESSAGE_SWIPED, onMessage);
+  eventSource.on(eventTypes.GENERATION_ENDED, onGenerationEnded);
+  if (eventTypes.MORE_MESSAGES_LOADED) {
+    eventSource.on(eventTypes.MORE_MESSAGES_LOADED, onVisibleReload);
+  }
   eventSource.on(eventTypes.MESSAGE_DELETED, onFullReload);
   eventSource.on(eventTypes.CHAT_CHANGED, onFullReload);
 
-  // 刷新页面恢复：现有楼层已渲染完，直接全量水合
-  hydrateAll(ctx);
+  scheduleHydration(hydrateAll, hydrateVisible);
 
   // 卡片主题改了 → 就地改各卡片 host 的 data-theme(不必重水合,令牌是 CSS 变量,自动生效)
   watch(

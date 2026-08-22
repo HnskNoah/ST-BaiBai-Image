@@ -199,9 +199,15 @@ describe('auto tag prompt', () => {
     expect(thinkingMsg?.content).toContain('变化前的图片沿用旧档');
     expect(thinkingMsg?.content).toContain('证据较少时也要');
     expect(thinkingMsg?.content).toContain('不得退回中性服装或默认现代都市');
+    expect(thinkingMsg?.content).toContain('不得把未知的场景事实具体化');
+    expect(thinkingMsg?.content).toContain('保持 outdoors');
+    expect(thinkingMsg?.content).toContain('保持 forest');
+    expect(thinkingMsg?.content).toContain('没有正文、上下文或世界设定依据就删除');
     expect(thinkingMsg?.content).toContain('连续场景保持同一套视觉判断');
     expect(messages.some(m => m.content.includes('必须先判断，并主动具体化'))).toBe(true);
-    expect(messages.some(m => m.content.includes('允许为了完成画面作合理猜测'))).toBe(true);
+    expect(messages.some(m => m.content.includes('具体不等于编造'))).toBe(true);
+    expect(messages.some(m => m.content.includes('不得为了丰富画面自行添加泥地、土路'))).toBe(true);
+    expect(messages.some(m => m.content.includes('允许为了完成画面作合理猜测'))).toBe(false);
     const last = messages[messages.length - 1];
     expect(last.role).toBe('assistant');
     expect(last.content).toBe('<thinking>');
