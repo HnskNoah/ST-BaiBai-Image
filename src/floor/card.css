@@ -5,8 +5,8 @@
  * 聊天正文,在 RP 场景里是突兀的 UI 异物,且 max-width:560px 让宽屏下图片铺不满。
  * v2 原则:
  * - 无边框、无背景面板、无品牌栏;宽度 100% 跟随楼层正文,图片自身一点圆角;
- * - 控件全部悬浮在图上(半透明黑底圆钮),桌面 hover 浮现一排、
- *   触屏收进一颗 ⋯ 收纳钮(点开竖排展开),图片平时只有一颗小点;
+ * - 控件全部收进右上角一颗 ⋯ 收纳钮(半透明黑底圆钮):桌面 hover 在其左侧
+ *   横向浮现一排,触屏点开在其下方竖排展开,图片平时只有一颗小点;
  * - 提示词收进悬浮 文本按钮唤起的面板,平时零占位;
  * - 生成中 = 磨砂遮罩绝对定位盖住舞台(旧图保留在底下),居中 spinner + 状态 + 取消,
  *   不再像 v1 那样把状态文案作为 flex 子项与图片并排互挤。
@@ -212,9 +212,10 @@
   pointer-events: none;
 }
 
-/* ——— 悬浮操作组:右上角圆钮 ———
-   桌面(hover:hover):⋯ 收纳钮藏掉,一整排菜单在 stage hover/focus-within 时浮现;
-   触屏(hover:none):菜单默认隐藏,只留一颗淡显的 ⋯,点开竖排展开。 */
+/* ——— 悬浮操作组:右上角 ⋯ 收纳钮 ———
+   全平台统一:⋯ 常驻淡显,钉死在右上角(row-reverse 保证菜单展开时它不位移);
+   桌面(hover:hover)hover ⋯ 时菜单在其左侧横向浮现;
+   触屏(hover:none)点 ⋯ 菜单在其下方竖排展开,点任意操作后收起。 */
 
 .bbi-figure__actions {
   position: absolute;
@@ -222,27 +223,45 @@
   right: 8px;
   z-index: 2;
   display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
   gap: 6px;
 }
 
+/* ⋯ 常驻淡显:功能入口不能没有,但存在感压到最低。
+   注意:绝不可用 display:none 藏它——.bbi-fab 的 display:inline-flex 声明在后面,
+   同优先级后写的赢,会把它重新点亮(曾经的 bug:桌面 ⋯ 被隐形菜单挤离角落)。 */
 .bbi-figure__more {
-  display: none;
+  opacity: 0.65;
+  transition: opacity var(--bbi-dur) var(--bbi-ease);
 }
 
+.bbi-figure__stage:hover .bbi-figure__more,
+.bbi-figure__actions:focus-within .bbi-figure__more,
+.bbi-figure__actions[data-open='1'] .bbi-figure__more {
+  opacity: 1;
+}
+
+/* 菜单隐藏时 pointer-events:none:不在图上留隐形热区
+   (opacity:0 的元素仍可命中点击,会误触隐形按钮、也挡图片点按)。 */
 .bbi-figure__menu {
   display: flex;
   gap: 6px;
   opacity: 0;
-  transform: translateY(-4px);
+  transform: translateX(4px);
+  pointer-events: none;
   transition:
     opacity var(--bbi-dur) var(--bbi-ease),
     transform var(--bbi-dur) var(--bbi-ease);
 }
 
-.bbi-figure__stage:hover .bbi-figure__menu,
-.bbi-figure__stage:focus-within .bbi-figure__menu {
-  opacity: 1;
-  transform: none;
+@media (hover: hover) {
+  .bbi-figure__actions:hover .bbi-figure__menu,
+  .bbi-figure__actions:focus-within .bbi-figure__menu {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
 }
 
 @media (hover: none) {
@@ -251,21 +270,12 @@
     align-items: flex-end;
   }
 
-  /* ⋯ 收纳钮常驻淡显:功能入口不能没有,但存在感压到最低 */
-  .bbi-figure__more {
-    display: inline-flex;
-    opacity: 0.65;
-  }
-
-  .bbi-figure__actions[data-open='1'] .bbi-figure__more {
-    opacity: 1;
-  }
-
   .bbi-figure__menu {
     display: none;
     flex-direction: column;
     opacity: 1;
     transform: none;
+    pointer-events: auto;
   }
 
   .bbi-figure__actions[data-open='1'] .bbi-figure__menu {
@@ -507,6 +517,7 @@
   }
 
   .bbi-figure__menu,
+  .bbi-figure__more,
   .bbi-fab,
   .bbi-figure__cancel,
   .bbi-figure__generate,

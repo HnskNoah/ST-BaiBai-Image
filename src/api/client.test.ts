@@ -1,5 +1,60 @@
-import { describe, expect, it } from 'vitest';
-import { extractContent, readSseContent } from './client';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { extractContent, readSseContent, requestCompletion } from './client';
+
+/** 历史层全部 mock 掉:这里要断的正是「什么时候记成功/失败」 */
+const h = vi.hoisted(() => ({
+  beginLlm: vi.fn(() => 1),
+  finishLlm: vi.fn(),
+  failLlm: vi.fn(),
+  patchLlmTokens: vi.fn(),
+}));
+
+vi.mock('@/state/history', () => ({
+  FOLLOW_MAIN_API: '跟随主 API',
+  beginLlm: h.beginLlm,
+  finishLlm: h.finishLlm,
+  failLlm: h.failLlm,
+  patchLlmTokens: h.patchLlmTokens,
+  // 与真实实现同语义:吞异常返回 null
+  safeHistory: (fn: () => unknown) => {
+    try {
+      return fn();
+    } catch {
+      return null;
+    }
+  },
+}));
+
+vi.mock('@/st/context', () => ({
+  getContext: () => ({ getRequestHeaders: () => ({}) }),
+}));
+
+function jsonResponse(data: unknown): Response {
+  return new Response(JSON.stringify(data), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+const channel = {
+  id: 'ch1',
+  name: '测试渠道',
+  url: 'https://api.example.com',
+  key: 'k',
+  model: 'm',
+  temperature: 1,
+  maxTokens: 1024,
+  timeoutSec: 60,
+  stream: false,
+  prefill: true,
+  excludeParams: [],
+};
+const messages = [{ role: 'user' as const, content: 'hi' }];
+/** 带 usage 的响应:避免触发 token 估算分支(那需要主界面分词器) */
+const okPayload = {
+  choices: [{ message: { role: 'assistant', content: '  答案文本  ' } }],
+  usage: { prompt_tokens: 5, completion_tokens: 7 },
+};
 
 /** 造一个最小 Response,可读出给定 SSE 文本 */
 function sseResponse(text: string): Response {
@@ -106,5 +161,55 @@ describe('readSseContent:流式', () => {
       '',
     ].join('\n');
     await expect(readSseContent(sseResponse(sse))).resolves.toBe('答案!');
+  });
+});
+
+describe('validate:历史「成功」= 调用方验收通过', () => {
+  beforeEach(() => {
+    h.beginLlm.mockClear();
+    h.finishLlm.mockClear();
+    h.failLlm.mockClear();
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(okPayload)));
+  });
+
+  it('验收通过 → 返回文本,历史记成功', async () => {
+    const seen: string[] = [];
+    const text = await requestCompletion(channel, messages, {
+      validate: raw => seen.push(raw),
+    });
+    expect(text).toBe('答案文本');
+    expect(seen).toEqual(['答案文本']); // validate 拿到的是提取后的正文
+    expect(h.finishLlm).toHaveBeenCalledTimes(1);
+    expect(h.failLlm).not.toHaveBeenCalled();
+  });
+
+  it('不传 validate → 维持旧行为:拿到文本即记成功', async () => {
+    await expect(requestCompletion(channel, messages)).resolves.toBe('答案文本');
+    expect(h.finishLlm).toHaveBeenCalledTimes(1);
+  });
+
+  it('验收抛错 → 请求按失败抛出,历史记失败而非成功', async () => {
+    // 这是「HTTP 成功但协议解析不过」的场景:必须 failLlm,否则重试会在历史里
+    // 留下两条绿色成功记录,看历史的人会误以为成功也重复调用。
+    await expect(
+      requestCompletion(channel, messages, {
+        validate: () => {
+          throw new Error('协议不合法');
+        },
+      }),
+    ).rejects.toThrow('协议不合法');
+    expect(h.finishLlm).not.toHaveBeenCalled();
+    expect(h.failLlm).toHaveBeenCalledWith(1, '协议不合法', false);
+  });
+
+  it('HTTP 失败时 validate 根本不该被调用', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('boom', { status: 500 })),
+    );
+    const validate = vi.fn();
+    await expect(requestCompletion(channel, messages, { validate })).rejects.toThrow('500');
+    expect(validate).not.toHaveBeenCalled();
+    expect(h.failLlm).toHaveBeenCalledTimes(1);
   });
 });

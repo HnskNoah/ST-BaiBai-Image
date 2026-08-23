@@ -59,6 +59,15 @@ export interface RequestOptions {
    * 不传也不影响请求本身,历史里显示为「未标注」。
    */
   source?: string;
+  /**
+   * 调用方验收回调:拿到文本后、记入历史前执行。
+   *
+   * 历史里「成功」的口径是「调用方验收通过」,不是「HTTP 拿到了文本」——
+   * 否则「返回了但协议解析不过 → 调用方重试」会留下两条绿色成功记录,
+   * 看历史的人会误以为成功也重复调用。验收抛错 = 记为失败并把错误原样抛出,
+   * 由调用方决定重试/放弃。
+   */
+  validate?: (content: string) => void;
 }
 
 /* ============ 请求历史埋点(纯辅助,绝不允许影响主流程) ============ */
@@ -233,6 +242,9 @@ async function requestCompletionAtUrl(
       return { content: parsed, usage: readUsage(data) };
     });
 
+    // 验收在记历史之前:验收不过 → 落进 catch 记失败,不给「HTTP 成功」的假象
+    opts.validate?.(result.content);
+
     if (historyId !== null) {
       const hasReal = result.usage.prompt !== null;
       safeHistory(() =>
@@ -376,6 +388,8 @@ export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOption
   try {
     const content = (await ctx.generateRaw({ prompt: messages, responseLength: MAIN_API_RESPONSE_LENGTH }))?.trim();
     if (!content) throw new ApiError('主 API 返回空内容');
+    // 与副 API 同口径:验收不过记失败,不记「成功」
+    opts.validate?.(content);
     if (historyId !== null) {
       safeHistory(() =>
         finishLlm(historyId, {

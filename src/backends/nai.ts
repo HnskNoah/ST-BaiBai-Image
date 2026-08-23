@@ -5,7 +5,13 @@ import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { ComfyImageResult } from '@/backends/comfyui';
 import { parseSize, pickSize, type Orientation } from '@/backends/size';
 import { clampVibeStrength, loadVibeData } from '@/backends/vibeStore';
-import type { NaiSettings, NaiVibe, NaiVibeData, NaiVibeEncodings } from '@/state/settings';
+import type {
+  NaiArtistPreset,
+  NaiSettings,
+  NaiVibe,
+  NaiVibeData,
+  NaiVibeEncodings,
+} from '@/state/settings';
 
 /**
  * NovelAI 生图后端(浏览器直连,协议与官方 image.novelai.net 一致)。
@@ -203,28 +209,87 @@ export interface NaiGenerateValues {
   size?: Orientation;
 }
 
+/**
+ * 内置画师串配方:只读,**不进 settings**,改它们 = 改这里的常量、发版即生效。
+ *
+ * 为什么不做成「首次启动播种进 settings」:写进 settings 那一刻默认值就冻在
+ * 每个用户的设备上(还随 extension_settings 跨设备同步),以后再改只能靠
+ * 「与旧种子逐字节比对」的指纹迁移,每改一次背一份旧种子。内置在代码里,
+ * 默认值永远跟着版本走,已安装用户的 settings 一个字节不用动。
+ *
+ * 口径:
+ * - id 用 bi_ 前缀(用户条目恒为 art_*),永不与用户库相撞;
+ * - 只读:面板不给改名/删除,要自定义走「复制」建成用户条目再改;
+ * - quality/negative 与用户条目同一条回落链,留空 = 跟随渠道级;
+ * - 新用户默认选中第一条(见 settings.ts 的 naiDefaults);老用户的
+ *   activeArtistId 存在 settings 里,不受这里影响;
+ * - 要下线某条内置配方,至少留一个版本再删:正选中它的用户会走既有
+ *   「id 悬空 → 清成不使用」逻辑,画风静默变掉,需慎重。
+ */
+export const BUILTIN_NAI_ARTISTS: readonly NaiArtistPreset[] = [
+  {
+    id: 'bi_default',
+    name: '默认画师串',
+    prompt:
+      '0.8::nnmbpx::,0.8::artist:yalmyu::,0.1::smilesmile1312,::,  artist:sh_(shinh), 0.4::chen bin::,0.4::dayama::,healthyman,bacheally,',
+    quality: '',
+    negative: '',
+  },
+];
+
+/** 该 id 是否是内置配方(面板据此只读化;用户条目 id 恒为 art_*,不可能撞上)。 */
+export function isBuiltinNaiArtist(id: string): boolean {
+  return BUILTIN_NAI_ARTISTS.some(a => a.id === id);
+}
+
 type JsonObject = Record<string, unknown>;
 
 /**
- * 当前生效的画师串:选中条目的 prompt;未选 / 指向已删条目 / 内容全空白 → 空串。
+ * 当前生效的画风配方;未选 / 指向已删条目 → null。
+ * 查找域 = 用户库 ∪ 内置库(用户库优先;id 前缀不同,实际不可能撞)。
  *
  * 刻意吃 nai 而不读全局 settings:本文件的拼装函数都是纯函数、可单测,读全局会让测试
  * 没法用 nai() 工厂控制输入。也刻意不 import state/settings 的 activeNaiArtist ——
  * settings.ts 已 import 本模块的 naiDefaultUndesired,反向加值依赖会成运行时环(TDZ 隐患)。
  * 这一行 find 的重复是有意为之。
  */
+function naiActivePreset(nai: NaiSettings): NaiArtistPreset | null {
+  if (!nai.activeArtistId) return null;
+  return (
+    nai.artistPresets.find(a => a.id === nai.activeArtistId) ??
+    BUILTIN_NAI_ARTISTS.find(a => a.id === nai.activeArtistId) ??
+    null
+  );
+}
+
+/** 当前生效的画师串:选中条目的 prompt;未选 / 指向已删条目 / 内容全空白 → 空串。 */
 export function naiArtistPrompt(nai: NaiSettings): string {
-  if (!nai.activeArtistId) return '';
-  const preset = nai.artistPresets.find(a => a.id === nai.activeArtistId);
   // 全空白的 preset 必须归空串:'   ' 是 truthy,下游 filter(Boolean) 兜不住它
-  return preset?.prompt.trim() ?? '';
+  return naiActivePreset(nai)?.prompt.trim() ?? '';
+}
+
+/**
+ * 正面质量词解析链:配方绑定值 → 渠道覆盖值(qualityTags)→ 内置默认。
+ * 任一级空串(或纯空白)= 跟随下一级。内置默认当前 = 模型官方词;
+ * 以后插件要换成自己的精选默认,只改 naiDefaultQualityTags,链结构不变。
+ */
+export function naiQualityTags(nai: NaiSettings): string {
+  const bound = naiActivePreset(nai)?.quality.trim();
+  return bound || nai.qualityTags.trim() || naiDefaultQualityTags(nai.model);
+}
+
+/** 负面提示词解析链:配方绑定值 → 渠道覆盖值(undesiredContent)→ 内置默认(模型官方负面词)。 */
+export function naiUndesiredContent(nai: NaiSettings): string {
+  const bound = naiActivePreset(nai)?.negative.trim();
+  return bound || nai.undesiredContent.trim() || naiDefaultUndesired(nai.model);
 }
 
 /**
  * 正向完整 prompt:画师串在最前,画面 tag 居中,质量词在最后。
- * - 画师串 = 画师串库当前选中条目(未选则无)。放最前是因为它决定整幅画的画风基调,
+ * - 画师串 = 画风配方库当前选中条目(未选则无)。放最前是因为它决定整幅画的画风基调,
  *   NAI 对靠前 tag 的权重更高;
- * - 质量词 = 用户覆盖值(qualityTags)优先,留空则按模型取官方词。
+ * - 质量词 = 配方绑定值优先,其次渠道覆盖值(qualityTags),都留空则按模型取官方词
+ *   (见 naiQualityTags)。
  *
  * ⚠ 本函数在 buildNaiParameters(v4_prompt 的来源)与 generateNaiImage 的顶层 input
  * 字段处各调一次,两处必须同源。拼装改动一律留在本函数内部——在某个调用点单独加料会让
@@ -232,7 +297,7 @@ export function naiArtistPrompt(nai: NaiSettings): string {
  */
 export function fullPositivePrompt(nai: NaiSettings, prompt: string, nl = ''): string {
   const artist = naiArtistPrompt(nai);
-  const quality = nai.qualityTags.trim() || naiDefaultQualityTags(nai.model);
+  const quality = naiQualityTags(nai);
   const tags = [artist, prompt.trim(), quality].filter(Boolean).join(', ');
   return isNai5(nai.model) && nl.trim() ? `${tags}. ${nl.trim()}` : tags;
 }
@@ -253,11 +318,11 @@ function characterCaption(character: ImageCharacterPrompt): string {
 }
 
 /**
- * 负面完整 prompt = 用户覆盖值(undesiredContent),留空则按模型取官方负面词。
- * 想额外排除什么,直接往这一份里接——故不再有单独的「附加负面」字段。
+ * 负面完整 prompt = 配方绑定值 → 渠道覆盖值(undesiredContent)→ 模型官方负面词
+ * (见 naiUndesiredContent)。想额外排除什么,往任一级的值里接即可。
  */
 export function fullNegativePrompt(nai: NaiSettings): string {
-  return nai.undesiredContent.trim() || naiDefaultUndesired(nai.model);
+  return naiUndesiredContent(nai);
 }
 
 /**

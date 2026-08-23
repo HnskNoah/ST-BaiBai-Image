@@ -4,7 +4,7 @@ import {
   type ComfyPresetMode,
   type ComfySimpleConfig,
 } from '@/backends/comfyTemplates';
-import { naiDefaultUndesired } from '@/backends/nai';
+import { BUILTIN_NAI_ARTISTS, isBuiltinNaiArtist, naiDefaultUndesired } from '@/backends/nai';
 import { parseSize, type SizePair } from '@/backends/size';
 import {
   clampVibeStrength,
@@ -161,19 +161,29 @@ export interface NaiVibe {
 }
 
 /**
- * 一条具名画师串。内容是拼在正向提示词**最前面**的一段画风 tag
- * (通常形如 `artist:xxx, artist:yyy`),整条即用户的一套画风配方。
+ * 一条具名画风配方:画师串 + 可选绑定的正面质量词/负面提示词。
+ * 下拉切换时三者一起生效——一套配方即用户的一套完整画风搭配。
  *
- * 为什么不像质量词/负面词那样按模型分表:那两者是**模型的属性**——官方给每个模型
- * 一套推荐词,切模型必须跟着换(见 nai.ts 的 QUALITY_TAGS / DEFAULT_UNDESIRED_CONTENT);
- * 画师串是**用户自己的配方**,跨模型复用才是常态。故做成可增删的库,而非 Record<model, …>。
+ * 为什么不按模型分表:官方推荐词是**模型的属性**,切模型必须跟着换
+ * (见 nai.ts 的 QUALITY_TAGS / DEFAULT_UNDESIRED_CONTENT);配方是**用户自己的搭配**,
+ * 跨模型复用才是常态。故做成可增删的库,而非 Record<model, …>。
+ *
+ * 绑定字段的回落链(与渠道级「留空 = 跟随官方」同口径,逐级往下):
+ *   配方绑定值 → 渠道级覆盖值(qualityTags / undesiredContent)→ 内置默认(当前 = 模型官方词)。
+ * 空串 = 跟随下一级;解析汇聚在 nai.ts 的 naiQualityTags / naiUndesiredContent,
+ * 以后内置默认要换成插件自己的精选词,只改 naiDefaultQualityTags / naiDefaultUndesired,
+ * 链结构与存储口径都不变。老数据没有这两个字段,normalize 补空串即零变化。
  */
 export interface NaiArtistPreset {
   id: string;
   /** 显示名(下拉列表与切换用;允许重名,以 id 为键)。 */
   name: string;
-  /** 画师/画风 tag 串;留空的条目在拼装时等同于没选。 */
+  /** 画师/画风 tag 串,拼在正向提示词最前面;留空的条目在拼装时等同于没选。 */
   prompt: string;
+  /** 绑定的正面质量词;空串 = 跟随渠道级 qualityTags。 */
+  quality: string;
+  /** 绑定的负面提示词;空串 = 跟随渠道级 undesiredContent。 */
+  negative: string;
 }
 
 /** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */
@@ -206,15 +216,18 @@ export interface NaiSettings extends BackendConn {
   /** Vibe 库索引；正文存在 ST user/files，设置中不存大 Base64。 */
   vibes: NaiVibe[];
   /**
-   * 画师串库。**与 ComfyUI 工作流库相反:允许为空**——工作流不给就没法出图,
-   * 故那边有「恒非空」不变式;画师串不给只是不加画风,是可选调味,
-   * 所以既不播种默认条目(见 naiDefaults),也不做补一条的兜底。
+   * 画风配方库(画师串 + 可选绑定的正/负面词)。**与 ComfyUI 工作流库相反:允许为空**——
+   * 工作流不给就没法出图,故那边有「恒非空」不变式;配方不给只是不加画风,是可选调味。
+   * 这里只存**用户自己的**配方;官方推荐的内置配方在 backends/nai.ts 的
+   * BUILTIN_NAI_ARTISTS(只读、随版本更新),不进 settings——不然默认值会冻在
+   * 每个用户的设备上,以后想调都得做指纹迁移。
    */
   artistPresets: NaiArtistPreset[];
   /**
    * 当前使用的画师串 id。**空串 = 不使用画师串**,是有意义的存储值。
-   * 指向已删条目时由 normalizeNai 清成空串——刻意**不**像 activeWorkflowId 那样
-   * 回落第一条:那会给用户静默套上一套他没选过的画风,每张图都变样却查不出原因。
+   * 合法值域:{''} ∪ 用户库 id ∪ 内置库 id(bi_*);其余一律由 normalizeNai 清成空串——
+   * 刻意**不**像 activeWorkflowId 那样回落第一条:那会给用户静默套上一套
+   * 他没选过的画风,每张图都变样却查不出原因。
    */
   activeArtistId: string;
 }
@@ -914,10 +927,10 @@ const DEFAULT_ARTIST_NAME = '画师串 1';
 
 let artistSeq = 0;
 
-/** 新建一条空画师串(id 生成口径同 newComfyWorkflow / newChannel;art_ 前缀不与 wf_/ch_ 撞)。 */
+/** 新建一条空配方(id 生成口径同 newComfyWorkflow / newChannel;art_ 前缀不与 wf_/ch_ 撞)。 */
 export function newNaiArtist(name = DEFAULT_ARTIST_NAME): NaiArtistPreset {
   artistSeq += 1;
-  return { id: `art_${Date.now()}_${artistSeq}`, name, prompt: '' };
+  return { id: `art_${Date.now()}_${artistSeq}`, name, prompt: '', quality: '', negative: '' };
 }
 
 function naiDefaults(): NaiSettings {
@@ -937,11 +950,13 @@ function naiDefaults(): NaiSettings {
     normalizeRefStrength: true,
     concurrency: 1,
     vibes: [],
-    // 空库 + 不使用:新装用户的正向提示词与本功能上线前完全一致。
-    // 刻意不像 comfyDefaults 那样播种一条——凭空给一条「画师串 1」会让人
-    // 以为自己已经被套上了某种画风。
+    // 用户库为空:库里只有用户自己建的配方,官方推荐的那条是内置只读条目
+    // (BUILTIN_NAI_ARTISTS),不进 settings。
     artistPresets: [],
-    activeArtistId: '',
+    // 新装用户默认启用内置「默认画师串」——默认值只在这条路径生效:
+    // hydrate 时旧用户的 stored.nai.activeArtistId 已存在(哪怕空串),会被
+    // normalizeNai 原样保留,不受影响。
+    activeArtistId: BUILTIN_NAI_ARTISTS[0]?.id ?? '',
   };
 }
 
@@ -1081,7 +1096,12 @@ export function effectiveComfyConn(): ComfyRunConn {
 export function activeNaiArtist(): NaiArtistPreset | null {
   const id = settings.nai.activeArtistId;
   if (!id) return null;
-  return settings.nai.artistPresets.find(a => a.id === id) ?? null;
+  // 查找域 = 用户库 ∪ 内置库(与 nai.ts 的 naiActivePreset 同口径)
+  return (
+    settings.nai.artistPresets.find(a => a.id === id) ??
+    BUILTIN_NAI_ARTISTS.find(a => a.id === id) ??
+    null
+  );
 }
 
 /**
@@ -1287,13 +1307,16 @@ function foldLegacyNegative(o: Partial<NaiSettings>, model: NaiModel, def: strin
   return [legacy, naiDefaultUndesired(model)].filter(Boolean).join(', ');
 }
 
-/** 单条画师串清洗:缺字段/类型不符逐项回退;prompt 允许空串(空槽位不是垃圾数据)。 */
+/** 单条配方清洗:缺字段/类型不符逐项回退;prompt 允许空串(空槽位不是垃圾数据)。 */
 function normalizeArtistPreset(raw: unknown, seq: number): NaiArtistPreset {
   const o = (raw ?? {}) as Partial<NaiArtistPreset>;
   return {
     id: typeof o.id === 'string' && o.id ? o.id : `art_${Date.now()}_${seq}`,
     name: typeof o.name === 'string' && o.name ? o.name : `画师串 ${seq + 1}`,
     prompt: typeof o.prompt === 'string' ? o.prompt : '',
+    // 存量条目没有这两个键:补空串 = 跟随渠道级,升级后提示词输出零变化
+    quality: typeof o.quality === 'string' ? o.quality : '',
+    negative: typeof o.negative === 'string' ? o.negative : '',
   };
 }
 
@@ -1310,9 +1333,10 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   // 悬空 id 一律清成空串(= 不使用)。**不**照抄 normalizeComfyUI 的「回落第一条」:
   // 用户删掉当前画师串后本该「什么都不加」,回落会给他静默换一套画风,而下拉显示的
   // 也正是那一条(看起来就是自己设的),几乎无法排查。
-  // 清成空串同时让 activeArtistId ∈ {'', 库中已有 id} 成为不变式,面板无需再判悬空。
+  // 清成空串同时让 activeArtistId ∈ {'', 用户库 id, 内置库 id} 成为不变式,面板无需再判悬空。
   const activeArtistId =
-    typeof o.activeArtistId === 'string' && artistPresets.some(a => a.id === o.activeArtistId)
+    typeof o.activeArtistId === 'string' &&
+    (artistPresets.some(a => a.id === o.activeArtistId) || isBuiltinNaiArtist(o.activeArtistId))
       ? o.activeArtistId
       : '';
 

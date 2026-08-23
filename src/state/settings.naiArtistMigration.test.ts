@@ -51,14 +51,43 @@ describe('NAI 画师串库', () => {
   it('新格式原样保留,当前项不被动(迁移幂等)', async () => {
     const settings = await hydrateWithNai({
       artistPresets: [
-        { id: 'art_a', name: '厚涂', prompt: 'artist:wlop' },
-        { id: 'art_b', name: '赛璐璐', prompt: 'artist:as109' },
+        { id: 'art_a', name: '厚涂', prompt: 'artist:wlop', quality: 'masterpiece', negative: 'lowres' },
+        { id: 'art_b', name: '赛璐璐', prompt: 'artist:as109', quality: '', negative: '' },
       ],
       activeArtistId: 'art_b',
     });
     expect(settings.nai.artistPresets.map(a => a.id)).toEqual(['art_a', 'art_b']);
     expect(settings.nai.artistPresets.map(a => a.name)).toEqual(['厚涂', '赛璐璐']);
+    expect(settings.nai.artistPresets[0].quality).toBe('masterpiece');
+    expect(settings.nai.artistPresets[0].negative).toBe('lowres');
     expect(settings.nai.activeArtistId).toBe('art_b');
+  });
+
+  it('存量条目没有绑定的正/负面词键 → 补空串(= 跟随渠道级,升级后提示词零变化)', async () => {
+    // 绑定字段上线前的老数据只有 id/name/prompt;补空串而非官方词,
+    // 才能保住「配方 → 渠道 → 官方」回落链里老用户原有的渠道级/官方行为。
+    const settings = await hydrateWithNai({
+      qualityTags: 'channel q',
+      undesiredContent: 'channel n',
+      artistPresets: [{ id: 'art_a', name: 'A', prompt: 'artist:a' }],
+      activeArtistId: 'art_a',
+    });
+    const preset = settings.nai.artistPresets[0];
+    expect(preset.quality).toBe('');
+    expect(preset.negative).toBe('');
+    // 渠道级覆盖值不受迁移影响
+    expect(settings.nai.qualityTags).toBe('channel q');
+    expect(settings.nai.undesiredContent).toBe('channel n');
+  });
+
+  it('绑定字段是非字符串脏数据 → 归空串,不整条丢弃', async () => {
+    const settings = await hydrateWithNai({
+      artistPresets: [{ id: 'art_a', name: 'A', prompt: 'artist:a', quality: 42, negative: null }],
+      activeArtistId: 'art_a',
+    });
+    expect(settings.nai.artistPresets[0].quality).toBe('');
+    expect(settings.nai.artistPresets[0].negative).toBe('');
+    expect(settings.nai.activeArtistId).toBe('art_a');
   });
 
   it('当前项指向已删条目 → 清成空串,**不**回落第一条', async () => {
@@ -152,5 +181,49 @@ describe('NAI 画师串库', () => {
     expect(new Set(ids).size).toBe(3);
     // art_ 前缀不与 wf_ / ch_ 的 id 空间相撞
     expect(ids.every(id => id.startsWith('art_'))).toBe(true);
+  });
+});
+
+describe('内置画师串(bi_*)与新老用户', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('toastr', { info: vi.fn(), success: vi.fn(), error: vi.fn() });
+    vi.stubGlobal('window', { addEventListener: vi.fn(), dispatchEvent: vi.fn() });
+  });
+
+  it('全新安装(没有任何已存设置)→ 默认启用内置「默认画师串」', async () => {
+    // 默认只在这条路径生效:stored 整个不存在时,模块级默认值直接被写进 extension_settings。
+    mocks.context = {
+      extensionSettings: {},
+      saveSettingsDebounced: vi.fn(),
+    };
+    const { hydrateSettings, settings } = await import('@/state/settings');
+    await hydrateSettings();
+    expect(settings.nai.activeArtistId).toBe('bi_default');
+    expect(settings.nai.artistPresets).toEqual([]); // 用户库仍为空:内置条不进 settings
+  });
+
+  it('老用户:已存的 activeArtistId 原样保留(空串 = 不使用,不会被默认值顶掉)', async () => {
+    const settings = await hydrateWithNai({
+      model: 'nai-diffusion-4-5-full',
+      artistPresets: [],
+      activeArtistId: '',
+    });
+    expect(settings.nai.activeArtistId).toBe('');
+  });
+
+  it('老用户的存量 nai 段没有 activeArtistId 键 → 空串,不吃新装默认', async () => {
+    const settings = await hydrateWithNai({ model: 'nai-diffusion-4-5-full', key: 'k' });
+    expect(settings.nai.activeArtistId).toBe('');
+  });
+
+  it('选中内置条目的配置:用户库为空也不算悬空,normalize 不清掉', async () => {
+    const settings = await hydrateWithNai({ artistPresets: [], activeArtistId: 'bi_default' });
+    expect(settings.nai.activeArtistId).toBe('bi_default');
+  });
+
+  it('bi_ 前缀但 id 不存在(内置条目下线后)→ 仍按悬空清成空串', async () => {
+    const settings = await hydrateWithNai({ artistPresets: [], activeArtistId: 'bi_gone' });
+    expect(settings.nai.activeArtistId).toBe('');
   });
 });

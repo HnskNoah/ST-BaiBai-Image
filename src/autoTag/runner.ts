@@ -238,6 +238,8 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const channel = getTagGenChannel();
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
     // 中止信号立即收手,不消耗重试。parseImagePlan 对坏输出抛错,「无画面」则是正常返回空数组。
+    // 解析/校验放进 validate 回调:不过则请求历史如实记为失败(而非「HTTP 拿到文本」的绿色成功),
+    // 错误原样抛回这里走重试——显示与行为同口径。
     const retries = Math.max(0, Math.floor(Number(settings.autoTag.retryCount) || 0));
     let plan: ImagePlan | null = null;
     let lastError = '';
@@ -247,32 +249,46 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         return;
       }
       try {
-        const raw = channel
-          ? await requestCompletion(channel, messages, {
-              signal: controller.signal,
-              source: `自动 tag(第 ${floor} 楼)`,
-            })
-          : await requestViaMainApi(messages, {
-              signal: controller.signal,
-              source: `自动 tag(第 ${floor} 楼)`,
-            });
+        // parsed 用对象壳装着:validate 闭包写入,await 之后读取——请求成功 + 验收通过才非空。
+        // (直接 let 会被 TS 收窄成 null:闭包内的赋值控制流分析看不见。)
+        const parsed: { plan: ImagePlan | null } = { plan: null };
+        const validate = (raw: string) => {
+          const candidate = parseImagePlan(
+            raw,
+            preparedTarget.segments,
+            settings.autoTag.minImages,
+            settings.autoTag.maxImages,
+          );
+          if (
+            settings.defaultBackend === 'nai' &&
+            isNai5(settings.nai.model) &&
+            candidate.changes.some(change => change.field === 'new' && !change.nl?.trim())
+          ) {
+            throw new Error('NAI V5 建档必须附带 nl 外貌描述');
+          }
+          parsed.plan = candidate;
+        };
+        // 有重试时给 source 带上第几次,历史里两条记录一眼看出是重试关系
+        const source =
+          retries > 0 ? `自动 tag(第 ${floor} 楼 · 第 ${attempt + 1} 次)` : `自动 tag(第 ${floor} 楼)`;
+        if (channel) {
+          await requestCompletion(channel, messages, {
+            signal: controller.signal,
+            source,
+            validate,
+          });
+        } else {
+          await requestViaMainApi(messages, {
+            signal: controller.signal,
+            source,
+            validate,
+          });
+        }
         if (controller.signal.aborted) {
           processed.delete(identity);
           return;
         }
-        plan = parseImagePlan(
-          raw,
-          preparedTarget.segments,
-          settings.autoTag.minImages,
-          settings.autoTag.maxImages,
-        );
-        if (
-          settings.defaultBackend === 'nai' &&
-          isNai5(settings.nai.model) &&
-          plan.changes.some(change => change.field === 'new' && !change.nl?.trim())
-        ) {
-          throw new Error('NAI V5 建档必须附带 nl 外貌描述');
-        }
+        plan = parsed.plan;
       } catch (error) {
         if (controller.signal.aborted) {
           processed.delete(identity);

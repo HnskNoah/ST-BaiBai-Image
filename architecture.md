@@ -66,7 +66,7 @@ src/
 │   ├── genQueue.ts    # NAI 并发闸门(ComfyUI 靠服务端队列,不经过这里)
 │   ├── Lightbox.vue   # 图片放大层(含长按保存的三条约束,改前必读顶部注释)
 │   ├── lightbox.ts    # 命令式打开灯箱(挂插件 shadow root,非卡片 shadow)
-│   ├── download.ts    # 另存图片(卡片右上角与灯箱共用,同源文件走 <a download>)
+│   ├── download.ts    # 另存图片(卡片右上角 ⋯ 菜单与灯箱共用,同源文件走 <a download>)
 │   ├── storage.ts     # 结果存储:extra 元数据(swipeId→promptHash→历史)+ 文件命名
 │   ├── upload.ts      # ST /api/files/upload|delete 封装(不用未公开的 uploadFileAttachment)
 │   ├── autoGenerate.ts# 「写 tag 后自动出图」标记握手(runner ↔ Card onMounted)

@@ -387,8 +387,8 @@ onMounted(() => {
       <!-- 提示词已改:角标提示,不再整图压暗 -->
       <span v-if="isStale && !busy" class="bbi-figure__badge">旧提示词</span>
 
-      <!-- 悬浮操作组:桌面 hover 浮现一整排;触屏只留 ⋯ 收纳钮,点开竖排展开,
-           点任意操作后自动收起(重绘等高频操作两步可达,图片平时只有一颗小点) -->
+      <!-- 悬浮操作组:⋯ 收纳钮钉在右上角常驻淡显;桌面 hover 在其左侧横向浮现一排,
+           触屏点开在其下方竖排展开,点任意操作后自动收起(图片平时只有一颗小点) -->
       <span v-if="!busy" class="bbi-figure__actions" :data-open="menuOpen ? '1' : ''">
         <button
           class="bbi-fab bbi-figure__more"

@@ -169,7 +169,9 @@ describe('st-chatu8 artist migration', () => {
   });
 
   it('deduplicates by trimmed name and prompt and maps the active source preset to an existing id', () => {
-    const existing = [{ id: 'art_existing', name: ' Painter ', prompt: 'artist:a, style:b ' }];
+    const existing = [
+      { id: 'art_existing', name: ' Painter ', prompt: 'artist:a, style:b ', quality: '', negative: '' },
+    ];
     const result = importArtistsFromChatu8(existing, source);
     expect(result.imported).toBe(2);
     expect(result.duplicates).toBe(1);

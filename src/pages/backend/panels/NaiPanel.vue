@@ -14,7 +14,9 @@ import {
 } from '@/backends/chatu8Vibe';
 import {
   buildNaiv4vibe,
+  BUILTIN_NAI_ARTISTS,
   encodeVibeImage,
+  isBuiltinNaiArtist,
   isNai5,
   naiDefaultQualityTags,
   naiDefaultUndesired,
@@ -95,11 +97,14 @@ const artist = computed<NaiArtistPreset | null>(() => activeNaiArtist());
 /** 当前是否 V5 模型:控制画师串编辑区的 V5 差异提醒。 */
 const isV5Model = computed(() => isNai5(settings.nai.model));
 
-/** 「不使用」的下拉值。preset id 恒为 art_* 形状,空串不会与任何一条相撞,无需装箱。 */
+/** 「不使用」的下拉值。preset id 恒为 art_* / bi_* 形状,空串不会与任何一条相撞,无需装箱。 */
 const NO_ARTIST = '';
 
 const artistOptions = computed(() => [
   { value: NO_ARTIST, label: '不使用' },
+  // 内置配方排用户库前面:新用户默认选中的是内置条,放在「不使用」旁边最顺;
+  // 名称后括注内置,与用户自建的同名条目区分开
+  ...BUILTIN_NAI_ARTISTS.map(a => ({ value: a.id, label: `${a.name}(内置)` })),
   ...settings.nai.artistPresets.map(a => ({ value: a.id, label: a.name || '未命名画师串' })),
 ]);
 
@@ -117,6 +122,11 @@ const activeArtistId = computed<string>({
 /** 改名/复制/删除都只对「真的选中了一条」有意义;选「不使用」时一律禁用。 */
 const hasArtist = computed(() => artist.value !== null);
 
+/** 当前选中的是内置配方:只读(改名/删除/内容编辑禁用),「复制」是自定义的唯一入口。 */
+const isBuiltinArtist = computed(() =>
+  artist.value ? isBuiltinNaiArtist(artist.value.id) : false,
+);
+
 /** 改名是低频操作:平时只显示下拉,点「改名」才把选择器原地换成输入框。 */
 const renamingArtist = ref(false);
 const artistNameDraft = ref('');
@@ -124,7 +134,7 @@ const artistNameInput = ref<HTMLInputElement | null>(null);
 const artistDeleteOpen = ref(false);
 
 function startRenameArtist() {
-  if (!artist.value) return;
+  if (!artist.value || isBuiltinArtist.value) return; // 内置只读(按钮已禁用,双保险)
   artistNameDraft.value = artist.value.name;
   renamingArtist.value = true;
   nextTick(() => artistNameInput.value?.focus());
@@ -145,7 +155,8 @@ function addArtist() {
 function duplicateArtist() {
   const src = artist.value;
   if (!src) return;
-  // 只换 id 与名字;id 生成仍由 settings 统一口径
+  // 只换 id 与名字;id 生成仍由 settings 统一口径。
+  // 内置配方也走这里:复制出来的副本是普通用户条目,随便改——这是内置条唯一的自定义路径。
   const preset = { ...src, id: newNaiArtist().id, name: `${src.name} 副本` };
   settings.nai.artistPresets.push(preset);
   settings.nai.activeArtistId = preset.id;
@@ -226,74 +237,120 @@ function runArtistImport() {
   artistImportResult.value = null;
 }
 
-/* ============ 提示词:官方默认词可见且可改(列表行 + 弹窗,同设置页自定义提示词) ============ */
+/* ============ 提示词:正/负面词分两级——画师串绑定值 → 渠道覆盖值 → 内置默认 ============ */
 
 /**
- * 质量词与基线负面词都按模型有一套官方值。设置里存的是「覆盖值」,空串 = 跟随模型官方词。
+ * 一条正/负面词的编辑目标;渠道级与画师串绑定级共用同一个弹窗。
  *
- * 为什么打开弹窗要预填官方词:框里空着就是把「看不到默认注入了什么」的老问题原地搬家。
- * 故读取时回落官方词(看得见实际生效的内容),保存时与官方词一致就存空串
- * (与设置页 saveTagPrompt 同口径,避免把模板冗余存进设置、也便于列表显示「默认」)。
+ * fallback = 留空时跟随的下一级取值(渠道级 → 模型官方词;绑定级 → 渠道值 → 官方词)。
+ * 打开弹窗预填它——框里空着就是把「看不到实际生效了什么」的老问题原地搬家;
+ * 保存时与回落一致就存空串(与设置页 saveTagPrompt 同口径:不把下一级的值冗余存进来,
+ * 保留「跟随」语义,下一级变了能跟着变)。
  *
- * official 必须是函数而非常量:它随 settings.nai.model 变,要在读取时才求值。
+ * fallback 必须是函数而非常量:它随 settings.nai.model / 渠道覆盖值变,要在读取时才求值。
  */
-interface NaiPromptMeta {
-  key: 'quality' | 'undesired';
+interface NaiPromptTarget {
+  key: 'quality' | 'negative';
   label: string;
   hint: string;
-  official: () => string;
+  /** 内置配方的绑定位只读:弹窗纯查看,不给保存(写进模块常量就糟了)。 */
+  readonly?: boolean;
+  fallback: () => string;
   read: () => string;
   write: (v: string) => void;
 }
 
-const NAI_PROMPT_METAS: NaiPromptMeta[] = [
+/** 渠道级两条:画师串未绑定对应字段时生效,再留空则按模型取官方词。 */
+const CHANNEL_PROMPT_TARGETS: NaiPromptTarget[] = [
   {
     key: 'quality',
     label: '正面质量词',
-    hint: '拼在画面 tag 之后(整体顺序:画师串 → 画面 tag → 质量词)。',
-    official: () => naiDefaultQualityTags(settings.nai.model),
+    hint: '拼在画面 tag 之后(整体顺序:画师串 → 画面 tag → 质量词)。画师串里设置了质量词时,会用画师串那份,这里的不生效。',
+    fallback: () => naiDefaultQualityTags(settings.nai.model),
     read: () => settings.nai.qualityTags,
     write: v => (settings.nai.qualityTags = v),
   },
   {
-    key: 'undesired',
+    key: 'negative',
     label: '负面提示词',
-    hint: '按模型给官方默认值;要额外排除什么,直接往这一份里接。',
-    official: () => naiDefaultUndesired(settings.nai.model),
+    hint: '留空 = 按模型取官方负面词;要额外排除什么,直接往这一份里接。画师串里设置了负面词时,会用画师串那份,这里的不生效。',
+    fallback: () => naiDefaultUndesired(settings.nai.model),
     read: () => settings.nai.undesiredContent,
     write: v => (settings.nai.undesiredContent = v),
   },
 ];
 
-/** 该条是否已自定义(非空即视为已覆盖官方词)。 */
-function isNaiPromptCustom(meta: NaiPromptMeta): boolean {
-  return meta.read().trim().length > 0;
+/**
+ * 当前画师串的两个绑定位;read/write 直接落在选中条目上(settings 是 reactive,就地编辑)。
+ * 只在真的选中了一条时存在(选「不使用」时没有绑定对象,列表整个不渲染)。
+ */
+const artistBoundTargets = computed<NaiPromptTarget[]>(() => {
+  const a = artist.value;
+  if (!a) return [];
+  const readonly = isBuiltinArtist.value;
+  return [
+    {
+      key: 'quality',
+      label: '正面质量词',
+      readonly,
+      hint: readonly
+        ? '内置画师串的绑定位随插件版本更新,不可改;复制为我的画师串后可自定义。留空 = 用渠道级设置(渠道级也留空,则按模型取官方词)。'
+        : '这份质量词随当前画师串一起切换。留空 = 用渠道级设置(渠道级也留空,则按模型取官方词)。',
+      fallback: () => settings.nai.qualityTags.trim() || naiDefaultQualityTags(settings.nai.model),
+      read: () => a.quality,
+      write: v => (a.quality = v),
+    },
+    {
+      key: 'negative',
+      label: '负面提示词',
+      readonly,
+      hint: readonly
+        ? '内置画师串的绑定位随插件版本更新,不可改;复制为我的画师串后可自定义。留空 = 用渠道级设置(渠道级也留空,则按模型取官方负面词)。'
+        : '这份负面词随当前画师串一起切换。留空 = 用渠道级设置(渠道级也留空,则按模型取官方负面词)。',
+      fallback: () =>
+        settings.nai.undesiredContent.trim() || naiDefaultUndesired(settings.nai.model),
+      read: () => a.negative,
+      write: v => (a.negative = v),
+    },
+  ];
+});
+
+/** 该条是否已有自定义值(非空即视为覆盖下一级)。 */
+function isTargetCustom(target: NaiPromptTarget): boolean {
+  return target.read().trim().length > 0;
+}
+
+/** 当前画师串是否绑定了该字段——绑定时渠道值被覆盖,渠道列表的徽标要说出这件事。 */
+function isShadowedByArtist(key: NaiPromptTarget['key']): boolean {
+  const a = artist.value;
+  if (!a) return false;
+  return key === 'quality' ? !!a.quality.trim() : !!a.negative.trim();
 }
 
 // 正在编辑的那条;draft 是草稿,点「完成」才写回 settings(取消则丢弃)。
-const editingNaiPrompt = ref<NaiPromptMeta | null>(null);
+const editingNaiPrompt = ref<NaiPromptTarget | null>(null);
 const naiPromptDraft = ref('');
 
-function openNaiPrompt(meta: NaiPromptMeta) {
-  editingNaiPrompt.value = meta;
-  // 已自定义→载入用户内容;未自定义→预填当前模型官方词,方便直接在其上改
-  naiPromptDraft.value = meta.read().trim() || meta.official();
+function openNaiPrompt(target: NaiPromptTarget) {
+  editingNaiPrompt.value = target;
+  // 已自定义→载入用户内容;未自定义→预填下一级回落值,方便直接在其上改
+  naiPromptDraft.value = target.read().trim() || target.fallback();
 }
 function closeNaiPrompt() {
   editingNaiPrompt.value = null;
   naiPromptDraft.value = '';
 }
 function saveNaiPrompt() {
-  const meta = editingNaiPrompt.value;
-  if (!meta) return;
+  const target = editingNaiPrompt.value;
+  if (!target || target.readonly) return; // 内置配方的绑定位只读(按钮已隐藏,双保险)
   const v = naiPromptDraft.value.trim();
-  meta.write(v === meta.official().trim() ? '' : naiPromptDraft.value);
+  target.write(v === target.fallback().trim() ? '' : naiPromptDraft.value);
   closeNaiPrompt();
 }
-/** 「恢复默认」:把草稿重置回当前模型的官方词(保存后即回落官方) */
+/** 「恢复默认」:把草稿重置回落值(保存后即变回「跟随下一级」) */
 function resetNaiPromptDraft() {
-  const meta = editingNaiPrompt.value;
-  if (meta) naiPromptDraft.value = meta.official();
+  const target = editingNaiPrompt.value;
+  if (target) naiPromptDraft.value = target.fallback();
 }
 
 /* ============ Vibe 库 ============ */
@@ -722,8 +779,14 @@ async function removeVibe(vibe: NaiVibe) {
             <button
               class="bbi-icon-btn art-op"
               type="button"
-              :disabled="!hasArtist"
-              :title="hasArtist ? '重命名当前画师串' : '未选中画师串'"
+              :disabled="!hasArtist || isBuiltinArtist"
+              :title="
+                !hasArtist
+                  ? '未选中画师串'
+                  : isBuiltinArtist
+                    ? '内置画师串不可改名,点复制建一条自己的'
+                    : '重命名当前画师串'
+              "
               aria-label="重命名当前画师串"
               @click="startRenameArtist"
             >
@@ -742,7 +805,13 @@ async function removeVibe(vibe: NaiVibe) {
               class="bbi-icon-btn art-op"
               type="button"
               :disabled="!hasArtist"
-              :title="hasArtist ? '复制当前画师串' : '未选中画师串'"
+              :title="
+                !hasArtist
+                  ? '未选中画师串'
+                  : isBuiltinArtist
+                    ? '复制为我的画师串,复制出来的可以随便改'
+                    : '复制当前画师串'
+              "
               aria-label="复制当前画师串"
               @click="duplicateArtist"
             >
@@ -751,8 +820,14 @@ async function removeVibe(vibe: NaiVibe) {
             <button
               class="bbi-icon-btn art-op art-remove"
               type="button"
-              :disabled="!hasArtist"
-              :title="hasArtist ? '删除当前画师串' : '未选中画师串'"
+              :disabled="!hasArtist || isBuiltinArtist"
+              :title="
+                !hasArtist
+                  ? '未选中画师串'
+                  : isBuiltinArtist
+                    ? '内置画师串不可删除,它会随插件版本更新'
+                    : '删除当前画师串'
+              "
               aria-label="删除当前画师串"
               @click="artistDeleteOpen = true"
             >
@@ -770,33 +845,55 @@ async function removeVibe(vibe: NaiVibe) {
             :rows="3"
             :max-rows="8"
             mono
+            :readonly="isBuiltinArtist"
             placeholder="artist:xxx, artist:yyy"
           />
-          <p class="bbi-field-hint art-hint">
-            拼在正向提示词的最前面,先于画面 tag 与质量词——整幅画的画风基调由它定。
+          <p v-if="isBuiltinArtist" class="bbi-field-hint art-hint">
+            内置画师串随插件版本更新,不可直接改;点上方复制按钮建一条自己的再改。
           </p>
           <!-- 仅 V5 模型下提醒:V5 与 4.5 的画师串响应差异大,4.5 及以下不需要这条噪音 -->
           <p v-if="isV5Model" class="bbi-field-hint art-hint art-hint-warn">
             NAI 5 对画师串的响应与 4.5 差异很大,旧画师串直接套用效果可能跑偏,建议重新调试。
+          </p>
+
+          <!-- 随画师串一起切换的正/负面词:设置了覆盖下面渠道级,没设置就用下面的 -->
+          <ul class="bbi-prompt-list art-bound-list">
+            <li v-for="t in artistBoundTargets" :key="t.key" class="bbi-prompt-item">
+              <button class="bbi-prompt-open" type="button" @click="openNaiPrompt(t)">
+                <span class="bbi-prompt-name">{{ t.label }}</span>
+                <span class="bbi-prompt-state" :class="{ 'is-custom': isTargetCustom(t) }">
+                  {{ isTargetCustom(t) ? '已设置' : '未设置' }}
+                </span>
+                <Icon name="edit" class="bbi-prompt-edit" />
+              </button>
+            </li>
+          </ul>
+          <p class="bbi-field-hint art-hint">
+            这里设置的提示词会覆盖下面的，随画师串一起切换;这里没设置，就会用下面的。
           </p>
         </template>
         <!-- 不选画师串时无提示:下拉里「不使用」已自明 -->
 
         <hr class="art-divider" />
 
-        <!-- 质量词 / 负面词:只读列表行,点行进弹窗编辑(与设置页「自定义提示词」同款) -->
+        <!-- 渠道级质量词/负面词:只读列表行,点行进弹窗编辑(与设置页「自定义提示词」同款) -->
         <ul class="bbi-prompt-list">
-          <li v-for="m in NAI_PROMPT_METAS" :key="m.key" class="bbi-prompt-item">
-            <button class="bbi-prompt-open" type="button" @click="openNaiPrompt(m)">
-              <span class="bbi-prompt-name">{{ m.label }}</span>
-              <span class="bbi-prompt-state" :class="{ 'is-custom': isNaiPromptCustom(m) }">
-                {{ isNaiPromptCustom(m) ? '已自定义' : '默认' }}
+          <li v-for="t in CHANNEL_PROMPT_TARGETS" :key="t.key" class="bbi-prompt-item">
+            <button class="bbi-prompt-open" type="button" @click="openNaiPrompt(t)">
+              <span class="bbi-prompt-name">{{ t.label }}</span>
+              <span v-if="isShadowedByArtist(t.key)" class="bbi-prompt-state is-shadowed">
+                已被画师串覆盖
+              </span>
+              <span v-else class="bbi-prompt-state" :class="{ 'is-custom': isTargetCustom(t) }">
+                {{ isTargetCustom(t) ? '已自定义' : '默认' }}
               </span>
               <Icon name="edit" class="bbi-prompt-edit" />
             </button>
           </li>
         </ul>
-        <!-- 「默认/已自定义」徽标与编辑弹窗的「恢复默认」已表达留空语义,不再重复提示 -->
+        <p class="bbi-field-hint art-hint">
+          画师串里没设置正/负面词时，就会用这里的;这里也留空，则按模型取官方词。
+        </p>
       </Collapsible>
 
       <Collapsible title="默认参数" :open="false">
@@ -1283,7 +1380,9 @@ async function removeVibe(vibe: NaiVibe) {
         :aria-label="`编辑${editingNaiPrompt.label}`"
       >
         <header class="bbi-modal-head">
-          <span class="bbi-modal-title">编辑{{ editingNaiPrompt.label }}</span>
+          <span class="bbi-modal-title">
+            {{ editingNaiPrompt.readonly ? '查看' : '编辑' }}{{ editingNaiPrompt.label }}
+          </span>
           <button class="bbi-icon-mini" type="button" title="关闭" @click="closeNaiPrompt">
             <Icon name="close" />
           </button>
@@ -1297,15 +1396,22 @@ async function removeVibe(vibe: NaiVibe) {
           :rows="12"
           :max-rows="28"
           mono
+          :readonly="editingNaiPrompt.readonly"
         />
 
         <footer class="bbi-modal-foot">
-          <button class="bbi-btn bbi-btn-danger" type="button" @click="resetNaiPromptDraft">
-            <Icon name="refresh" /> 恢复默认
-          </button>
-          <span class="bbi-modal-foot-spacer"></span>
-          <button class="bbi-btn" type="button" @click="closeNaiPrompt">取消</button>
-          <button class="bbi-btn bbi-btn-primary" type="button" @click="saveNaiPrompt">完成</button>
+          <template v-if="!editingNaiPrompt.readonly">
+            <button class="bbi-btn bbi-btn-danger" type="button" @click="resetNaiPromptDraft">
+              <Icon name="refresh" /> 恢复默认
+            </button>
+            <span class="bbi-modal-foot-spacer"></span>
+            <button class="bbi-btn" type="button" @click="closeNaiPrompt">取消</button>
+            <button class="bbi-btn bbi-btn-primary" type="button" @click="saveNaiPrompt">完成</button>
+          </template>
+          <template v-else>
+            <span class="bbi-modal-foot-spacer"></span>
+            <button class="bbi-btn bbi-btn-primary" type="button" @click="closeNaiPrompt">关闭</button>
+          </template>
         </footer>
       </div>
     </ModalMask>
@@ -1428,6 +1534,15 @@ async function removeVibe(vibe: NaiVibe) {
   border: 0;
   border-top: 1px dashed var(--bbi-line);
   margin: 12px 0;
+}
+/* 绑定列表与上方画师串编辑区拉开一点;「已被画师串覆盖」用警示色——渠道值正被覆盖,
+   用户在渠道行改了却不生效,需要一眼看出原因 */
+.art-bound-list {
+  margin-top: 10px;
+}
+.bbi-prompt-state.is-shadowed {
+  color: var(--bbi-warning);
+  background: transparent;
 }
 
 /* —— 从智绘姬迁移画师串 —— */

@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   applyVibes,
   buildNaiParameters,
+  BUILTIN_NAI_ARTISTS,
   fullNegativePrompt,
   fullPositivePrompt,
+  isBuiltinNaiArtist,
   naiArtistPrompt,
   naiDefaultQualityTags,
   naiDefaultUndesired,
@@ -17,7 +19,7 @@ import {
   vibeModelKey,
   NaiError,
 } from '@/backends/nai';
-import type { NaiSettings, NaiVibe, NaiVibeData } from '@/state/settings';
+import type { NaiArtistPreset, NaiSettings, NaiVibe, NaiVibeData } from '@/state/settings';
 import { strToU8, zipSync } from 'fflate';
 
 function nai(overrides: Partial<NaiSettings> = {}): NaiSettings {
@@ -157,7 +159,14 @@ describe('提示词拼装', () => {
 });
 
 describe('画师串拼装', () => {
-  const preset = (prompt: string, id = 'art_a') => ({ id, name: 'A', prompt });
+  const preset = (prompt: string, id = 'art_a', extra: Partial<NaiArtistPreset> = {}): NaiArtistPreset => ({
+    id,
+    name: 'A',
+    prompt,
+    quality: '',
+    negative: '',
+    ...extra,
+  });
 
   it('空库 / 未选 → 输出与本功能上线前逐字节一致(存量用户零变化)', () => {
     expect(fullPositivePrompt(nai(), '1girl')).toBe(
@@ -216,6 +225,88 @@ describe('画师串拼装', () => {
   });
 });
 
+describe('配方绑定正/负面词(解析链:配方 → 渠道 → 官方)', () => {
+  const preset = (extra: Partial<NaiArtistPreset>): NaiArtistPreset => ({
+    id: 'art_a',
+    name: 'A',
+    prompt: 'artist:a',
+    quality: '',
+    negative: '',
+    ...extra,
+  });
+  const withPreset = (extra: Partial<NaiArtistPreset>, rest: Partial<NaiSettings> = {}) =>
+    nai({ artistPresets: [preset(extra)], activeArtistId: 'art_a', ...rest });
+
+  it('配方绑定的质量词/负面词优先于渠道覆盖值与官方词', () => {
+    const s = withPreset(
+      { quality: 'recipe quality', negative: 'recipe negative' },
+      { qualityTags: 'channel quality', undesiredContent: 'channel negative' },
+    );
+    expect(fullPositivePrompt(s, '1girl')).toBe('artist:a, 1girl, recipe quality');
+    expect(fullNegativePrompt(s)).toBe('recipe negative');
+  });
+
+  it('配方字段留空 → 跟随渠道覆盖值', () => {
+    const s = withPreset({}, { qualityTags: 'channel quality', undesiredContent: 'channel negative' });
+    expect(fullPositivePrompt(s, '1girl')).toBe('artist:a, 1girl, channel quality');
+    expect(fullNegativePrompt(s)).toBe('channel negative');
+  });
+
+  it('配方与渠道都留空 → 模型官方词(与本功能上线前逐字节一致)', () => {
+    const s = withPreset({});
+    expect(fullPositivePrompt(s, '1girl')).toBe(
+      'artist:a, 1girl, location, very aesthetic, masterpiece, no text',
+    );
+    expect(fullNegativePrompt(s)).toBe(naiDefaultUndesired('nai-diffusion-4-5-full'));
+  });
+
+  it('只绑定其一:另一个照常回落', () => {
+    const s = withPreset({ negative: 'recipe negative' }, { qualityTags: 'channel quality' });
+    expect(fullPositivePrompt(s, '1girl')).toBe('artist:a, 1girl, channel quality');
+    expect(fullNegativePrompt(s)).toBe('recipe negative');
+  });
+
+  it('纯空白绑定值 = 未绑定,继续向下回落', () => {
+    const s = withPreset(
+      { quality: '   ', negative: ' \n ' },
+      { qualityTags: 'channel quality', undesiredContent: 'channel negative' },
+    );
+    expect(fullPositivePrompt(s, '1girl')).toBe('artist:a, 1girl, channel quality');
+    expect(fullNegativePrompt(s)).toBe('channel negative');
+  });
+
+  it('activeArtistId 悬空 → 配方字段一并失效,走渠道/官方', () => {
+    const s = nai({
+      artistPresets: [preset({ quality: 'recipe quality', negative: 'recipe negative' })],
+      activeArtistId: 'art_gone',
+      qualityTags: 'channel quality',
+      undesiredContent: 'channel negative',
+    });
+    expect(fullPositivePrompt(s, '1girl')).toBe('1girl, channel quality');
+    expect(fullNegativePrompt(s)).toBe('channel negative');
+  });
+
+  it('切换配方 = 正/负面词一起切换(需求的核心契约)', () => {
+    const s = nai({
+      artistPresets: [
+        preset({ id: 'art_a', quality: 'q a', negative: 'n a' }),
+        preset({ id: 'art_b', prompt: 'artist:b', quality: 'q b', negative: 'n b' }),
+      ],
+      activeArtistId: 'art_a',
+    });
+    expect(fullPositivePrompt(s, '1girl')).toBe('artist:a, 1girl, q a');
+    expect(fullNegativePrompt(s)).toBe('n a');
+    s.activeArtistId = 'art_b';
+    expect(fullPositivePrompt(s, '1girl')).toBe('artist:b, 1girl, q b');
+    expect(fullNegativePrompt(s)).toBe('n b');
+    // 切到「不使用」→ 回落渠道/官方
+    s.activeArtistId = '';
+    expect(fullPositivePrompt(s, '1girl')).toBe(
+      '1girl, location, very aesthetic, masterpiece, no text',
+    );
+  });
+});
+
 describe('NAI V5 support', () => {
   it('uses official model defaults and params_version 4', () => {
     for (const model of ['nai-diffusion-5-full', 'nai-diffusion-5-curated'] as const) {
@@ -238,7 +329,7 @@ describe('NAI V5 support', () => {
     const settings = nai({
       model: 'nai-diffusion-5-full',
       qualityTags: 'very aesthetic',
-      artistPresets: [{ id: 'artist', name: 'Artist', prompt: 'artist:test' }],
+      artistPresets: [{ id: 'artist', name: 'Artist', prompt: 'artist:test', quality: '', negative: '' }],
       activeArtistId: 'artist',
     });
     const params = buildNaiParameters(settings, {
@@ -316,7 +407,7 @@ describe('buildNaiParameters', () => {
     // NAI4/4.5 读 v4_prompt,两者会拿到不同提示词且只在 NAI3 上暴露。此断言把「同源」钉死:
     // 任何拼装改动都必须留在 fullPositivePrompt 内部,不能在调用点单独加料。
     const s = nai({
-      artistPresets: [{ id: 'art_a', name: 'A', prompt: 'artist:a' }],
+      artistPresets: [{ id: 'art_a', name: 'A', prompt: 'artist:a', quality: '', negative: '' }],
       activeArtistId: 'art_a',
     });
     const p = buildNaiParameters(s, { prompt: '1girl', seed: 1 });
@@ -514,5 +605,39 @@ describe('naiRandomSeed', () => {
     expect(Number.isInteger(s)).toBe(true);
     expect(s).toBeGreaterThanOrEqual(0);
     expect(s).toBeLessThan(2 ** 32);
+  });
+});
+
+describe('内置画师串配方(只读、随版本更新、不进 settings)', () => {
+  it('用户库为空时,activeArtistId 命中内置库', () => {
+    const s = nai({ artistPresets: [], activeArtistId: 'bi_default' });
+    expect(naiArtistPrompt(s)).toBe(BUILTIN_NAI_ARTISTS[0].prompt.trim());
+    expect(fullPositivePrompt(s, '1girl')).toBe(
+      `${BUILTIN_NAI_ARTISTS[0].prompt.trim()}, 1girl, location, very aesthetic, masterpiece, no text`,
+    );
+  });
+
+  it('内置配方的 quality/negative 走同一回落链:留空 → 渠道覆盖值', () => {
+    // 内置条目当前不绑定正/负面词;这里锁住「留空 = 跟随渠道」的口径,
+    // 以后给内置条目加绑定时这条测试会提醒检查链行为。
+    const s = nai({
+      artistPresets: [],
+      activeArtistId: 'bi_default',
+      qualityTags: 'channel quality',
+      undesiredContent: 'channel negative',
+    });
+    expect(fullPositivePrompt(s, '1girl')).toContain('channel quality');
+    expect(fullNegativePrompt(s)).toBe('channel negative');
+  });
+
+  it('isBuiltinNaiArtist:bi_ 前缀命中,用户条目(art_*)不命中', () => {
+    expect(isBuiltinNaiArtist('bi_default')).toBe(true);
+    expect(isBuiltinNaiArtist('art_abc')).toBe(false);
+    expect(isBuiltinNaiArtist('')).toBe(false);
+  });
+
+  it('activeArtistId 指向不存在的内置 id(如下线后)→ 不加画师串', () => {
+    const s = nai({ artistPresets: [], activeArtistId: 'bi_gone' });
+    expect(naiArtistPrompt(s)).toBe('');
   });
 });
