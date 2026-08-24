@@ -35,7 +35,7 @@ export class NaiError extends Error {
 /* ============ 常量表(与 st-chatu8 / NAI 官方前端同口径) ============ */
 
 export const NAI_SAMPLERS: { value: string; label: string }[] = [
-  { value: 'k_euler', label: 'Euler(推荐)' },
+  { value: 'k_euler', label: 'Euler' },
   { value: 'k_euler_ancestral', label: 'Euler Ancestral' },
   { value: 'k_dpmpp_2s_ancestral', label: 'DPM++ 2S Ancestral' },
   { value: 'k_dpmpp_2m', label: 'DPM++ 2M' },
