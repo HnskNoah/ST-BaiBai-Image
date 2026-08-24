@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { naiDefaultUndesired } from '@/backends/nai';
 import {
   collectChatu8ArtistRefs,
   collectChatu8VibeRefs,
@@ -130,21 +131,22 @@ describe('vibeFingerprint', () => {
 });
 
 describe('st-chatu8 artist migration', () => {
+  const MODEL = 'nai-diffusion-4-5-full';
   const source = {
     yushe: {
-      Default: { fixedPrompt: '', fixedPrompt_end: '', negativePrompt: 'ignored' },
-      Painter: { fixedPrompt: 'artist:a', fixedPrompt_end: 'style:b', negativePrompt: 'bad' },
+      Default: { fixedPrompt: '', fixedPrompt_end: '', negativePrompt: '' },
+      Painter: { fixedPrompt: 'artist:a', fixedPrompt_end: 'style:b', negativePrompt: 'bad hands' },
       SharedSDPreset: { fixedPrompt: 'score_9', fixedPrompt_end: '' },
       Broken: null,
     },
     yusheid_novelai: 'Painter',
   };
 
-  it('collects the whole shared preset library and merges both positive prompt positions', () => {
+  it('collects each preset with its three fields split by position', () => {
     expect(collectChatu8ArtistRefs(source)).toEqual([
-      { source: 'Default', prompt: '', active: false },
-      { source: 'Painter', prompt: 'artist:a, style:b', active: true },
-      { source: 'SharedSDPreset', prompt: 'score_9', active: false },
+      { source: 'Default', prompt: '', quality: '', negative: '', active: false },
+      { source: 'Painter', prompt: 'artist:a', quality: 'style:b', negative: 'bad hands', active: true },
+      { source: 'SharedSDPreset', prompt: 'score_9', quality: '', negative: '', active: false },
     ]);
   });
 
@@ -154,37 +156,80 @@ describe('st-chatu8 artist migration', () => {
     expect(detectChatu8Artists(source)).toEqual({ found: true, total: 3 });
   });
 
-  it('imports every valid preset, including empty and presets shared with other backends', () => {
-    const result = importArtistsFromChatu8([], source);
+  it('imports presets with position-preserving mapping and baked negative baseline', () => {
+    const result = importArtistsFromChatu8([], source, MODEL);
     expect(result.found).toBe(true);
     expect(result.imported).toBe(3);
+    expect(result.overwritten).toBe(0);
     expect(result.duplicates).toBe(0);
-    expect(result.artistPresets.map(p => [p.name, p.prompt])).toEqual([
-      ['Default', ''],
-      ['Painter', 'artist:a, style:b'],
-      ['SharedSDPreset', 'score_9'],
-    ]);
-    expect(result.artistPresets.every(p => p.id.startsWith('art_'))).toBe(true);
-    expect(result.activeArtistId).toBe(result.artistPresets[1].id);
+    const byName = new Map(result.plans.map(p => [p.source, p]));
+    const painter = byName.get('Painter')!;
+    expect(painter.state).toBe('import');
+    expect(painter.preset).toMatchObject({
+      name: 'Painter',
+      prompt: 'artist:a',
+      quality: 'style:b',
+      negative: [naiDefaultUndesired(MODEL), 'bad hands'].join(', '),
+    });
+    // 负向为空 → 不烤基线,留空走回落链(基线跟随模型)
+    expect(byName.get('SharedSDPreset')!.preset!.negative).toBe('');
+    expect(byName.get('Default')!.preset!.prompt).toBe('');
+    expect(result.activeArtistId).toBe(painter.targetId);
+    expect(result.plans.every(p => p.targetId.startsWith('art_'))).toBe(true);
   });
 
-  it('deduplicates by trimmed name and prompt and maps the active source preset to an existing id', () => {
+  it('overwrites same-name entries with different content, keeping their id and the active mapping', () => {
+    // 旧版迁移的条目:正向整体塞在画师串里,负向为空 → 重新导入应原地修复
     const existing = [
-      { id: 'art_existing', name: ' Painter ', prompt: 'artist:a, style:b ', quality: '', negative: '' },
+      { id: 'art_old', name: 'Painter', prompt: 'artist:a, style:b', quality: '', negative: '' },
     ];
-    const result = importArtistsFromChatu8(existing, source);
+    const result = importArtistsFromChatu8(existing, source, MODEL);
     expect(result.imported).toBe(2);
+    expect(result.overwritten).toBe(1);
+    expect(result.duplicates).toBe(0);
+    const plan = result.plans.find(p => p.source === 'Painter')!;
+    expect(plan.state).toBe('overwrite');
+    expect(plan.targetId).toBe('art_old');
+    expect(plan.preset).toMatchObject({
+      id: 'art_old',
+      prompt: 'artist:a',
+      quality: 'style:b',
+      negative: [naiDefaultUndesired(MODEL), 'bad hands'].join(', '),
+    });
+    expect(result.activeArtistId).toBe('art_old');
+  });
+
+  it('skips same-name entries with identical content (idempotent re-import)', () => {
+    const existing = [
+      {
+        id: 'art_x',
+        name: 'Painter',
+        prompt: 'artist:a',
+        quality: 'style:b',
+        negative: [naiDefaultUndesired(MODEL), 'bad hands'].join(', '),
+      },
+    ];
+    const result = importArtistsFromChatu8(existing, source, MODEL);
+    expect(result.imported).toBe(2);
+    expect(result.overwritten).toBe(0);
     expect(result.duplicates).toBe(1);
-    expect(result.activeArtistId).toBe('art_existing');
+    const plan = result.plans.find(p => p.source === 'Painter')!;
+    expect(plan.state).toBe('skip');
+    expect(plan.targetId).toBe('art_x');
+    expect(result.activeArtistId).toBe('art_x');
   });
 
   it('does not collapse different names with identical prompt content', () => {
-    const result = importArtistsFromChatu8([], {
-      yushe: {
-        A: { fixedPrompt: 'artist:a' },
-        B: { fixedPrompt: 'artist:a' },
-      },
-    });
+    const result = importArtistsFromChatu8(
+      [],
+      { yushe: { A: { fixedPrompt: 'artist:a' }, B: { fixedPrompt: 'artist:a' } } },
+      MODEL,
+    );
     expect(result.imported).toBe(2);
+  });
+
+  it('imports every valid preset, including all-empty ones', () => {
+    const result = importArtistsFromChatu8([], source, MODEL);
+    expect(result.plans.map(p => p.source)).toEqual(['Default', 'Painter', 'SharedSDPreset']);
   });
 });

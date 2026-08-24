@@ -55,7 +55,7 @@ src/
 │   ├── comfyObjectInfo.ts # 拉模型/LoRA/采样器列表(直连 /object_info,回退 ST 转发四个端点)
 │   ├── comfyWorkflowAssistant.ts # AI 自动定位工作流节点(片段 ID 协议,不复制原文)
 │   ├── nai.ts         # NovelAI:参数构造、vibe 编码/叠加、画师串前置拼装、.naiv4vibe 导入导出
-│   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe / 画师串预设
+│   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe / 提示词预设
 │   │                  # (collect/detect/import 纯函数三件套,绝不写回智绘姬)
 │   ├── vibeGroups.ts  # Vibe 分组纯逻辑(装箱 key/归拢/搜索/启用集合判定)
 │   └── size.ts        # 画幅方向归一 / 尺寸解析 / 按方向取配置(刻意不 import settings)
@@ -289,11 +289,15 @@ runForFloor(floor, opts)
   缓存分支(`reference_image_multiple_cached` 无条件初始化);仅**非 NAI 家族模型**才不支持。
   正向串 V5 且带 nl 时拼成 `tags. nl`(句点分隔)。
 - `chatu8Vibe.ts`:只读智绘姬的 extension_settings + IndexedDB,逐条导入 vibe(内容指纹去重、读取超时、迁移进度)。
-  另有三件画师串预设函数(collectChatu8ArtistRefs / detectChatu8Artists / importArtistsFromChatu8):
-  读 `yushe` 表 + `yusheid_novelai` 当前选中,positive 两段(fixedPrompt/fixedPrompt_end)按原序
-  拼成一条画师串,按 (名字, 内容) 去重,active 预设映射到目标 id 由调用方决定是否选中;纯函数不落盘,
-  UI 在 NaiPanel:对当前库实时跑 importArtistsFromChatu8 算「还剩 N 个新预设」,N>0 才显示
-  文字按钮行(导完自动消失),点击进预览弹窗。
+  另有提示词预设三件套(collectChatu8ArtistRefs / detectChatu8Artists / importArtistsFromChatu8):
+  读 `yushe` 表 + `yusheid_novelai` 当前选中,每条预设三个字段按**位置对应**迁移——
+  前置固定正向(fixedPrompt)→ 画师串(正向最前)、后置固定正向(fixedPrompt_end)→ 正面质量词
+  (正向最后)、固定负向(negativePrompt)→ 负面提示词,且负向非空时把**当前模型官方基线**烤在
+  前面(智绘姬口径 = 官方 UCP + 用户负向;空则留空走回落链,基线跟随模型)。**同名即同一配方**:
+  内容不同 → 覆盖更新(旧版迁移把正向整体塞进画师串的条目,重导即修好)、完全相同 → 跳过;
+  active 预设映射到目标 id 由调用方决定是否选中。结果逐条带 plans(state: import/overwrite/skip
+  + 目标 id + 落盘值),纯函数不落盘;UI 在 NaiPanel「从智绘姬迁移」折叠区:入口常驻,
+  点开弹窗算一次预览(徽标:将导入/将覆盖/已存在),确认后 push/覆盖 + 可选切换。
 - `vibeStore.ts`:Vibe 原图/编码正文与缩略图分文件存 ST `user/files`，文件存储不可用时回退本机 IndexedDB。
   `extensionSettings['baibai_image']` 只留路径、模型键、指纹等小型索引，禁止再放 Base64。
 
@@ -320,9 +324,11 @@ runForFloor(floor, opts)
   - 工作流 JSON 随设置整体进 `settings.json`(单套数 KB–数十 KB)。刻意**没有**像 Vibe 那样搬去 `user/files`:
     量级差两个数量级。若日后设置保存变慢,这里是第一嫌疑人。
 - **NAI 画师串库**:`settings.nai.artistPresets`(`NaiArtistPreset[]`)+ `activeArtistId`。
-  一条 = 名字 + 一段拼在正向提示词**最前面**的画风 tag(`backends/nai.ts` 的
-  `fullPositivePrompt`,顺序:画师串 → 画面 tag → 质量词;放最前是因为它定整幅画的基调,
-  NAI 对靠前 tag 权重更高)。
+  一条配方 = 名字 + 画师串(prompt,拼在正向提示词**最前面**) + 可选绑定的正面质量词(quality)
+  + 可选绑定的负面提示词(negative);绑定值留空 = 跟随渠道级 → 模型官方词(三级回落,见
+  `backends/nai.ts` 的 `naiQualityTags` / `naiUndesiredContent`)。拼装顺序:画师串 → 画面 tag →
+  质量词(画师串放最前是因为它定整幅画的基调,NAI 对靠前 tag 权重更高;切换画师串时
+  三个字段一起生效——一套配方即一套完整画风搭配)。
   - **不按模型分表**(与质量词/负面词相反):官方质量词是**模型的属性**,切模型必须跟着换;
     画师串是**用户自己的配方**,跨模型复用才是常态,故做成可增删的库而非 `Record<model, …>`。
   - **与工作流库刻意相反的三处**:①`artistPresets` **允许为空**(工作流恒非空);
@@ -446,7 +452,7 @@ runForFloor(floor, opts)
 | ComfyUI 模型/LoRA 列表拉取 | src/backends/comfyObjectInfo.ts |
 | ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
-| NAI 参数 / vibe / .naiv4vibe / 智绘姬画师串导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
+| NAI 参数 / vibe / .naiv4vibe / 智绘姬提示词预设导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
 | NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |

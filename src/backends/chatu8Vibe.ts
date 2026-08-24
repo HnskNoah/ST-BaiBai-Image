@@ -1,4 +1,4 @@
-import { parseNaiv4vibe } from '@/backends/nai';
+import { naiDefaultUndesired, parseNaiv4vibe } from '@/backends/nai';
 import {
   clampVibeStrength,
   saveVibeFiles,
@@ -41,8 +41,12 @@ export interface Chatu8VibeRef {
 export interface Chatu8ArtistRef {
   /** Source preset name in st-chatu8. */
   source: string;
-  /** The target has one positive field, so keep both source positive parts in their original order. */
+  /** 前置固定正向(fixedPrompt)→ 目标画师串位(正向最前,与智绘姬拼装位置一致)。 */
   prompt: string;
+  /** 后置固定正向(fixedPrompt_end)→ 目标正面质量词位(正向最后,与智绘姬拼装位置一致)。 */
+  quality: string;
+  /** 固定负向(negativePrompt);导入时会在前面拼上当前模型官方基线(智绘姬同口径:官方 UCP + 用户负向)。 */
+  negative: string;
   /** Whether this is the currently selected NovelAI prompt preset in st-chatu8. */
   active: boolean;
 }
@@ -57,9 +61,13 @@ export function collectChatu8ArtistRefs(chatu8: unknown): Chatu8ArtistRef[] {
   for (const [source, value] of Object.entries(root.yushe)) {
     if (!value || typeof value !== 'object') continue;
     const preset = value as Record<string, unknown>;
-    const fixedPrompt = typeof preset.fixedPrompt === 'string' ? preset.fixedPrompt.trim() : '';
-    const fixedPromptEnd = typeof preset.fixedPrompt_end === 'string' ? preset.fixedPrompt_end.trim() : '';
-    refs.push({ source, prompt: [fixedPrompt, fixedPromptEnd].filter(Boolean).join(', '), active: source === activeName });
+    refs.push({
+      source,
+      prompt: typeof preset.fixedPrompt === 'string' ? preset.fixedPrompt.trim() : '',
+      quality: typeof preset.fixedPrompt_end === 'string' ? preset.fixedPrompt_end.trim() : '',
+      negative: typeof preset.negativePrompt === 'string' ? preset.negativePrompt.trim() : '',
+      active: source === activeName,
+    });
   }
   return refs;
 }
@@ -74,48 +82,107 @@ export function detectChatu8Artists(chatu8: unknown): Chatu8ArtistDetectInfo {
   return { found: true, total: collectChatu8ArtistRefs(chatu8).length };
 }
 
+/** 一条预设的去向(与 collectChatu8ArtistRefs 顺序一一对应,预览徽标与落盘共用)。 */
+export interface Chatu8ArtistPlan {
+  source: string;
+  /** 前置固定正向(预览用)。 */
+  prompt: string;
+  /** 后置固定正向(预览用)。 */
+  quality: string;
+  /** 固定负向原文(预览用;落盘值在 preset 里,前面已拼上官方基线)。 */
+  negative: string;
+  active: boolean;
+  /** import = 新建条目;overwrite = 同名覆盖现有条目;skip = 内容完全相同,跳过。 */
+  state: 'import' | 'overwrite' | 'skip';
+  /** 目标条目 id:overwrite/skip 指向现有条目;import 指向新建条目。 */
+  targetId: string;
+  /** import/overwrite 时携带最终落库值(overwrite 时 id = 现有条目 id)。 */
+  preset?: NaiArtistPreset;
+}
+
 export interface Chatu8ArtistImportResult {
   found: boolean;
   imported: number;
+  overwritten: number;
   duplicates: number;
-  artistPresets: NaiArtistPreset[];
+  plans: Chatu8ArtistPlan[];
   /** Matching target id for the source's active NovelAI preset; the caller decides whether to select it. */
   activeArtistId: string;
 }
 
-/** Import all st-chatu8 prompt presets as artist strings without mutating either settings object. */
+/**
+ * 把智绘姬的全部提示词预设搬进画师串库(纯函数,绝不写智绘姬)。
+ *
+ * 映射(与智绘姬生成时的拼装位置一一对应):
+ * - fixedPrompt(前置固定正向)→ 目标 prompt(画师串位,正向最前);
+ * - fixedPrompt_end(后置固定正向)→ 目标 quality(正面质量词位,正向最后);
+ * - negativePrompt(固定负向)→ 目标 negative。智绘姬的口径是「官方 UCP + 用户负向」,
+ *   故用户负向非空时把当前模型官方基线烤在它前面(基线在导入时即定,随后不随模型切换);
+ *   用户负向为空则留空走回落链,基线仍跟随模型,与智绘姬空负向时只用 UCP 同效。
+ *
+ * 同名即视为同一配方:内容不同 → 覆盖更新(旧版迁移把正向整体塞进画师串的条目,
+ * 重新导入即被修好),完全相同 → 跳过。幂等,随时可再来。
+ */
 export function importArtistsFromChatu8(
   existing: readonly NaiArtistPreset[],
   chatu8: unknown = getContext()?.extensionSettings?.[CHATU8_SETTINGS_KEY],
+  model: string,
 ): Chatu8ArtistImportResult {
   if (!chatu8 || typeof chatu8 !== 'object') {
-    return { found: false, imported: 0, duplicates: 0, artistPresets: [], activeArtistId: '' };
+    return { found: false, imported: 0, overwritten: 0, duplicates: 0, plans: [], activeArtistId: '' };
   }
 
-  const keyOf = (name: string, prompt: string) => JSON.stringify([name.trim(), prompt.trim()]);
-  const existingByKey = new Map(existing.map(preset => [keyOf(preset.name, preset.prompt), preset.id]));
+  // 同名覆盖按「首个同名条目」处理(库允许重名、以 id 为键;其余同名条目不动)。
+  const byName = new Map<string, NaiArtistPreset>();
+  for (const preset of existing) {
+    const name = preset.name.trim();
+    if (name && !byName.has(name)) byName.set(name, preset);
+  }
+
+  const bakeNegative = (ref: Chatu8ArtistRef): string =>
+    ref.negative ? [naiDefaultUndesired(model), ref.negative].filter(Boolean).join(', ') : '';
+
+  const buildPreset = (ref: Chatu8ArtistRef, negative: string): NaiArtistPreset => {
+    const preset = newNaiArtist(ref.source);
+    preset.prompt = ref.prompt;
+    preset.quality = ref.quality;
+    preset.negative = negative;
+    return preset;
+  };
+
   const result: Chatu8ArtistImportResult = {
     found: true,
     imported: 0,
+    overwritten: 0,
     duplicates: 0,
-    artistPresets: [],
+    plans: [],
     activeArtistId: '',
   };
 
   for (const ref of collectChatu8ArtistRefs(chatu8)) {
-    const key = keyOf(ref.source, ref.prompt);
-    const duplicateId = existingByKey.get(key);
-    if (duplicateId) {
-      result.duplicates++;
-      if (ref.active) result.activeArtistId = duplicateId;
+    const negative = bakeNegative(ref);
+    const sameContent = (p: NaiArtistPreset) =>
+      p.prompt.trim() === ref.prompt && p.quality.trim() === ref.quality && p.negative.trim() === negative;
+
+    const existingPreset = byName.get(ref.source.trim());
+    if (existingPreset) {
+      if (sameContent(existingPreset)) {
+        result.duplicates++;
+        result.plans.push({ ...ref, negative, state: 'skip', targetId: existingPreset.id });
+      } else {
+        const preset = buildPreset(ref, negative);
+        preset.id = existingPreset.id;
+        result.overwritten++;
+        result.plans.push({ ...ref, negative, state: 'overwrite', targetId: existingPreset.id, preset });
+      }
+      if (ref.active) result.activeArtistId = existingPreset.id;
       continue;
     }
-    const preset = newNaiArtist(ref.source);
-    preset.prompt = ref.prompt;
-    result.artistPresets.push(preset);
-    existingByKey.set(key, preset.id);
-    if (ref.active) result.activeArtistId = preset.id;
+
+    const preset = buildPreset(ref, negative);
     result.imported++;
+    result.plans.push({ ...ref, negative, state: 'import', targetId: preset.id, preset });
+    if (ref.active) result.activeArtistId = preset.id;
   }
   return result;
 }
