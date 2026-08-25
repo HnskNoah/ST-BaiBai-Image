@@ -65,7 +65,7 @@ const QUALITY_TAGS: Record<string, string> = {
 /** 各模型官方 Heavy 负面词，作为无需用户选择的通用默认;用户改过则用其覆盖值。 */
 const DEFAULT_UNDESIRED_CONTENT: Record<string, string> = {
   'nai-diffusion-5-full':
-    'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page',
+    'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, text, watermark, signature, artist:matsunaga kouyou::, artist:xinzoruo, artist:milkpanda, artist collaboration, chibi, 1990s (style), bad anatomy, distorted anatomy, disfigured, bad hands, missing finger, extra digits, mutation, extra arms, extra legs, long neck, bad feet, undetailed eyes, variant set, large variant set, 4koma, 2koma, oekaki, disorganized colors, cheesy, sloppiness, unfinished, Incomplete, -2::chibi::, large breasts, huge breasts, bad face, ugly, deformed, oily skin, dark, high contrast, tight pants, Limbs that disappear out of nowhere, childish stature, The proportions are incorrect, limbs are fused together, The face does not match the body, black face, Eye-catching bright red, extra people, incorrect eyes, red lips, red face, red ears, honey',
   'nai-diffusion-5-curated':
     'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page',
   'nai-diffusion-3':

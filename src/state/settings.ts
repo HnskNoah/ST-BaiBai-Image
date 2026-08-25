@@ -259,6 +259,11 @@ export interface UiPrefs {
    * 因为两者诉求不同:窗口是独立界面,卡片嵌在聊天流里。
    */
   cardTheme: string;
+  /**
+   * 楼层图片默认折叠:开启后卡片默认收成一条细条(点击展开),适合公共场合防窥。
+   * 只是「默认」——卡片上手动展开/折叠过的槽位以手动状态为准(会话内,见 floor/collapseState.ts)。
+   */
+  autoCollapseImages: boolean;
 }
 
 /**
@@ -974,6 +979,7 @@ function defaults(): ImageSettings {
       orbOpacity: 62,
       orbSize: 48,
       cardTheme: 'st',
+      autoCollapseImages: false,
     },
     // 出图后端默认 ComfyUI(当前唯一实现的出图后端);webui 渠道已隐藏,不再作为可选值
     defaultBackend: 'comfyui',
@@ -1436,6 +1442,8 @@ function normalize(raw: unknown): ImageSettings {
         ? Math.min(80, Math.max(32, Math.round(ru.orbSize)))
         : d.ui.orbSize,
     cardTheme: typeof ru.cardTheme === 'string' ? ru.cardTheme : d.ui.cardTheme,
+    autoCollapseImages:
+      typeof ru.autoCollapseImages === 'boolean' ? ru.autoCollapseImages : d.ui.autoCollapseImages,
   };
   // webui 已隐藏:存量数据里的 'webui' 一律迁移到默认后端(否则规范/出图口径会落空)
   merged.defaultBackend =

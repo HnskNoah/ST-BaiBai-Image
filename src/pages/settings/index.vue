@@ -556,6 +556,14 @@ async function confirmUpdate() {
         </p>
 
         <label class="bbi-switch-row">
+          <span class="bbi-field-label">楼层图片默认折叠</span>
+          <input v-model="settings.ui.autoCollapseImages" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p class="bbi-field-hint">
+          开启后图片默认收成一条细条,点击才展开,适合在外面玩时防窥。在卡片上手动展开/折叠过的以手动状态为准(刷新页面后重置)。
+        </p>
+
+        <label class="bbi-switch-row">
           <span class="bbi-field-label">移动端点当前页导航关窗</span>
           <input v-model="ui.navTapClose" type="checkbox" class="bbi-checkbox" />
         </label>

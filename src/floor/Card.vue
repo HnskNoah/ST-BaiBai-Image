@@ -9,6 +9,7 @@ import type { Orientation } from '@/backends/size';
 import Icon from '@/components/Icon.vue';
 import { confirmDialog } from '@/components/confirm';
 import { consumeAutoGenerate } from '@/floor/autoGenerate';
+import { isCollapsed, setCollapsed } from '@/floor/collapseState';
 import { imageDownloadFileName, saveImageFile } from '@/floor/download';
 import { acquireNaiSlot } from '@/floor/genQueue';
 import {
@@ -90,6 +91,15 @@ watch(
 
 const promptOpen = ref(false);
 
+/**
+ * 折叠态:存模块级 store 按槽位 key 认领(组件随时被水合重建,ref 会丢),
+ * 未手动设置过的槽位回落到设置项「楼层图片默认折叠」。见 floor/collapseState.ts。
+ */
+const collapsed = computed<boolean>({
+  get: () => isCollapsed(key.value, settings.ui.autoCollapseImages),
+  set: value => setCollapsed(key.value, value),
+});
+
 /** 触屏收纳菜单(⋯ 钮)的展开态;桌面 hover 一排直达,不用它。 */
 const menuOpen = ref(false);
 
@@ -156,6 +166,14 @@ const statusLabel = computed(() => {
   const ahead = queueAhead.value;
   if (phase.value === 'generating' && ahead !== null && ahead > 0) return `排队中(前面 ${ahead} 个)`;
   return '生成中…';
+});
+
+/** 折叠条主文案:生成中报进度;出错报原因;有图给提示词摘要(区分同楼多图);空槽位显示待生成。 */
+const barText = computed(() => {
+  if (busy.value) return statusLabel.value;
+  if (phase.value === 'error') return error.value || '生成失败';
+  if (shownEntry.value) return props.prompt || props.nl || '图片';
+  return '待生成';
 });
 
 /** 无图且后端未就绪时,占位区中央的配置引导。 */
@@ -355,6 +373,30 @@ onMounted(() => {
   <!-- 沉浸式设计:图即卡片。无边框/无背景面板/无品牌栏,控件悬浮在图上,
        桌面 hover 浮现、触屏常驻淡显;提示词收进悬浮按钮唤起的面板,平时零占位。 -->
   <div class="bbi-figure" :data-phase="phase">
+    <!-- 折叠态:收成一条细条,职责只有「占位 + 展开」——整条点击展开,
+         生成中/出错在条上给状态但不放操作按钮(要操作先展开)。 -->
+    <button
+      v-if="collapsed"
+      class="bbi-figure__bar"
+      type="button"
+      title="展开图片"
+      @click="collapsed = false"
+    >
+      <span v-if="busy" class="bbi-figure__bar-spin" aria-hidden="true" />
+      <Icon v-else name="generate" :size="14" class="bbi-figure__bar-icon" />
+      <span class="bbi-figure__bar-text" :data-error="phase === 'error' && !busy ? '1' : ''">
+        {{ barText }}
+      </span>
+      <span v-if="history.length > 1 && !busy" class="bbi-figure__bar-count">
+        {{ history.length }} 张
+      </span>
+      <Icon name="chevron" :size="13" class="bbi-figure__bar-chevron" />
+    </button>
+
+    <!-- 折叠容器:常驻 DOM(grid-template-rows 1fr→0fr 过渡做高度动画),折叠时只是
+         高度归零 + 淡出,<img> 不卸载——展开瞬间图就在,不会重新发起请求。 -->
+    <div class="bbi-figure__collapse" :data-collapsed="collapsed ? '1' : ''">
+      <div class="bbi-figure__collapse-inner">
     <div class="bbi-figure__stage" :data-size="size" :data-placeholder="imageSrc ? '' : '1'">
       <img
         v-if="imageSrc"
@@ -400,6 +442,14 @@ onMounted(() => {
           <Icon name="more" :size="15" />
         </button>
         <span class="bbi-figure__menu">
+          <button
+            class="bbi-fab"
+            type="button"
+            title="折叠图片"
+            @click="menuOpen = false; collapsed = true"
+          >
+            <Icon name="chevron" :size="15" style="transform: rotate(180deg)" />
+          </button>
           <button
             v-if="shownEntry"
             class="bbi-fab"
@@ -474,6 +524,8 @@ onMounted(() => {
       <button class="bbi-figure__prompt-copy" type="button" title="复制提示词" @click="copyPrompt">
         <Icon name="copy" :size="14" />
       </button>
+    </div>
+      </div>
     </div>
   </div>
 </template>
