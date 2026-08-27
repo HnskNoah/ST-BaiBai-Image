@@ -8,7 +8,7 @@ import { generateNaiImage, naiRandomSeed } from '@/backends/nai';
 import type { Orientation } from '@/backends/size';
 import Icon from '@/components/Icon.vue';
 import { confirmDialog } from '@/components/confirm';
-import { consumeAutoGenerate } from '@/floor/autoGenerate';
+import { consumeAutoGenerate, shouldAutoGenerate } from '@/floor/autoGenerate';
 import { isCollapsed, setCollapsed } from '@/floor/collapseState';
 import { imageDownloadFileName, saveImageFile } from '@/floor/download';
 import { acquireNaiSlot } from '@/floor/genQueue';
@@ -26,6 +26,7 @@ import {
 } from '@/floor/genState';
 import { hydrateMessage } from '@/floor/hydrate';
 import { openLightbox } from '@/floor/lightbox';
+import { openPromptEditor } from '@/floor/promptEditor';
 import {
   deleteImageResult,
   promptHash,
@@ -304,8 +305,33 @@ function openImage(): void {
   });
 }
 
-/** 删除当前展示的这一条结果(DESIGN-FLOOR-UI.md §8.2)。 */
-function removeCurrent(): void {
+/**
+ * 打开提示词编辑弹窗。与灯箱同一条纪律:弹窗挂插件 shadow root、**活得比本卡片长**,
+ * 楼层坐标与内容一律先快照(任一兄弟槽位出图都会重水合销毁本组件)。
+ * 提示词的真源是正文,故写回与后续重水合都在 promptEditor.ts 里做,本组件不参与。
+ */
+function openEditor(): void {
+  openPromptEditor({
+    at: {
+      chatId: props.chatId,
+      messageId: props.messageId,
+      swipeId: props.swipeId,
+      seq: props.seq,
+      rawTag: props.tag,
+    },
+    content: {
+      tag: props.prompt,
+      nl: props.nl,
+      negative: props.negative,
+      characters: props.characters.map(character => ({ ...character })),
+      size: props.size,
+    },
+    historyCount: props.history.length,
+    configured: configured.value,
+  });
+}
+
+/** 删除当前展示的这一条结果(DESIGN-FLOOR-UI.md §8.2)。 */function removeCurrent(): void {
   const target = shownEntry.value;
   if (!target) return;
   void removeEntry(target, { messageId: props.messageId, swipeId: props.swipeId });
@@ -358,12 +384,15 @@ function downloadCurrent(): void {
 watch(hash, current => reconcileGen(key.value, current), { immediate: true });
 
 onMounted(() => {
-  // 「写入 tag 后自动生成图片」:本槽位带着标记水合挂载 → 消费标记并直接开跑。
-  // 只在真·空槽位(pending)时消费:重水合后若已有结果或有在途任务,不该再触发。
-  // 未配置后端时不跑(卡片维持 pending,显示配置引导);标记同样消费掉,不留着影响后续手动操作。
-  if (phase.value !== 'pending') return;
+  // 「写入 tag 后自动生成图片」:本槽位带着标记水合挂载 → 消费标记并直接开始生成。
+  // **标记一律先消费再判断**:留着它会在日后同槽位重现(比如用户删掉旧图)时被新卡片
+  // 误认领,凭空开跑一次用户没点过的生成。判定本身抽成 shouldAutoGenerate 纯函数
+  // (本组件没有单测,留在这儿锁不住),口径见 floor/autoGenerate.ts。
+  // 未配置后端时不跑(卡片维持 pending,显示配置引导);标记同样已消费掉。
   if (!props.chatId) return;
-  if (!consumeAutoGenerate(props.chatId, props.messageId, props.swipeId, props.seq)) return;
+  const mode = consumeAutoGenerate(props.chatId, props.messageId, props.swipeId, props.seq);
+  if (!mode) return;
+  if (!shouldAutoGenerate(mode, phase.value)) return;
   if (!configured.value) return;
   void generate();
 });
@@ -479,6 +508,14 @@ onMounted(() => {
             <Icon name="trash" :size="15" />
           </button>
           <button
+            class="bbi-fab"
+            type="button"
+            title="编辑提示词"
+            @click="menuOpen = false; openEditor()"
+          >
+            <Icon name="edit" :size="15" />
+          </button>
+          <button
             v-if="promptText"
             class="bbi-fab"
             :class="{ 'bbi-fab--on': promptOpen }"
@@ -515,7 +552,7 @@ onMounted(() => {
       </button>
     </p>
     <p v-else-if="isStale && !busy" class="bbi-figure__status bbi-figure__status--warn">
-      提示词已修改,上图由旧提示词生成;点右上角重绘用新提示词出图
+      提示词已修改,上图由旧提示词生成;点右上角重绘按新提示词出图
     </p>
 
     <!-- 提示词面板:悬浮 文本按钮唤起,复制按钮跟着面板走 -->

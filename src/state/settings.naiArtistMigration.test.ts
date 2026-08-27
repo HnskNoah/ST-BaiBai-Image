@@ -90,6 +90,23 @@ describe('NAI 画师串库', () => {
     expect(settings.nai.activeArtistId).toBe('art_a');
   });
 
+  it('previewPath:合法字符串保留,缺失/脏数据视为无预览', async () => {
+    const settings = await hydrateWithNai({
+      artistPresets: [
+        { id: 'art_a', name: 'A', prompt: '', previewPath: '/user/images/柏宝绘_画师串/art_a.jpg' },
+        { id: 'art_b', name: 'B', prompt: '' },
+        { id: 'art_c', name: 'C', prompt: '', previewPath: 42 },
+        { id: 'art_d', name: 'D', prompt: '', previewPath: '' },
+      ],
+      activeArtistId: '',
+    });
+    const [a, b, c, d] = settings.nai.artistPresets;
+    expect(a.previewPath).toBe('/user/images/柏宝绘_画师串/art_a.jpg');
+    expect(b.previewPath).toBeUndefined();
+    expect(c.previewPath).toBeUndefined();
+    expect(d.previewPath).toBeUndefined();
+  });
+
   it('当前项指向已删条目 → 清成空串,**不**回落第一条', async () => {
     // 与 normalizeComfyUI 的「悬空回落 workflows[0]」刻意不同:那里工作流是必需品,
     // 这里回落会给用户静默套上一套没选过的画风,每张图都变样却查不出原因。

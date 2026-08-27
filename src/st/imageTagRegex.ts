@@ -94,6 +94,21 @@ export function stripImageTags(mes: string): string {
   return mes.replace(/(?:\r\n|\n|\r)?<bbi_image>[\s\S]+?<\/bbi_image>/gi, '');
 }
 
+/**
+ * tag / nl / negative 内容里不允许出现的子标签字面量（会污染 bbi_image 内部解析）。
+ *
+ * 唯一口径：AI 侧(autoTag/protocol.ts 的 sanitizeContent)与手输侧(提示词编辑弹窗)
+ * 共用这一份。**绝不再抄第二份** —— 查找正则 `<bbi_image>…</bbi_image>` 是非贪婪的，
+ * 内容里混进一个 `</bbi_image>` 就会让 tag 提前截断、后半截漏进 DOM 与提示词，
+ * 正好破掉「tag 永不进 DOM、永不进提示词」这条不变式。
+ */
+export const FORBIDDEN_SUBTAG = /<\/?(?:bbi_image|tag|nl|negative|characters|size)\b/i;
+
+/** 文本里是否含 bbi_image 子标签字面量（手输校验用；口径同 AI 侧）。 */
+export function containsTagMarkup(text: string): boolean {
+  return FORBIDDEN_SUBTAG.test(text);
+}
+
 export interface ImageTagContent {
   /** danbooru 短 tag 部分：显式 <tag> 子标签内容，或剔除子标签后的裸文本（存量格式）。 */
   tag: string;
@@ -154,6 +169,45 @@ export function parseImageTagContent(raw: string): ImageTagContent {
   const bare = oneLine(withoutSubTags.replace(/<tag>[\s\S]*?<\/tag>/gi, ''));
   const tag = [...(bare ? [bare] : []), ...explicit].join(', ');
   return { tag, nl, negative, characters, size };
+}
+
+/**
+ * 序列化成 tag 原文（含 <bbi_image> 壳）—— parseImageTagContent 的反向操作。
+ *
+ * **格式的读与写只有这一份**：注入(autoTag/protocol.ts 的 injectImageTags)与手动编辑
+ * (floor/promptEditor.ts)共用，两处漂移会让「解析得到的字段」与「落进正文的原文」对不上，
+ * 而 promptHash 吃的正是原文 —— 漂移直接表现为「什么都没改却全变 stale」。
+ *
+ * 标准形态：tag 部分保持裸文本（与存量格式一致），nl/negative/characters 空则整段不写。
+ * size **恒写出**：生成是延后的(点卡片才出图)，方向必须随 tag 持久化在正文里。
+ */
+export function serializeImageTag(content: ImageTagContent): string {
+  const nl = content.nl ? `<nl>${content.nl}</nl>` : '';
+  const negative = content.negative ? `<negative>${content.negative}</negative>` : '';
+  const characters = content.characters.length
+    ? `<characters>${JSON.stringify(content.characters)}</characters>`
+    : '';
+  return `<bbi_image>${content.tag}${nl}${negative}${characters}<size>${content.size}</size></bbi_image>`;
+}
+
+/**
+ * 原位替换正文里第 seq 条 tag（0-based），其余正文与其它 tag 一字不动。
+ * seq 越界返回 null（调用方据此放弃写回）。
+ *
+ * 为什么不用模块级的 IMAGE_TAG_FIND_REGEX：那是个带 /g 的共享实例，lastIndex 有状态。
+ * 现有调用方走的都是 .match()/.replace()（会重置 lastIndex）故相安无事，
+ * 这里用 replace 回调按序计数，仍就地新建正则，不给后来者留下踩踏的余地。
+ */
+export function replaceImageTagAt(mes: string, seq: number, nextTag: string): string | null {
+  if (!Number.isInteger(seq) || seq < 0) return null;
+  let index = 0;
+  let replaced = false;
+  const output = mes.replace(/<bbi_image>[\s\S]+?<\/bbi_image>/gi, match => {
+    if (index++ !== seq) return match;
+    replaced = true;
+    return nextTag;
+  });
+  return replaced ? output : null;
 }
 
 const MANAGED_SCRIPTS: Array<() => ManagedRegexScript> = [

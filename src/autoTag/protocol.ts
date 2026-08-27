@@ -1,5 +1,6 @@
 import { normalizeOrientation, type Orientation } from '@/backends/size';
 import type { TargetSegment } from '@/autoTag/clean';
+import { FORBIDDEN_SUBTAG, serializeImageTag } from '@/st/imageTagRegex';
 import {
   CHAR_TAG_FIELDS,
   type CharTagField,
@@ -126,8 +127,7 @@ function parseObject(raw: string): Record<string, unknown> {
   throw new Error('AI 没有返回可解析的 JSON 对象');
 }
 
-/** tag / nl / negative 内容里不允许出现的子标签字面量(会污染 bbi_image 内部解析)。 */
-const FORBIDDEN_SUBTAG = /<\/?(?:bbi_image|tag|nl|negative|characters|size)\b/i;
+/** tag / nl / negative 内容里不允许出现的子标签字面量（口径见 st/imageTagRegex.ts）。 */
 
 function sanitizeContent(value: unknown, field: string, index: number): string {
   const text = typeof value === 'string' ? value.trim().replace(/[\r\n]+/g, ' ') : '';
@@ -307,15 +307,10 @@ export function injectImageTags(source: string, images: ImageInsertion[]): strin
     output += line.text;
     const inserted = byLine.get(index) ?? [];
     const insertedEol = line.eol || fallbackEol;
-    // 标准形态:tag 部分保持裸文本(与存量格式一致),nl/negative/size 各包子标签。
-    // size 恒写出:生成是延后的(点卡片才出图),方向必须随 tag 持久化在正文里。
+    // 序列化口径见 st/imageTagRegex.ts 的 serializeImageTag（与手动编辑弹窗共用同一份，
+    // 两处漂移会让「解析出的字段」与「落进正文的原文」对不上，而 promptHash 吃的是原文）。
     for (const image of inserted) {
-      const nl = image.nl ? `<nl>${image.nl}</nl>` : '';
-      const negative = image.negative ? `<negative>${image.negative}</negative>` : '';
-      const characters = image.characters.length
-        ? `<characters>${JSON.stringify(image.characters)}</characters>`
-        : '';
-      output += `${insertedEol}<bbi_image>${image.tag}${nl}${negative}${characters}<size>${image.size}</size></bbi_image>`;
+      output += `${insertedEol}${serializeImageTag(image)}`;
     }
     output += line.eol;
   }

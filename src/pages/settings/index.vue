@@ -44,6 +44,22 @@ const NAV_OPTIONS: { value: NavPosition; label: string }[] = [
 // 出图后端可选项:与渠道页页签同口径,藏掉未开放的 webui
 const BACKEND_OPTIONS = BACKENDS.filter(b => b.value !== 'webui');
 
+/**
+ * 思考强度候选:各家取值的并集,**不是**某一家的官方列表。
+ * auto 是显式选项(值为空串 = 不发送该参数),不是「留空」——
+ * 用 BbiSelect 而非可输入的 BbiCombo:移动端点输入框会弹出输入法,很打扰。
+ * 取值不做校验,原样发给端点(见 ApiChannel.reasoningEffort)。
+ */
+const REASONING_EFFORT_OPTIONS = [
+  { value: '', label: 'auto' },
+  { value: 'minimal', label: 'minimal' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+  { value: 'max', label: 'max' },
+];
+
 /* —— 自绘下拉(BbiSelect)的 v-model 适配:组件按 string 收发,这里收窄回具体联合类型 —— */
 const themeSel = computed<string>({
   get: () => ui.theme,
@@ -1001,7 +1017,18 @@ async function confirmUpdate() {
             <span>超时(秒)</span>
             <input v-model.number="editingChannel.timeoutSec" class="bbi-input" type="number" step="10" min="1" />
           </label>
+          <!-- 思考强度用 BbiSelect(纯选择,不唤起输入法);它自带 180px 固定宽,
+               这里要跟其余三个等分,故在 .bbi-mini-field 内用 :deep 放开宽度 -->
+          <div class="bbi-mini-field">
+            <span>思考强度</span>
+            <BbiSelect
+              v-model="editingChannel.reasoningEffort"
+              :options="REASONING_EFFORT_OPTIONS"
+              aria-label="思考强度"
+            />
+          </div>
         </div>
+        <span class="bbi-field-hint">思考强度不知道的就选 auto，DS 系推荐 max</span>
         <label class="bbi-switch-row">
           <span class="bbi-modal-label">流式传输</span>
           <input v-model="editingChannel.stream" type="checkbox" class="bbi-checkbox" />
@@ -1404,9 +1431,10 @@ async function confirmUpdate() {
   color: var(--bbi-ink-muted);
 }
 
-/* 温度/最大 token/超时:三个短输入并排 */
+/* 温度/最大 token/超时/思考强度:四个短控件并排,窄屏落到 2×2(见媒体查询) */
 .bbi-channel-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
 .bbi-mini-field {
@@ -1417,6 +1445,14 @@ async function confirmUpdate() {
   gap: 4px;
   font-size: 12px;
   color: var(--bbi-ink-muted);
+}
+/* BbiSelect 自带 180px 固定宽(为设置页的行布局设计),这里要跟其余三个等分 */
+.bbi-mini-field :deep(.bbi-select-box) {
+  width: 100%;
+}
+/* 与相邻 number 输入等高:触发器默认 padding 比 .bbi-input 略小 */
+.bbi-mini-field :deep(.bbi-select-trigger) {
+  padding: 7px 10px;
 }
 .bbi-channel-test {
   margin: 2px 0 0;
@@ -1609,6 +1645,10 @@ async function confirmUpdate() {
 @media (max-width: 640px) {
   .bbi-auto-grid {
     grid-template-columns: 1fr;
+  }
+  /* 渠道参数四连:窄屏一行四个每个只剩几十 px,落成 2×2 */
+  .bbi-channel-row {
+    grid-template-columns: repeat(2, 1fr);
   }
   .bbi-channel-item-name {
     font-size: 13px;

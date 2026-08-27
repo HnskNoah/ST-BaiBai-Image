@@ -184,6 +184,12 @@ export interface NaiArtistPreset {
   quality: string;
   /** 绑定的负面提示词;空串 = 跟随渠道级 undesiredContent。 */
   negative: string;
+  /**
+   * 预览图路径(/api/images/upload 落在 user/images/柏宝绘_画师串/ 的相对路径)。
+   * 可选:老数据没有此键;空 = 管理器卡片显示占位。文件归属随条目:
+   * 删条目时按此路径删文件;复制条目不带走(否则两条目共指一个文件,删一边另一边破图)。
+   */
+  previewPath?: string;
 }
 
 /** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */
@@ -295,6 +301,23 @@ export interface ApiChannel {
   /** 排除参数:这些字段名会在构造请求体时从 body 中删除,
    *  用于规避不接受某些参数(如 temperature/max_tokens)的兼容端点报错。 */
   excludeParams: string[];
+  /**
+   * 思考强度(推理模型的 reasoning_effort)。空串 = auto = 不发这个参数(默认,老渠道即此值)。
+   *
+   * 取值不做白名单校验,原样发给端点:各家词汇不统一(OpenAI 的 minimal/low/medium/high/xhigh、
+   * 部分中转站的 max/none……),中转站比我们更清楚自己的模型吃什么,校验只会误伤。
+   *
+   * 非空时整条请求改走 custom 源(见 api/client.ts 的 buildRequestBody):
+   * ST 代理对 openai 源的 reasoning_effort 有**模型名白名单**(src/constants.js 的
+   * OPENAI_REASONING_EFFORT_MODELS,精确匹配 o1/o3/gpt-5 那批),模型名对不上就**静默丢弃且照样返回 200**——
+   * 用户设了却毫无效果、还看不出来。custom 源的 custom_include_body 是纯 merge,不过白名单。
+   *
+   * ⚠️ 跨插件:本字段是绘独有的,柏宝书 ≤ 当前版本的 normalizeChannel 是「逐字段重建对象」,
+   * 不认识的键会被丢掉。在书里**新增/编辑/删除渠道**、或**点测试渠道**(可能自动改写 url)
+   * 会触发共享存储回写,进而抹掉本字段。只开书、或在书里改摘要/提示词/排除名单则不受影响。
+   * 等书那边补上同名字段后此风险消失。
+   */
+  reasoningEffort: string;
 }
 
 /**
@@ -1032,6 +1055,8 @@ function normalizeChannel(c: Partial<ApiChannel>): ApiChannel {
     excludeParams: Array.isArray(c.excludeParams)
       ? c.excludeParams.filter((x): x is string => typeof x === 'string')
       : [],
+    // 后加字段:老渠道无此键 → 空串(auto,不发参数),行为与加字段前完全一致
+    reasoningEffort: typeof c.reasoningEffort === 'string' ? c.reasoningEffort.trim() : '',
   };
 }
 
@@ -1049,6 +1074,7 @@ export function newChannel(): ApiChannel {
     stream: false,
     prefill: true,
     excludeParams: [],
+    reasoningEffort: '',
   };
 }
 
@@ -1323,6 +1349,9 @@ function normalizeArtistPreset(raw: unknown, seq: number): NaiArtistPreset {
     // 存量条目没有这两个键:补空串 = 跟随渠道级,升级后提示词输出零变化
     quality: typeof o.quality === 'string' ? o.quality : '',
     negative: typeof o.negative === 'string' ? o.negative : '',
+    // 可选键:非字符串/空串一律视为无预览(不落 undefined 以外的脏数据)
+    previewPath:
+      typeof o.previewPath === 'string' && o.previewPath ? o.previewPath : undefined,
   };
 }
 

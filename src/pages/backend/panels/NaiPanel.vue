@@ -33,6 +33,9 @@ import {
   vibeFingerprint,
   vibeMetaFromData,
 } from '@/backends/vibeStore';
+import NaiArtistManager from '@/pages/backend/panels/NaiArtistManager.vue';
+import { makeJpegThumbnail } from '@/st/imageFile';
+import { deleteUserImage } from '@/st/images';
 import {
   groupKey,
   groupVibes,
@@ -130,6 +133,8 @@ const renamingArtist = ref(false);
 const artistNameDraft = ref('');
 const artistNameInput = ref<HTMLInputElement | null>(null);
 const artistDeleteOpen = ref(false);
+/** 管理器弹窗:搜索/预览图/勾选批量删除都在那边,下拉这里只留高频切换。 */
+const artistManagerOpen = ref(false);
 
 function startRenameArtist() {
   if (!artist.value || isBuiltinArtist.value) return; // 内置只读(按钮已禁用,双保险)
@@ -155,16 +160,32 @@ function duplicateArtist() {
   if (!src) return;
   // 只换 id 与名字;id 生成仍由 settings 统一口径。
   // 内置配方也走这里:复制出来的副本是普通用户条目,随便改——这是内置条唯一的自定义路径。
-  const preset = { ...src, id: newNaiArtist().id, name: `${src.name} 副本` };
+  // 显式逐字段拷贝,不带 previewPath:预览文件随原条目删除,共指一个路径会让副本日后破图。
+  const preset: NaiArtistPreset = {
+    id: newNaiArtist().id,
+    name: `${src.name} 副本`,
+    prompt: src.prompt,
+    quality: src.quality,
+    negative: src.negative,
+  };
   settings.nai.artistPresets.push(preset);
   settings.nai.activeArtistId = preset.id;
 }
 
-function confirmRemoveArtist() {
+async function confirmRemoveArtist() {
   artistDeleteOpen.value = false;
   const list = settings.nai.artistPresets;
   const index = list.findIndex(a => a.id === artist.value?.id);
   if (index < 0) return;
+  // 预览图文件 best-effort 连带清理(与管理器删除同口径:文件删不掉不阻塞删条目)
+  const previewPath = list[index].previewPath;
+  if (previewPath) {
+    try {
+      await deleteUserImage(previewPath);
+    } catch (error) {
+      toastr.warning(`条目已删除,但预览图文件清理失败：${errorMessage(error)}`, '画师串');
+    }
+  }
   list.splice(index, 1);
   // 接位到原位置那一条(已是最后一条则退一格);删空了就回「不使用」——
   // `?? ''` 正是画师串库与工作流库的分水岭(那边恒非空、回落 [0]),不能省。
@@ -359,25 +380,10 @@ const currentVibeKey = computed(() => vibeModelKey(settings.nai.model));
 const vibesSupported = computed(() => naiSupportsVibes(settings.nai.model));
 const samplerOptions = computed(() => naiSamplers(settings.nai.model));
 
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('图片加载失败'));
-    img.src = src;
-  });
-}
-
-/** 生成 vibe 列表缩略图(最长边 96px 的 jpeg dataURL)。 */
+/** 生成 vibe 列表缩略图(最长边 96px 的 jpeg dataURL);失败回空串,由入库方按「无缩略图」处理。 */
 async function makeThumbnail(dataUrl: string): Promise<string> {
   try {
-    const img = await loadImage(dataUrl);
-    const scale = Math.min(1, 96 / Math.max(img.width, img.height));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(img.width * scale));
-    canvas.height = Math.max(1, Math.round(img.height * scale));
-    canvas.getContext('2d')?.drawImage(img, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.8);
+    return await makeJpegThumbnail(dataUrl, 96);
   } catch {
     return '';
   }
@@ -769,6 +775,15 @@ async function removeVibe(vibe: NaiVibe) {
             aria-label="当前画师串"
           />
           <span v-if="!renamingArtist" class="art-ops">
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              title="管理画师串库:搜索、预览图、批量删除"
+              aria-label="管理画师串库"
+              @click="artistManagerOpen = true"
+            >
+              <Icon name="grid" :size="14" />
+            </button>
             <button
               class="bbi-icon-btn art-op"
               type="button"
@@ -1365,6 +1380,9 @@ async function removeVibe(vibe: NaiVibe) {
         </footer>
       </div>
     </ModalMask>
+
+    <!-- ===== 画师串库管理器:搜索/预览图/勾选批量删除 ===== -->
+    <NaiArtistManager v-model:open="artistManagerOpen" />
 
     <ConfirmDialog
       v-model:open="artistDeleteOpen"

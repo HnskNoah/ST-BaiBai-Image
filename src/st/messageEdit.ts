@@ -52,6 +52,7 @@ export type ApplyMessageResult =
   | 'chat-changed'
   | 'floor-changed'
   | 'swipe-changed'
+  | 'build-failed'
   | 'unavailable';
 
 export interface MessageExtraUpdate {
@@ -61,14 +62,30 @@ export interface MessageExtraUpdate {
 }
 
 /**
+ * 判断槽位里的消息还是不是请求开始时那一条。
+ *
+ * 不用对象引用比对:别的插件改正文时常整体替换消息对象(chat[i] = {...chat[i], mes})，
+ * 引用比对会把这种「同一条消息、只是换了个壳」误判成楼层变化,连带整次分析作废。
+ * send_date 在消息创建时定死、编辑不变,配 name 足以认人;删楼导致索引平移时
+ * send_date 必然不同,该拦的照样拦住。旧消息没有 send_date 时退回引用比对。
+ */
+function isSameMessage(message: STMessage, expected: STMessage): boolean {
+  if (message === expected) return true;
+  if (!expected.send_date) return false;
+  return message.send_date === expected.send_date && message.name === expected.name;
+}
+
+/**
  * 以 compare-and-swap 方式修改消息正文和一个 extra 键。
- * 只有聊天、消息对象、swipe 和原文都仍与请求开始时一致才落盘。
+ *
+ * 身份检查(聊天 / 消息 / swipe)一致才落盘;正文内容本身**不**参与比对——正文由
+ * buildNext 基于「落盘那一刻的真实正文」现算,别的插件在分析期间做的修改因此得以保留，
+ * 而不是被请求开始时的旧快照覆盖。buildNext 返回 null 表示它认为这次不该写。
  * 保存失败时同时回滚正文与 extra，避免留下半写状态。
  */
 export async function applyMessageText(
   floor: number,
-  expectedText: string,
-  nextText: string,
+  buildNext: (currentText: string) => string | null,
   expectedChatId: string,
   expectedSwipeId: number | null,
   expectedMessage?: STMessage,
@@ -80,9 +97,12 @@ export async function applyMessageText(
 
   const message = context.chat?.[floor];
   if (!message) return 'unavailable';
-  if (expectedMessage && message !== expectedMessage) return 'floor-changed';
+  if (expectedMessage && !isSameMessage(message, expectedMessage)) return 'floor-changed';
   if (currentSwipeId(message) !== expectedSwipeId) return 'swipe-changed';
-  if ((activeEditorText(floor) ?? message.mes) !== expectedText) return 'floor-changed';
+
+  // 编辑框开着时它才是正文的活口径(用户改了还没确认),落盘基底以它为准
+  const nextText = buildNext(activeEditorText(floor) ?? message.mes);
+  if (nextText === null) return 'build-failed';
 
   const previousText = message.mes;
   const previousExtra = message.extra;

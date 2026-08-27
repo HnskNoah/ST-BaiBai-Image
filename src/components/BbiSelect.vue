@@ -241,7 +241,11 @@ onBeforeUnmount(() => closeMenu());
 /* 菜单 Teleport 到 modalHost(scoped 样式在同 shadow root 内照常生效) */
 .bbi-select-menu {
   position: fixed;
-  z-index: 10001; /* 窗口(10000)之上、与弹窗遮罩同级;与遮罩不会同时需要 */
+  /* 10003:高于普通弹窗遮罩(10001)与叠加层遮罩(10002)。
+     本组件现在也用在弹窗内部(渠道弹窗的「思考强度」),菜单与遮罩会同时存在;
+     同级时靠「后插入者胜出」能侥幸盖住,但删除确认那类 -top 遮罩(10002)会反压菜单,
+     故显式抬高,不依赖插入顺序。 */
+  z-index: 10003;
   margin: 0;
   padding: 4px;
   list-style: none;

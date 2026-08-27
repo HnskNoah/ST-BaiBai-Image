@@ -9,6 +9,7 @@ import {
 import { prepareTargetText } from '@/autoTag/clean';
 import { beginGeneration, clearGeneration, consumeGeneration } from '@/autoTag/generationGate';
 import { buildAutoTagMessages } from '@/autoTag/prompt';
+import { rebaseImagePositions, type RebaseReport } from '@/autoTag/rebase';
 import {
   BBI_CHAR_EXTRA_KEY,
   CHAR_TAG_FIELDS,
@@ -25,7 +26,7 @@ import {
 } from '@/state/charTags';
 import { injectImageTags, parseImagePlan, type ImagePlan } from '@/autoTag/protocol';
 import { clearAutoGenerateForFloor, markForAutoGenerate } from '@/floor/autoGenerate';
-import { applyMessageText } from '@/st/messageEdit';
+import { applyMessageText, type ApplyMessageResult } from '@/st/messageEdit';
 import { getContext, type STMessage } from '@/st/context';
 import { stripImageTags } from '@/st/imageTagRegex';
 import { getTagGenChannel, isCurrentChatExcluded, settings } from '@/state/settings';
@@ -81,6 +82,24 @@ interface RunOptions {
   manual?: boolean;
   /** 重新生成:先把已有 tag 从正文剔除再分析/注入;旧图片保留在卡片历史里。 */
   replace?: boolean;
+}
+
+/** 放弃写入的用户可读原因。文本变化已不在其中——那是正常情况,会 rebase 后照常写入。 */
+const ABANDON_REASON: Partial<Record<ApplyMessageResult, string>> = {
+  'chat-changed': '已切换聊天，本次没有写入生图 tag',
+  'floor-changed': '该楼层已被删除或替换，本次没有写入生图 tag',
+  'swipe-changed': '已切换 swipe，本次没有写入生图 tag',
+  'build-failed': '楼层正文已被大幅改写或已存在生图 tag，本次没有写入',
+  unavailable: '当前聊天不可写入，本次没有写入生图 tag',
+};
+
+/** 重定位结果的一行摘要;全部原位命中时返回空串(无需记日志)。 */
+function describeRebase(report: RebaseReport): string {
+  if (!report.remapped && !report.drifted) return '';
+  const parts = [`原位 ${report.anchored}`];
+  if (report.remapped) parts.push(`跟随改写句 ${report.remapped}`);
+  if (report.drifted) parts.push(`顺延到上一段 ${report.drifted}`);
+  return parts.join(' · ');
 }
 
 /** 把 AI 报告的 changes 转成当前楼层操作;真正写回在正文 CAS 成功时一次完成。 */
@@ -382,8 +401,6 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       return;
     }
 
-    const nextText = plan.images.length ? injectImageTags(source, plan.images) : rawSource;
-    // 「写入 tag 后自动生成图片」:写回前先给每个新槽位挂标记——applyMessageText 内部会
     // 触发 MESSAGE_EDITED / MESSAGE_UPDATED,卡片水合挂载时消费标记并自动开始生成
     // (见 floor/autoGenerate.ts);写回失败则撤销标记。
     const marked = plan.images.length > 0 && settings.autoTag.autoGenerate;
@@ -393,11 +410,27 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         markForAutoGenerate(chatId, floor, markSwipeId, seq);
       }
     }
-    // CAS 的比对基准是楼层当前真实正文(含旧 tag);nextText 从剔除旧 tag 的 source 推出
+    // 正文在 buildNext 里基于「落盘那一刻的真实正文」现算:分析期间别的插件对正文的修改
+    // (翻译/润色/追加状态栏/改写句子)全部保留,tag 按叙事行重新定位后照常注入。
+    let rebaseNote = '';
     const result = await applyMessageText(
       floor,
-      rawSource,
-      nextText,
+      currentText => {
+        // replace 路径同样以当前正文为基底剔除旧 tag,不能用旧快照
+        const base = opts.replace ? stripImageTags(currentText) : currentText;
+        if (!plan.images.length) return base;
+        // 请求期间用户/别的插件已经贴过 tag:再注入就是重复,交回 build-failed 走放弃分支
+        if (!opts.replace && /<\/?bbi_image\b/i.test(currentText)) return null;
+        const rebased = rebaseImagePositions(
+          base,
+          preparedTarget.segments,
+          plan.images,
+          settings.excludes.customStripTags,
+        );
+        if (!rebased) return null;
+        rebaseNote = describeRebase(rebased.report);
+        return injectImageTags(base, rebased.images);
+      },
       chatId,
       swipeId,
       message,
@@ -408,6 +441,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     );
     if (result === 'saved') {
       recomputeCharTags();
+      if (rebaseNote) console.info(`[柏宝绘] 第 ${floor} 楼 tag 位置重定位:${rebaseNote}`);
       if (plan.images.length) {
         toastr.success(`已在第 ${floor} 楼插入 ${plan.images.length} 个生图 tag`, '柏宝绘');
       } else if (opts.manual) {
@@ -418,8 +452,8 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       return;
     }
     if (marked) clearAutoGenerateForFloor(chatId, floor);
-    console.info(`[柏宝绘] 第 ${floor} 楼在分析期间发生变化，放弃写入：${result}`);
-    toastr.warning('正文、聊天或 swipe 已发生变化，本次没有写入生图 tag', '柏宝绘');
+    console.info(`[柏宝绘] 第 ${floor} 楼放弃写入生图 tag：${result}`);
+    toastr.warning(ABANDON_REASON[result] ?? '本次没有写入生图 tag', '柏宝绘');
   } catch (error) {
     // 请求失败或被切换聊天取消时允许同一正文在后续重新渲染后重试。
     processed.delete(identity);

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  containsTagMarkup,
   ensureImageTagRegexRegistered,
   IMAGE_TAG_HIDE_REGEX_ID,
   IMAGE_TAG_SLOT_REGEX_ID,
@@ -8,6 +9,8 @@ import {
   imageTagSlotScript,
   parseImageTagContent,
   parseImageTags,
+  replaceImageTagAt,
+  serializeImageTag,
   stripImageTags,
 } from '@/st/imageTagRegex';
 
@@ -194,8 +197,123 @@ describe('parseImageTagContent', () => {
   });
 });
 
-describe('managed bbi image-tag regex registration', () => {
-  it('registers both scripts once by fixed id and updates old managed rules', () => {
+describe('serializeImageTag', () => {
+  it('writes every sub-tag when all fields are present', () => {
+    expect(
+      serializeImageTag({
+        tag: '2girls, classroom',
+        nl: 'Two girls talking.',
+        negative: 'extra people',
+        characters: [{ name: 'A', tag: 'girl, black hair', nl: 'left' }],
+        size: 'landscape',
+      }),
+    ).toBe(
+      '<bbi_image>2girls, classroom<nl>Two girls talking.</nl><negative>extra people</negative>' +
+        '<characters>[{"name":"A","tag":"girl, black hair","nl":"left"}]</characters>' +
+        '<size>landscape</size></bbi_image>',
+    );
+  });
+
+  it('omits empty nl/negative/characters instead of writing empty sub-tags', () => {
+    expect(
+      serializeImageTag({ tag: '1girl', nl: '', negative: '', characters: [], size: 'portrait' }),
+    ).toBe('<bbi_image>1girl<size>portrait</size></bbi_image>');
+  });
+
+  it('always writes <size> — generation is deferred, so orientation must persist in the text', () => {
+    expect(
+      serializeImageTag({ tag: '1girl', nl: '', negative: '', characters: [], size: 'landscape' }),
+    ).toContain('<size>landscape</size>');
+  });
+
+  it('round-trips through parseImageTagContent byte-for-byte in canonical form', () => {
+    // 这条锁死「打开弹窗、什么都不改、保存」不会换 promptHash 桶 —— 一换,老图全变 stale。
+    const canonical = [
+      '<bbi_image>1girl<size>portrait</size></bbi_image>',
+      '<bbi_image>2girls<nl>Two girls.</nl><size>landscape</size></bbi_image>',
+      '<bbi_image>1girl<negative>extra people</negative><size>portrait</size></bbi_image>',
+      '<bbi_image>2girls<characters>[{"name":"A","tag":"girl","nl":""}]</characters><size>landscape</size></bbi_image>',
+    ];
+    for (const raw of canonical) {
+      expect(serializeImageTag(parseImageTagContent(raw))).toBe(raw);
+    }
+  });
+
+  it('produces a form that parses back to the same fields', () => {
+    const content = {
+      tag: '1girl, smile',
+      nl: 'A girl smiling.',
+      negative: 'duplicate',
+      characters: [{ name: '小雪', tag: 'girl, white hair', nl: 'right side' }],
+      size: 'portrait' as const,
+    };
+    expect(parseImageTagContent(serializeImageTag(content))).toEqual(content);
+  });
+});
+
+describe('replaceImageTagAt', () => {
+  const text = '一\n<bbi_image>first</bbi_image>\n二\n<bbi_image>second</bbi_image>\n三\n<bbi_image>third</bbi_image>\n四';
+  const next = '<bbi_image>edited<size>portrait</size></bbi_image>';
+
+  it('replaces the first tag and leaves everything else byte-identical', () => {
+    expect(replaceImageTagAt(text, 0, next)).toBe(
+      `一\n${next}\n二\n<bbi_image>second</bbi_image>\n三\n<bbi_image>third</bbi_image>\n四`,
+    );
+  });
+
+  it('replaces a middle tag without touching its neighbours', () => {
+    expect(replaceImageTagAt(text, 1, next)).toBe(
+      `一\n<bbi_image>first</bbi_image>\n二\n${next}\n三\n<bbi_image>third</bbi_image>\n四`,
+    );
+  });
+
+  it('replaces the last tag', () => {
+    expect(replaceImageTagAt(text, 2, next)).toBe(
+      `一\n<bbi_image>first</bbi_image>\n二\n<bbi_image>second</bbi_image>\n三\n${next}\n四`,
+    );
+  });
+
+  it('returns null when seq is out of range or invalid', () => {
+    expect(replaceImageTagAt(text, 3, next)).toBe(null);
+    expect(replaceImageTagAt(text, -1, next)).toBe(null);
+    expect(replaceImageTagAt(text, 1.5, next)).toBe(null);
+    expect(replaceImageTagAt('没有标签的正文', 0, next)).toBe(null);
+  });
+
+  it('is not affected by a shared regex lastIndex across repeated calls', () => {
+    // 模块级 IMAGE_TAG_FIND_REGEX 带 /g 有状态,故本函数就地新建正则;连调三次结果须一致
+    expect(replaceImageTagAt(text, 0, next)).toBe(replaceImageTagAt(text, 0, next));
+    expect(replaceImageTagAt(text, 2, next)).toBe(replaceImageTagAt(text, 2, next));
+  });
+
+  it('handles multi-line and inline tags on the same line', () => {
+    expect(
+      replaceImageTagAt('前 <bbi_image>a,\nb</bbi_image> 中 <bbi_image>c</bbi_image> 后', 1, next),
+    ).toBe(`前 <bbi_image>a,\nb</bbi_image> 中 ${next} 后`);
+  });
+});
+
+describe('containsTagMarkup', () => {
+  it('catches sub-tag literals that would truncate the tag block', () => {
+    // 查找正则是非贪婪的:内容里混进 </bbi_image> 会让 tag 提前截断,后半截漏进 DOM 与提示词
+    expect(containsTagMarkup('1girl</bbi_image>后半截')).toBe(true);
+    expect(containsTagMarkup('1girl<bbi_image>')).toBe(true);
+    expect(containsTagMarkup('a<nl>b')).toBe(true);
+    expect(containsTagMarkup('a</nl>')).toBe(true);
+    expect(containsTagMarkup('a<negative>b')).toBe(true);
+    expect(containsTagMarkup('a<characters>b')).toBe(true);
+    expect(containsTagMarkup('a<size>b')).toBe(true);
+    expect(containsTagMarkup('a<tag>b')).toBe(true);
+  });
+
+  it('leaves ordinary prompt text alone', () => {
+    expect(containsTagMarkup('1girl, long black hair, (smile:1.2), <lora:foo:0.8>')).toBe(false);
+    expect(containsTagMarkup('')).toBe(false);
+    expect(containsTagMarkup('a < b, 2 > 1')).toBe(false);
+  });
+});
+
+describe('managed bbi image-tag regex registration', () => {  it('registers both scripts once by fixed id and updates old managed rules', () => {
     const saveSettingsDebounced = vi.fn();
     const unrelated = { id: 'user-rule', scriptName: '用户规则' };
     const legacy = {

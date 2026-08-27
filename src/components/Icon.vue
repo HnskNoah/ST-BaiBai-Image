@@ -97,6 +97,8 @@ const PATHS: Record<string, string> = {
   search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
   // 多选:勾选清单(左侧对勾 + 右侧行,一眼看出「勾选多条」)
   checklist: '<path d="M3.5 6.5 5 8l2.5-2.5M3.5 12.5 5 14l2.5-2.5M3.5 18.5 5 20l2.5-2.5"/><path d="M11 6.5h9.5M11 12.5h9.5M11 18.5h9.5"/>',
+  // 宫格:库管理入口(卡片网格),区别于 gallery 的叠图
+  grid: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
   // 闪电:立即/瞬时(立即总结)。原始 y 范围偏满(顶天立地显高),
   // 以中心 y=12 略压到 ~4.0~20.0,视觉高度向放大镜/清单看齐(压太狠会显矮,取中)。
   bolt: '<path d="M13 4 5 13h6l-1 7 8-9h-6z"/>',

@@ -32,7 +32,7 @@ describe('safe message editing', () => {
     });
 
     await expect(
-      applyMessageText(0, '原文', '原文\n<bbi_image>scene</bbi_image>', 'chat-a', 1),
+      applyMessageText(0, text => `${text}\n<bbi_image>scene</bbi_image>`, 'chat-a', 1),
     ).resolves.toBe('saved');
     expect(message.mes).toContain('<bbi_image>scene</bbi_image>');
     expect(message.swipes[1]).toBe(message.mes);
@@ -41,13 +41,13 @@ describe('safe message editing', () => {
     expect(emit).toHaveBeenNthCalledWith(2, 'updated', 0);
   });
 
-  it('does not overwrite a message when the user changed its source during the request', async () => {
+  it('builds on the current text so another plugin\'s edit survives the write', async () => {
     const message = {
       name: 'Char',
       is_user: false,
       is_system: false,
-      mes: '用户刚修改的正文',
-      swipes: ['用户刚修改的正文'],
+      mes: '别的插件刚改过的正文',
+      swipes: ['别的插件刚改过的正文'],
       swipe_id: 0,
     };
     const saveChat = vi.fn(async () => undefined);
@@ -59,10 +59,34 @@ describe('safe message editing', () => {
       eventTypes: {},
     });
 
-    await expect(
-      applyMessageText(0, '请求开始时的原文', '带 tag 的旧原文', 'chat-a', 0),
-    ).resolves.toBe('floor-changed');
-    expect(message.mes).toBe('用户刚修改的正文');
+    const buildNext = vi.fn((text: string) => `${text}\n<bbi_image>scene</bbi_image>`);
+    await expect(applyMessageText(0, buildNext, 'chat-a', 0)).resolves.toBe('saved');
+    // 基底是落盘那一刻的正文,不是请求开始时的快照
+    expect(buildNext).toHaveBeenCalledWith('别的插件刚改过的正文');
+    expect(message.mes).toBe('别的插件刚改过的正文\n<bbi_image>scene</bbi_image>');
+    expect(saveChat).toHaveBeenCalledOnce();
+  });
+
+  it('abandons the write when buildNext returns null', async () => {
+    const message = {
+      name: 'Char',
+      is_user: false,
+      is_system: false,
+      mes: '整篇换掉的正文',
+      swipes: ['整篇换掉的正文'],
+      swipe_id: 0,
+    };
+    const saveChat = vi.fn(async () => undefined);
+    installContext({
+      chat: [message],
+      getCurrentChatId: () => 'chat-a',
+      saveChat,
+      eventSource: {},
+      eventTypes: {},
+    });
+
+    await expect(applyMessageText(0, () => null, 'chat-a', 0)).resolves.toBe('build-failed');
+    expect(message.mes).toBe('整篇换掉的正文');
     expect(saveChat).not.toHaveBeenCalled();
   });
 
@@ -85,12 +109,12 @@ describe('safe message editing', () => {
     });
 
     await expect(
-      applyMessageText(0, '相同正文', '新正文', 'chat-a', 0),
+      applyMessageText(0, () => '新正文', 'chat-a', 0),
     ).resolves.toBe('swipe-changed');
     expect(saveChat).not.toHaveBeenCalled();
   });
 
-  it('writes message extra together with the text and rejects a replaced floor object', async () => {
+  it('accepts a replaced message object with the same identity', async () => {
     const original = {
       name: 'Char',
       is_user: false,
@@ -98,9 +122,11 @@ describe('safe message editing', () => {
       mes: '原文',
       swipes: ['原文'],
       swipe_id: 0,
+      send_date: '2026-08-27 10:00:00',
       extra: {},
     };
-    const replacement = { ...original, extra: {} };
+    // 别的插件整体换壳(chat[i] = {...chat[i], mes}):同一条消息,不该判成楼层变化
+    const replacement = { ...original, mes: '别的插件改写后的正文', extra: {} };
     const context = {
       chat: [replacement],
       getCurrentChatId: () => 'chat-a',
@@ -111,18 +137,45 @@ describe('safe message editing', () => {
     installContext(context);
 
     await expect(
+      applyMessageText(0, text => `${text}!`, 'chat-a', 0, original),
+    ).resolves.toBe('saved');
+    expect(replacement.mes).toBe('别的插件改写后的正文!');
+    expect(context.saveChat).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a different message in the slot (floor deleted, index shifted)', async () => {
+    const original = {
+      name: 'Char',
+      is_user: false,
+      is_system: false,
+      mes: '原文',
+      swipes: ['原文'],
+      swipe_id: 0,
+      send_date: '2026-08-27 10:00:00',
+      extra: {},
+    };
+    const other = { ...original, send_date: '2026-08-27 11:22:33', extra: {} };
+    const context = {
+      chat: [other],
+      getCurrentChatId: () => 'chat-a',
+      saveChat: vi.fn(async () => undefined),
+      eventSource: {},
+      eventTypes: {},
+    };
+    installContext(context);
+
+    await expect(
       applyMessageText(
         0,
-        '原文',
-        '新正文',
+        () => '新正文',
         'chat-a',
         0,
         original,
         { key: 'bbiCharChanges', value: { v: 1, swipe: 0, ops: [] } },
       ),
     ).resolves.toBe('floor-changed');
-    expect(replacement.mes).toBe('原文');
-    expect(replacement.extra).toEqual({});
+    expect(other.mes).toBe('原文');
+    expect(other.extra).toEqual({});
     expect(context.saveChat).not.toHaveBeenCalled();
   });
 
@@ -149,8 +202,7 @@ describe('safe message editing', () => {
     await expect(
       applyMessageText(
         0,
-        '原文',
-        '新正文',
+        () => '新正文',
         'chat-a',
         0,
         message,
