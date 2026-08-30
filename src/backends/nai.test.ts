@@ -19,7 +19,7 @@ import {
   vibeModelKey,
   NaiError,
 } from '@/backends/nai';
-import type { NaiArtistPreset, NaiSettings, NaiVibe, NaiVibeData } from '@/state/settings';
+import type { NaiArtistPreset, NaiModel, NaiSettings, NaiVibe, NaiVibeData } from '@/state/settings';
 import { strToU8, zipSync } from 'fflate';
 
 function nai(overrides: Partial<NaiSettings> = {}): NaiSettings {
@@ -375,6 +375,41 @@ describe('NAI V5 support', () => {
       { cache_secret_key: expect.any(String), data: 'djU=' },
     ]);
     expect(params.reference_strength_multiple).toEqual([0.6]);
+  });
+
+  // 回归锁:char_captions 所在字段本就叫 v4_prompt,这套结构是 V4 时代的协议,V5 只是继承。
+  // 曾经按 isNai5 卡过,4.5 明明支持却一条角色提示都发不出去(角色外貌全糊进 Base)。
+  // 边界在 4.5 而非整个 v4 系:自然语言是 4.5 引入的,原版 NAI4 只吃 tag。
+  it('sends native Character Prompts on 4.5 as well as V5, but not on plain NAI 4', () => {
+    const values = {
+      prompt: '2girls, classroom',
+      nl: 'Two girls in a classroom.',
+      characters: [{ name: 'A', tag: '1girl, black hair, white dress', nl: 'On the left.' }],
+      seed: 1,
+    };
+    const captionsOf = (model: NaiModel) =>
+      (
+        buildNaiParameters(nai({ model }), values).v4_prompt as {
+          caption: { base_caption: string; char_captions: Array<{ char_caption: string }> };
+        }
+      ).caption;
+
+    for (const model of ['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-5-full'] as const) {
+      const caption = captionsOf(model);
+      expect([model, caption.char_captions.map(c => c.char_caption)]).toEqual([
+        model,
+        ['girl, black hair, white dress. On the left.'],
+      ]);
+      // nl 拼接同样开放到 4.5:句点分隔接在 tag 串之后
+      expect([model, caption.base_caption.endsWith('. Two girls in a classroom.')]).toEqual([model, true]);
+    }
+
+    // 原版 NAI4 保持单串形态:角色提示与 nl 都不发
+    for (const model of ['nai-diffusion-4-full', 'nai-diffusion-4-curated-preview'] as const) {
+      const caption = captionsOf(model);
+      expect([model, caption.char_captions]).toEqual([model, []]);
+      expect([model, caption.base_caption.includes('Two girls in a classroom.')]).toEqual([model, false]);
+    }
   });
 });
 

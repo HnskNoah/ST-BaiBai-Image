@@ -337,7 +337,11 @@ describe('auto tag prompt', () => {
     try {
       const cases = [
         { backend: 'comfyui', model: oldModel, want: 'COMFY-CHECKLIST' },
-        { backend: 'nai', model: 'nai-diffusion-4-5-full', want: 'NAI-CHECKLIST' },
+        // 单串分支的代表换成原版 NAI4:4.5 起走 Character Prompts 分支(自然语言是 4.5 引入的)
+        // ⚠ NAI4 已从 NAI_MODELS 撤下(设置页选不到了),但 prompt.ts 的单串分支与
+        // naiSpec/naiThinking 两个键都还在,故这条继续按字符串锁住分支归属。
+        { backend: 'nai', model: 'nai-diffusion-4-full', want: 'NAI-CHECKLIST' },
+        { backend: 'nai', model: 'nai-diffusion-4-5-full', want: 'NAIV5-CHECKLIST' },
         { backend: 'nai', model: 'nai-diffusion-5-full', want: 'NAIV5-CHECKLIST' },
       ] as const;
       const all = ['COMFY-CHECKLIST', 'NAI-CHECKLIST', 'NAIV5-CHECKLIST'];
@@ -527,9 +531,10 @@ describe('auto tag prompt', () => {
     }
   });
 
-  // NAI4 的 char_captions 恒为空(nai.ts),协议形态与 ComfyUI 一样是单条 tag 串,
+  // 原版 NAI4 的 char_captions 恒为空(nai.ts),协议形态与 ComfyUI 一样是单条 tag 串,
   // 一样需要邻接绑定——但 NAI 规范里此前一条多人规则、一个示例都没有。
-  it('gives NAI below V5 the multi-character binding rules and a worked example', async () => {
+  // (4.5 起走 Character Prompts 分支,归属另一份规范,不适用邻接绑定。)
+  it('gives NAI 4 the multi-character binding rules and a worked example', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
@@ -543,7 +548,7 @@ describe('auto tag prompt', () => {
     const oldModel = settings.nai.model;
     try {
       settings.defaultBackend = 'nai';
-      settings.nai.model = 'nai-diffusion-4-5-full';
+      settings.nai.model = 'nai-diffusion-4-full';
       const messages = await buildAutoTagMessages(context(), 1, options, null);
       const text = messages.map(m => m.content).join('\n');
 
@@ -686,7 +691,7 @@ describe('auto tag prompt', () => {
     try {
       for (const backend of ['comfyui', 'nai'] as const) {
         settings.defaultBackend = backend;
-        if (backend === 'nai') settings.nai.model = 'nai-diffusion-4-5-full';
+        if (backend === 'nai') settings.nai.model = 'nai-diffusion-4-full';
         const messages = await buildAutoTagMessages(context(), 1, options, null);
         const spec = messages.find(m => m.content.includes('从重要到次要排列'));
         expect(spec?.content).toContain('动作姿态 → 表情视线 → 场景');

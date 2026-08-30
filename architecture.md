@@ -61,6 +61,7 @@ src/
 │   ├── nai.ts         # NovelAI:参数构造、vibe 编码/叠加、画师串前置拼装、.naiv4vibe 导入导出;
 │   │                  # 内置只读画师串库 BUILTIN_NAI_ARTISTS(bi_* 前缀,不进 settings)
 │   ├── naiArtistLib.ts# 画师串库管理态纯逻辑(搜索匹配/删除接位规划,管理器与面板单删共用)
+│   ├── naiRateLimit.ts# ★ NAI 限流自愈:错误分类 + 退避重试 + 全局冷却/最小间隔(闸门与后端共用)
 │   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe / 提示词预设
 │   │                  # (collect/detect/import 纯函数三件套,绝不写回智绘姬)
 │   ├── vibeGroups.ts  # Vibe 分组纯逻辑(装箱 key/归拢/搜索/启用集合判定)
@@ -69,7 +70,7 @@ src/
 │   ├── hydrate.ts     # 渲染事件 → 锚点×tag 配对 → 每锚点 attachShadow → Vue 卡片挂载(幂等)
 │   ├── Card.vue       # 卡片本体(**纯展示层**,运行态在 genState.ts)+ 历史翻页
 │   ├── genState.ts    # ★ 生成运行态 store(模块级,跨卡片重建存活)——改卡片状态先读它
-│   ├── genQueue.ts    # NAI 并发闸门(ComfyUI 靠服务端队列,不经过这里)
+│   ├── genQueue.ts    # NAI 并发闸门 + 节奏等待(ComfyUI 靠服务端队列,不经过这里)
 │   ├── collapseState.ts # 卡片折叠态模块级 store(按槽位 key 认领;手动折叠覆盖默认设置)
 │   ├── Lightbox.vue   # 图片放大层(含长按保存的三条约束,改前必读顶部注释)
 │   ├── lightbox.ts    # 命令式打开灯箱(挂插件 shadow root,非卡片 shadow)
@@ -148,7 +149,19 @@ src/
 **坑:GENERATION_ENDED 不得清 gate**——ST 会在最终 `CHARACTER_MESSAGE_RENDERED` 之前先发
 ENDED,清了 gate 自动 tag 就永不触发(0.1.15 修);只有 `GENERATION_STOPPED`(用户中断)/
 `CHAT_CHANGED` 才清。runner 内所有跳过路径都有 `[BBI][AutoTagDebug]` 诊断日志,排查触发
-问题时看控制台即可定位是哪一步拦的。
+问题时看控制台即可定位是哪一步拦的;**手动路径(楼层按钮)每条跳过还必须给 toast**——
+手动点击是显式意图,静默 return 在用户那里就是「按钮点了没反应」(0.1.26 修)。
+
+**「谁算可插图的楼」只有一份判据**:`st/context.ts` 的 `isStoryMessage` /
+`isAiStoryMessage`,楼层按钮的显隐、runner 的目标闸门、prompt 的历史取舍共用。判据只看
+`is_system && typeof extra.type === 'string'`(ST 只给 narrator/comment/sys 盖这个戳),
+故**被 `/hide` 隐藏的普通楼算剧情楼、照给按钮照能重新生成**——ST 自己也这么认
+(messageFormatting 对隐藏楼强行把 isSystem 置回 false,我们的锚点正则才在隐藏楼生效)。
+旧版 actionButton 另写一份、直接读 DOM 的 `is_system` 属性,隐藏楼一律没按钮,而属性变更
+又不在 observer 监听范围里,于是同一条聊天里「隐藏前渲染过的楼留着按钮、之后重渲染的楼
+没有按钮」(0.1.26 修)。同理,「正文里有没有 tag」的探测收敛到
+`imageTagRegex.hasImageTagTrace`:按钮层曾只认开标签、runner 层认开也认闭,正文里只剩
+一个 `</bbi_image>` 的楼就卡成「点了永远没反应」。
 
 ```
 runForFloor(floor, opts)
@@ -170,8 +183,8 @@ runForFloor(floor, opts)
      changes 全程宽容:单条坏只丢这条,绝不连累 images —— 漏一个角色档案只是它本轮没锚定,
      为它作废整次输出会连图一起没有。图片数按 `minImages～maxImages` 范围:超上限本地硬截断,
      少于下限(>0 时)抛错交给重试循环 —— 下限是用户明确要求,宁可重试也不交残缺结果。
-     每图可选 `characters`(V5 原生多角色提示,≤32 条,name/tag/nl,宽容解析单条坏只丢这条),
-     注入时序列化进 `<characters>…</characters>` 子标签;V5 下建档(new)必须带 nl,否则 runner 抛错重试
+     每图可选 `characters`(NAI 4.5/V5 原生多角色提示,≤32 条,name/tag/nl,宽容解析单条坏只丢这条),
+     注入时序列化进 `<characters>…</characters>` 子标签;4.5/V5 下建档(new)必须带 nl,否则 runner 抛错重试
   8. changes 与柏宝书建档一起转成楼层增量 ops(extra 的 bbiCharChanges),不提前落库
   9. @占位符兜底替换:applyPositionedCharRefs 把 tag/nl 里残留的 @角色名 换成「基线 + 本楼
      ops 重放」后的库 tag。**建档(new)全楼生效**——新角色的固定外貌是本楼全程成立的事实;
@@ -197,6 +210,13 @@ runForFloor(floor, opts)
 
 全部可编辑提示词(破限/规范/思维链/预填充)在 `state/settings.ts` 有内置默认常量
 (`DEFAULT_*_PROMPT`/`DEFAULT_*_SPEC`),留空回落默认 —— 改默认提示词内容先看这里。
+
+⚠ **设置页只暴露两对规范/思维链:ComfyUI 与 NAI**,后者存在 `naiV5Spec` / `naiV5Thinking`
+(键名带 V5 是历史命名,内容对 4.5 同样适用,面板标签已改成不提代数的「NAI 规范/思维链」)。
+另有 `naiSpec` / `naiThinking` 是 4.5 以下的单串 tag 版本,随旧模型下线(见 §6 `NAI_MODELS`)
+**已无 UI 入口**:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 → 那两份永远走不到。
+键与常量都刻意保留(不动存量 settings、不动旧模型标识的协议分支与回归锁),
+但**改 NAI 规范/思维链一律改 `DEFAULT_NAI_V5_*` 那一对**,别去改看着名字更正的那份。
 
 ## 6. 链路 B:楼层卡片与出图(floor/ + backends/)
 
@@ -259,6 +279,28 @@ runForFloor(floor, opts)
 - **取消必须分流**(comfyui.ts 的 `cancelPrompt`):任务在排队 → `POST /queue {delete:[id]}`;
   正在执行 → `POST /interrupt`(带 prompt_id)。**无脑 /interrupt 会打断正在跑的别的任务**
   ——旧实现如此,并发下必现。有单测锁定这两条路径。
+
+**NAI 限流自愈(backends/naiRateLimit.ts)**:闸门只管「同时几个」,管不了「多快一个」。
+release 后立刻 `pump()`,下一个任务在同一 tick 就发出去;而错误是**按槽位隔离**的,于是被
+限流时会打出一串密集失败(429 → release → 立刻再来 → 429),那正是最像滥用的形状。
+策略层收口在一处,时间戳全可注入(故不用假时钟就能单测):
+- **错误分类**(`shouldRetryNai`):408/429/5xx(除 501)与 fetch 的 `TypeError` 才重试;
+  400/401/402 这类配置错误、以及自家的校验/解析错误立刻抛。**不分类的话,一个填错的 key
+  会被退避重试放大成四倍请求量**。取消(AbortError)一律不重试。
+- **退避重试**(`runNaiWithRetry`,共 4 次尝试):指数退避 + 50%–100% 抖动(多张卡不会同时
+  醒来又撞一起),`Retry-After` 当**下界**、单次等待夹到 60s。只包「发请求 + 解包」那一段
+  ——拼参数、读 vibe 数据是一次性的,重跑会白费功夫并重复弹 vibe 警告。
+- **全局冷却**:429 除了让当前请求退避,还给**整个闸门**上冷却(`noteNaiRateLimited`,
+  默认 15s 或按 `Retry-After`,**只延后不提前**)。`acquireNaiSlot` 取槽后循环等完
+  `naiPacingDelayMs()` 才返回 —— 循环是因为等待期间别的槽位可能又把冷却推后了。
+- **最小间隔** 1500ms:给「出图耗时撑不出间隔」的场合兜底(小图/低步数/快速失败重发)。
+- 两条纪律:节奏等待**持槽进行**(否则上限内的 N 个任务会一起等完同一段再一起发,节流形同
+  虚设);等待期间被取消**必须还槽**(漏一格就永久少一格并发,漏满就再也发不出请求)。
+- 卡片要看得见退避(`GenRecord.retry` → 「请求受限,稍后第 N/M 次重试…」)。否则「生成中…」
+  一动不动几十秒,用户以为卡死了再点一次,白白多压一个请求。
+- `encodeVibeImage` 同样带重试,并由 NaiPanel 取闸门槽位(`encodeVibeGated`)——它也是一次
+  真实 NAI 请求,不然「一边出图一边编码」在账号上就是两条并发。`testNaiConnection`
+  **刻意不进闸门**:诊断按钮多半是在被限流时点的,拦住它只会让人没法排查。
 
 **手动编辑提示词(PromptEditor.vue + promptEditor.ts)**:提示词的**唯一真源是正文里的 tag 原文**
 (不在 extra、不在 store),故「编辑提示词」本质是一次正文写回:序列化新 tag →
@@ -331,13 +373,25 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   渠道页可见可覆盖(存空串 = 跟随模型官方词);正向拼装顺序为
   **画师串 → 画面 tag → 质量词**(画师串来自库,见 §7);
   `.naiv4vibe` 导入导出与官方互通。
-  **NAI V5(`nai-diffusion-5-*`)是另一条协议分支**:`isNai5`/`naiSupportsVibes`/`naiSamplers` 三件套
-  判定——`params_version: 4`、采样器限子集(列表随模型过滤,面板同步)、`v4_prompt` 结构里
-  `char_captions` 填来自协议的 characters(每角色一条,库数量 tag `1girl→girl` 降级、
-  tag+中文 nl 拼一条 caption,负面侧给空 caption 占位)、varietyBoost 无效。
+  **NAI 4.5/V5 走「Base + 原生 Character Prompts」分支**:谓词是 `naiSupportsCharacterPrompts`
+  (= `isNai45 || isNai5`),`v4_prompt` 结构里 `char_captions` 填来自协议的 characters
+  (每角色一条,库数量 tag `1girl→girl` 降级、tag+**英文** nl 拼一条 caption,负面侧给空 caption 占位)。
+  ⚠ 边界在 **4.5** 而不是 V5,也不是整个 v4 系:`char_captions` 所在字段本就叫 `v4_prompt`,
+  这套结构是 V4 时代的协议、V5 只是继承,而自然语言是 **4.5 才引入**的(原版 NAI4 只吃 tag)。
+  曾按 `isNai5` 卡过,导致 4.5 明明支持却一条角色提示都发不出去,角色外貌全糊进 Base
+  (`nai.test.ts` 有回归锁)。nl 一律写**英文**:生图模型读英文自然语言更可靠,中文还要多花
+  几倍 token(4.5 的 base + 全部 character prompts 合计约 512 T5 token)。
+  **真正的 V5 专属差异只有三处**:`params_version: 4`、采样器限子集(列表随模型过滤,面板同步)、
+  varietyBoost 无效(`skipCfgAboveSigma` 对 V5 返回 null,4.5 用 magic 58)。
   **Vibe 对 V5 同样可用**:`vibeModelKey` 已含 v5full/v5curated 键,V5 走与 v4 系相同的编码
   缓存分支(`reference_image_multiple_cached` 无条件初始化);仅**非 NAI 家族模型**才不支持。
-  正向串 V5 且带 nl 时拼成 `tags. nl`(句点分隔)。
+  正向串在 4.5/V5 且带 nl 时拼成 `tags. nl`(句点分隔)。
+  **可选模型只有 4.5 与 V5 四条**(`NAI_MODELS`,同时是 `normalizeNai` 的白名单):4.5 以下
+  已下线,存量配置里的旧模型会被**改写**成 `naiDefaults().model`(5-full)并打一条
+  `console.warn` —— 画风、Anlas 消耗与 vibe 编码 key 都会跟着变,这是有意接受的代价
+  (`settings.naiModelRetire.test.ts` 锁住「在列的不动、下线的必留痕」)。
+  ⚠ `NaiModel` 类型比 `NAI_MODELS` 宽,`isNai3` / 原版 NAI4 的协议分支也都还在:留着是为了
+  不动回归锁,也留一条回退余地。**它们从 UI 已不可达**,别再按「这分支还活着」去推断产品行为。
 - `chatu8Vibe.ts`:只读智绘姬的 extension_settings + IndexedDB,逐条导入 vibe(内容指纹去重、读取超时、迁移进度)。
   另有提示词预设三件套(collectChatu8ArtistRefs / detectChatu8Artists / importArtistsFromChatu8):
   读 `yushe` 表 + `yusheid_novelai` 当前选中,每条预设三个字段按**位置对应**迁移——
@@ -457,7 +511,7 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   镜像在 `settings.excludes`(四张名单:excludedChars / excludedWorldNames /
   excludedWorldInfoPatterns / customStripTags);协议与渠道同构(指纹防回环 + revision 取 max),
   事件 `st-baibai-exclude-settings:changed`。与柏宝书共用同一份名单、同一套匹配口径:
-  排除角色 → 自动 tag 全流程停用(含楼层按钮隐藏);整本/条目名排除 → 副 API 世界书过滤
+  排除角色 → 自动 tag 全流程停用(楼层按钮也在下一次对账时撤掉);整本/条目名排除 → 副 API 世界书过滤
   (autoTag/excludes.ts);清洗标签 → 扫描/正文清洗整块删除(autoTag/clean.ts)。
   共享存储创建时播种默认条目名规则 `\[mvu[\s\S]*?\]`(只发一次,删了不补回)。
 - **ui(本机 + 同步)**:窗口开关/当前页(activePage 存 localStorage)是纯本机态;
@@ -516,9 +570,9 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | 启动流程 / 新子系统挂载 | src/index.ts |
 | 设置项(新增字段/默认值/迁移) | src/state/settings.ts(类型 + defaults + normalize 三处) |
 | 设置窗口 UI | src/pages/settings/index.vue |
-| 提示词内置默认(破限/规范/思维链/预填充) | src/state/settings.ts 的 `DEFAULT_*` 常量 |
+| 提示词内置默认(破限/规范/思维链/预填充) | src/state/settings.ts 的 `DEFAULT_*` 常量(NAI 那对是 `DEFAULT_NAI_V5_*`) |
 | 自动 tag 触发条件 / 去重 / 重试 | src/autoTag/runner.ts + generationGate.ts(生成门配对) |
-| 发给 LLM 的消息组装(顺序/内容) | src/autoTag/prompt.ts(V5 走 DEFAULT_NAI_V5_SPEC:Base+Character 双提示) |
+| 发给 LLM 的消息组装(顺序/内容) | src/autoTag/prompt.ts(NAI 一律走 DEFAULT_NAI_V5_SPEC:Base+Character 双提示) |
 | LLM 输出协议(JSON 形状/位置 ID/tag 格式) | src/autoTag/protocol.ts |
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
 | 柏宝书状态读取 | src/autoTag/bookMemory.ts |
@@ -541,7 +595,8 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | 手动编辑生图提示词(卡片 ⋯ 铅笔) | src/floor/PromptEditor.vue + promptEditor.ts(序列化在 st/imageTagRegex.ts) |
 | 写 tag 后自动出图的握手 / 判定 | src/floor/autoGenerate.ts 的 `shouldAutoGenerate`(纯函数,Card 无单测) |
 | 卡片折叠(默认折叠 / 手动折叠态) | src/floor/collapseState.ts + Card.vue(默认值 = settings.ui.autoCollapseImages) |
-| 卡片「生成中」状态 / 取消 / 并发 | src/floor/genState.ts(运行态)+ genQueue.ts(NAI 闸门) |
+| 卡片「生成中」状态 / 取消 / 并发 | src/floor/genState.ts(运行态)+ genQueue.ts(NAI 闸门与节奏等待) |
+| NAI 429 / 重试 / 退避 / 全局冷却 | src/backends/naiRateLimit.ts(策略与节奏状态唯一口径;genQueue 取槽后等待,nai.ts 包住请求) |
 | 图片放大 / 长按保存 / 保存删除按钮 | src/floor/Lightbox.vue + lightbox.ts(另存走 download.ts) |
 | 卡片版面 / 按钮尺寸基线 / 卡片主题 | src/floor/card.css + cardStyles.ts(令牌来自 styles/theme.css) |
 | 结果存储 / 文件命名 / CAS | src/floor/storage.ts + upload.ts |

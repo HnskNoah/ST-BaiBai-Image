@@ -136,6 +136,20 @@ export function isNai45(model: string): boolean {
   return model.includes('nai-diffusion-4-5');
 }
 
+/**
+ * 该模型是否走「Base Prompt + 原生 Character Prompts + 自然语言」这套协议。
+ *
+ * 边界是 4.5 而不是整个 v4 系:自然语言是 4.5 才引入的,原版 NAI4
+ * (nai-diffusion-4-full / 4-curated-preview)只吃 tag。给它发英文 nl 句子
+ * 属于未验证行为,故保持原样走单串 tag 规范。
+ *
+ * ⚠ 不要改回 isNai5:char_captions 所在的字段本来就叫 v4_prompt,这套结构是 V4 时代的
+ * 协议,V5 只是继承。曾经按 isNai5 卡过,导致 4.5 明明支持却一条角色提示都发不出去。
+ */
+export function naiSupportsCharacterPrompts(model: string): boolean {
+  return isNai45(model) || isNai5(model);
+}
+
 export function isNai4Family(model: string): boolean {
   return model.includes('nai-diffusion-4');
 }
@@ -313,7 +327,7 @@ export function fullPositivePrompt(nai: NaiSettings, prompt: string, nl = ''): s
   const artist = naiArtistPrompt(nai);
   const quality = naiQualityTags(nai);
   const tags = [artist, prompt.trim(), quality].filter(Boolean).join(', ');
-  return isNai5(nai.model) && nl.trim() ? `${tags}. ${nl.trim()}` : tags;
+  return naiSupportsCharacterPrompts(nai.model) && nl.trim() ? `${tags}. ${nl.trim()}` : tags;
 }
 
 function characterCaption(character: ImageCharacterPrompt): string {
@@ -391,7 +405,7 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
   } else {
     // NAI4/4.5/V5: v4 caption structure; Vibe uses a model-specific cached encoding.
     params.reference_image_multiple_cached = [];
-    const charCaptions = isNai5(nai.model)
+    const charCaptions = naiSupportsCharacterPrompts(nai.model)
       ? (values.characters ?? []).map(character => ({
           char_caption: characterCaption(character),
           centers: [{ x: 0.5, y: 0.5 }],
