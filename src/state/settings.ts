@@ -192,6 +192,24 @@ export interface NaiArtistPreset {
   previewPath?: string;
 }
 
+/**
+ * 一条具名 NAI 连接配置:接口地址 + API Key 成对保存,给官方站/第三方镜像各存一套、一键切换。
+ * 只管「连上谁」——模型/采样器等出图参数不进配置,那是渠道级设置(「默认参数」区)。
+ *
+ * 顶层 `NaiSettings.url/key` 恒为**生效值**(nai.ts 各请求方只读它们,与库解耦):
+ * 切换配置 = 把该条的 url/key 拷到顶层;面板输入框编辑 = 写顶层的同时回写当前选中的
+ * 配置。单一编辑面,不存在「配置里存的」和「实际生效的」两套真相。
+ */
+export interface NaiConnPreset {
+  id: string;
+  /** 显示名(下拉列表与切换用;允许重名,以 id 为键)。 */
+  name: string;
+  /** 接口地址;空串 = 官方默认(naiEndpoint 对空串回落官方域名)。 */
+  url: string;
+  /** API Key。 */
+  key: string;
+}
+
 /** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */
 export interface NaiSettings extends BackendConn {
   /** API Key(与副 API 渠道同口径,随设置落盘)。 */
@@ -236,6 +254,17 @@ export interface NaiSettings extends BackendConn {
    * 他没选过的画风,每张图都变样却查不出原因。
    */
   activeArtistId: string;
+  /**
+   * 连接配置库(接口地址 + API Key 成对保存,官方/第三方镜像一键切换)。允许为空——
+   * 与画师串库同口径:配置不给照样能连(顶层 url/key 还在),是可选项。
+   */
+  connPresets: NaiConnPreset[];
+  /**
+   * 当前使用的连接配置 id。**空串 = 手动填写**(顶层 url/key 不归任何配置存档)。
+   * 合法值域:{''} ∪ connPresets id;悬空 id 由 normalizeNai 清成空串——刻意**不**回落
+   * 第一条:静默换一个接口地址,比「画师串不使用」严重得多。
+   */
+  activeConnId: string;
 }
 
 /** 界面偏好里要跨设备同步的部分;activePage 等纯本机临时态不在此。 */
@@ -961,9 +990,21 @@ export function newNaiArtist(name = DEFAULT_ARTIST_NAME): NaiArtistPreset {
   return { id: `art_${Date.now()}_${artistSeq}`, name, prompt: '', quality: '', negative: '' };
 }
 
+let connSeq = 0;
+
+/** 新建一条连接配置(id 口径同 newNaiArtist;conn_ 前缀不与 art_/wf_/ch_/bi_ 撞)。 */
+export function newNaiConn(name: string, url = '', key = ''): NaiConnPreset {
+  connSeq += 1;
+  return { id: `conn_${Date.now()}_${connSeq}`, name, url, key };
+}
+
 function naiDefaults(): NaiSettings {
+  // 新装即带一条「默认配置」并选中(官方地址 + 空 key),与 comfyDefaults 出生即带一条
+  // 工作流同理——只用一套配置的人不会看见「库」,手填的地址/密钥自动有地方存档。
+  // 老用户不走这里:normalizeNai 按「connPresets 键不存在」用存量 url/key 播种,行为零变化。
+  const preset = newNaiConn('默认配置', 'https://image.novelai.net', '');
   return {
-    ...backendDefaults('https://image.novelai.net'),
+    ...backendDefaults(preset.url),
     resolution: '832×1216',
     key: '',
     model: 'nai-diffusion-5-full',
@@ -985,6 +1026,8 @@ function naiDefaults(): NaiSettings {
     // hydrate 时旧用户的 stored.nai.activeArtistId 已存在(哪怕空串),会被
     // normalizeNai 原样保留,不受影响。
     activeArtistId: BUILTIN_NAI_ARTISTS[0]?.id ?? '',
+    connPresets: [preset],
+    activeConnId: preset.id,
   };
 }
 
@@ -1134,6 +1177,17 @@ export function activeNaiArtist(): NaiArtistPreset | null {
     BUILTIN_NAI_ARTISTS.find(a => a.id === id) ??
     null
   );
+}
+
+/**
+ * 当前选中的连接配置;**空串 / 指向已删条目时返回 null(= 手动填写)**。
+ * 悬空 id 在 normalizeNai 已清,这里再兜一层是防「UI 运行中把库改坏」的时序。
+ * 刻意只读不写(同 activeNaiArtist):本函数在 computed 里被调用,写 settings 会递归求值。
+ */
+export function activeNaiConn(): NaiConnPreset | null {
+  const id = settings.nai.activeConnId;
+  if (!id) return null;
+  return settings.nai.connPresets.find(c => c.id === id) ?? null;
 }
 
 /**
@@ -1355,6 +1409,17 @@ function normalizeArtistPreset(raw: unknown, seq: number): NaiArtistPreset {
   };
 }
 
+/** 单条连接配置清洗:缺字段/类型不符逐项回退;url/key 允许空串(空配置不是垃圾数据)。 */
+function normalizeConnPreset(raw: unknown, seq: number): NaiConnPreset {
+  const o = (raw ?? {}) as Partial<NaiConnPreset>;
+  return {
+    id: typeof o.id === 'string' && o.id ? o.id : `conn_${Date.now()}_${seq}`,
+    name: typeof o.name === 'string' && o.name ? o.name : `配置 ${seq + 1}`,
+    url: typeof o.url === 'string' ? o.url : '',
+    key: typeof o.key === 'string' ? o.key : '',
+  };
+}
+
 function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   const conn = normalizeBackend(raw, def);
   const o = (raw ?? {}) as Partial<NaiSettings>;
@@ -1374,6 +1439,21 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
     (artistPresets.some(a => a.id === o.activeArtistId) || isBuiltinNaiArtist(o.activeArtistId))
       ? o.activeArtistId
       : '';
+
+  // 连接配置库:老数据没有 connPresets 键 → 按存量 url/key 播种一条「默认配置」并接管
+  // (与 normalizeComfyUI 的 foldLegacyWorkflow 同口径:升级前后生效值零变化)。
+  // 判定用「键不存在」而非「数组为空」:键一旦落盘,哪怕 [],用户删光的配置也不会被再播种。
+  const rawConnPresets = o.connPresets;
+  const connPresets: NaiConnPreset[] = Array.isArray(rawConnPresets)
+    ? rawConnPresets.map(normalizeConnPreset)
+    : [newNaiConn('默认配置', conn.url, typeof o.key === 'string' ? o.key : '')];
+  // 悬空 id 一律清成空串(= 手动填写),不回落第一条——静默换一个接口地址比什么都难排查。
+  // 播种路径例外:种子就是存量 url/key 本身,直接接管为当前配置。
+  const activeConnId = Array.isArray(rawConnPresets)
+    ? typeof o.activeConnId === 'string' && connPresets.some(c => c.id === o.activeConnId)
+      ? o.activeConnId
+      : ''
+    : connPresets[0].id;
 
   return {
     ...conn,
@@ -1399,6 +1479,8 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
       : def.vibes,
     artistPresets,
     activeArtistId,
+    connPresets,
+    activeConnId,
   };
 }
 

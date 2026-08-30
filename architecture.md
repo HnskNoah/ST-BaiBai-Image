@@ -153,6 +153,11 @@ ENDED,清了 gate 自动 tag 就永不触发(0.1.15 修);只有 `GENERATION_STOP
 ```
 runForFloor(floor, opts)
   1. 过滤:仅 AI 故事楼;已有 <bbi_image> 且非手动 replace 则跳过
+  1.5 正文分诊(triageAssistantText,autoTag/triage.ts):空回 / API 错误文本直接放弃,
+     不发副 API——渠道把「[API错误：…]」写进正文时,那不是故事,没画面可配。
+     规则与 ST-Quicker-Api 的 response-triage.ts 同源(头部标记 + 短正文内联标记两级,
+     长文不启用内联防虚构叙事误判),用例与那边保持一致(triage.test.ts);
+     auto 静默跳过,手动路径对 API 错误给 toastr 说明
   2. 身份去重:chatId\0floor\0swipeId\0textHash → processed Set;手动(manual)绕过
   3. 每楼一个 AbortController:同楼新任务 abort 旧任务;CHAT_CHANGED 全量取消
   4. 装配上下文:
@@ -417,6 +422,18 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
     勾选框只服务批量删除;内置条无勾选框、只读。「复制」是内置条唯一下自定义入口。
   - **存量迁移**:纯加法,无老字段可折。老配置 hydrate 后得空库 + 空 id,正向提示词输出
     与上线前逐字节一致。
+- **NAI 连接配置库**:`settings.nai.connPresets`(`NaiConnPreset[]`)+ `activeConnId`。
+  一条配置 = 名字 + 接口地址 + API Key,给官方站/第三方镜像各存一套、一键切换;只管
+  「连上谁」,模型/采样器等出图参数不进配置(那是渠道级)。**顶层 `nai.url/key` 恒为生效值**:
+  nai.ts 各请求方只读它们、零改动;切换 = 配置→顶层拷贝,面板输入框编辑 = 写顶层 + 回写
+  当前选中条(单一编辑面,不存在「配置里存的」和「实际生效的」两套真相)。
+  - 空串 `activeConnId` = 「手动填写」(不存档),同画师串的「不使用」哨兵;悬空 id 由
+    `normalizeNai` 清成空串,刻意**不**回落第一条(静默换一个接口地址没法排查)。
+  - 与画师串库相反,`naiDefaults()` **播种**一条「默认配置」并选中(comfyDefaults 同理:
+    只用一套的人看不见「库」,手填自动有地方存档);老用户由 `normalizeNai` 按存量 url/key
+    播种同一条接管,升级前后生效值零变化。播种判定用「键不存在」而非「数组为空」——
+    键一旦落盘,用户删光的配置不会被再播种(否则删不掉)。有单测锁定
+    (`settings.naiConnMigration.test.ts`)。
 - **Vibe 大文件**:
   - `extensionSettings['baibai_image'].nai.vibes`:仅存 `NaiVibe` 小型索引，不存原图、缩略图 dataURL 或编码正文;
   - `user/files/bbi-vibe-*.json`:原图与各模型编码正文;
@@ -518,6 +535,7 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | 设置窗口 UI | src/pages/settings/index.vue |
 | 提示词内置默认(破限/规范/思维链/预填充) | src/state/settings.ts 的 `DEFAULT_*` 常量 |
 | 自动 tag 触发条件 / 去重 / 重试 | src/autoTag/runner.ts + generationGate.ts(生成门配对) |
+| API 错误/空回正文不触发副 API | src/autoTag/triage.ts(纯函数,规则同源 ST-Quicker-Api response-triage;接入点 runner.runForFloor 第 1.5 步) |
 | 发给 LLM 的消息组装(顺序/内容) | src/autoTag/prompt.ts(V5 走 DEFAULT_NAI_V5_SPEC:Base+Character 双提示) |
 | LLM 输出协议(JSON 形状/位置 ID/tag 格式) | src/autoTag/protocol.ts |
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
@@ -533,6 +551,7 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe / 智绘姬提示词预设导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
+| NAI 连接配置库(多套地址/密钥保存切换) | src/state/settings.ts 的 `NaiConnPreset` + `activeNaiConn`(UI 在 NaiPanel.vue 的「配置」区) |
 | NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
 | 画师串库管理器(搜索/预览图/批量删除) | src/pages/backend/panels/NaiArtistManager.vue(纯逻辑在 backends/naiArtistLib.ts;内置只读库在 backends/nai.ts 的 `BUILTIN_NAI_ARTISTS`) |
 | 画师串预览图(user/images 上传/删除) | src/st/images.ts + imageFile.ts(文件夹常量 `ARTIST_PREVIEW_FOLDER`) |

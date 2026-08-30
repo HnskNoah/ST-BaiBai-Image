@@ -45,6 +45,8 @@ function nai(overrides: Partial<NaiSettings> = {}): NaiSettings {
     vibes: [],
     artistPresets: [],
     activeArtistId: '',
+    connPresets: [],
+    activeConnId: '',
     ...overrides,
   };
 }

@@ -30,6 +30,7 @@ import { applyMessageText, type ApplyMessageResult } from '@/st/messageEdit';
 import { getContext, type STMessage } from '@/st/context';
 import { stripImageTags } from '@/st/imageTagRegex';
 import { getTagGenChannel, isCurrentChatExcluded, settings } from '@/state/settings';
+import { triageAssistantText } from '@/autoTag/triage';
 
 const processed = new Set<string>();
 const running = new Map<string, AbortController>();
@@ -201,8 +202,19 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
   }
   // replace:分析和注入都基于剔除旧 tag 后的正文;写回时旧 tag 随之消失
   const source = opts.replace ? stripImageTags(rawSource) : rawSource;
-  if (!source.trim()) {
-    diagnostic('runForFloor:skip', { floor, reason: 'empty-source' });
+  // 空回 / API 错误文本直接放弃:这样的楼层没有可分析的正文,发去副 API 只会把
+  // 「[API错误：无可用渠道]」当故事配图。判定与 ST-Quicker-Api 同源(autoTag/triage.ts);
+  // auto 路径静默跳过(与其它 skip 同口径),手动路径对 API 错误给一条说明。
+  const triage = triageAssistantText(source);
+  if (triage.kind !== 'ok') {
+    diagnostic('runForFloor:skip', {
+      floor,
+      reason: triage.kind === 'empty' ? 'empty-source' : 'api-error-text',
+      detail: triage.detail,
+    });
+    if (opts.manual && triage.kind === 'api_error') {
+      toastr.warning(`本楼正文是 API 错误信息，不生成生图 tag：${triage.detail ?? ''}`, '柏宝绘');
+    }
     return;
   }
   const preparedTarget = prepareTargetText(source, settings.excludes.customStripTags);

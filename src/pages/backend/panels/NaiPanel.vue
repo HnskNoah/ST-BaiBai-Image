@@ -55,7 +55,9 @@ import ModalMask from '@/components/ModalMask.vue';
 import { getContext } from '@/st/context';
 import {
   activeNaiArtist,
+  activeNaiConn,
   newNaiArtist,
+  newNaiConn,
   NAI_MODELS,
   settings,
   type NaiArtistPreset,
@@ -85,6 +87,113 @@ async function onTestConnection() {
   } finally {
     testing.value = false;
   }
+}
+
+/* ============ 连接配置库(接口地址 + API Key 成对保存,形制照搬画师串库) ============ */
+
+/**
+ * 当前选中的连接配置;null = 手动填写(库为空或未选)。
+ * 顶层 settings.nai.url/key 恒为生效值(请求方只读它们):切换 = 配置→顶层拷贝,
+ * 输入框编辑 = 写顶层 + 回写当前配置(单一编辑面,不存在两套真相)。
+ */
+const conn = computed(() => activeNaiConn());
+
+/** 「手动填写」的下拉值:空串 = 顶层 url/key 不归任何配置存档。 */
+const NO_CONN = '';
+
+const connOptions = computed(() => [
+  { value: NO_CONN, label: '手动填写' },
+  ...settings.nai.connPresets.map(c => ({ value: c.id, label: c.name || '未命名配置' })),
+]);
+
+/** 切换配置:把该条的地址/密钥拷进顶层生效值;选「手动填写」则保留当前值不动。 */
+const activeConnId = computed<string>({
+  get: () => settings.nai.activeConnId,
+  set: id => {
+    settings.nai.activeConnId = id;
+    const c = settings.nai.connPresets.find(x => x.id === id);
+    if (c) {
+      settings.nai.url = c.url;
+      settings.nai.key = c.key;
+    }
+  },
+});
+
+/** 输入框双向绑定:写顶层生效值;选中了配置就同步回写,改动跟着配置存档。 */
+const connUrl = computed<string>({
+  get: () => settings.nai.url,
+  set: v => {
+    settings.nai.url = v;
+    const c = conn.value;
+    if (c) c.url = v;
+  },
+});
+const connKey = computed<string>({
+  get: () => settings.nai.key,
+  set: v => {
+    settings.nai.key = v;
+    const c = conn.value;
+    if (c) c.key = v;
+  },
+});
+
+/** 改名/删除都只对「真的选中了一条」有意义;手动填写时一律禁用。 */
+const hasConn = computed(() => conn.value !== null);
+
+/** 改名是低频操作:平时只显示下拉,点「改名」才把选择器原地换成输入框(与画师串库同款)。 */
+const renamingConn = ref(false);
+const connNameDraft = ref('');
+const connNameInput = ref<HTMLInputElement | null>(null);
+const connDeleteOpen = ref(false);
+
+function startRenameConn() {
+  if (!conn.value) return;
+  connNameDraft.value = conn.value.name;
+  renamingConn.value = true;
+  nextTick(() => connNameInput.value?.focus());
+}
+
+/** Enter / 失焦都算确认;Esc 直接置 renamingConn=false 不经过这里,即为取消。 */
+function commitRenameConn() {
+  if (renamingConn.value && conn.value) conn.value.name = connNameDraft.value.trim();
+  renamingConn.value = false;
+}
+
+/** 新建一套空配置并切换过去:地址/密钥清空重填。 */
+function addConn() {
+  // 手动填写模式下有未存档的改动 → 先确认,别一键清空(选中配置时改动已实时回写,无此风险)
+  if (!hasConn.value && (settings.nai.url.trim() || settings.nai.key.trim())) {
+    if (!window.confirm('当前填写的地址/密钥尚未存进任何配置,新建将清空它们。继续?')) return;
+  }
+  const preset = newNaiConn(`配置 ${settings.nai.connPresets.length + 1}`);
+  settings.nai.connPresets.push(preset);
+  activeConnId.value = preset.id;
+}
+
+/** 把当前填写的地址/密钥存成一套新配置(选中配置时等价于「复制当前」)。 */
+function saveConnAs() {
+  const fallback = `配置 ${settings.nai.connPresets.length + 1}`;
+  const suggested = conn.value ? `${conn.value.name} 副本` : fallback;
+  const raw = window.prompt('配置名称', suggested);
+  if (raw === null) return; // 取消
+  const preset = newNaiConn(raw.trim() || fallback, settings.nai.url, settings.nai.key);
+  settings.nai.connPresets.push(preset);
+  activeConnId.value = preset.id;
+  toastr.success(`已保存配置「${preset.name}」`, '连接配置');
+}
+
+/**
+ * 删除当前配置:条目移除即可,没有文件要清(与画师串删除不同)。
+ * 删的是选中条 → 退回手动填写,但地址/密钥原样留在输入框里(连接不断,只是不再存档)。
+ */
+function confirmRemoveConn() {
+  connDeleteOpen.value = false;
+  const list = settings.nai.connPresets;
+  const id = conn.value?.id;
+  const index = list.findIndex(c => c.id === id);
+  if (index < 0) return;
+  list.splice(index, 1);
+  if (id && settings.nai.activeConnId === id) settings.nai.activeConnId = '';
 }
 
 /* ============ 画师串库(形制照搬 ComfyUI 工作流库) ============ */
@@ -694,6 +803,75 @@ async function removeVibe(vibe: NaiVibe) {
 
     <div class="bbi-sections">
       <Collapsible title="配置" :open="false">
+        <!-- 连接配置库:接口地址 + API Key 成对保存,官方/第三方镜像一键切换。
+             形制与画师串库一致:下拉切换 + 图标操作,低频操作全部退到 title/aria-label。 -->
+        <div class="art-row">
+          <span class="bbi-field-label">配置管理</span>
+          <input
+            v-if="renamingConn"
+            ref="connNameInput"
+            class="bbi-input"
+            type="text"
+            v-model="connNameDraft"
+            placeholder="配置名称"
+            spellcheck="false"
+            title="Enter 确认，Esc 取消"
+            @keydown.enter.prevent="commitRenameConn"
+            @keydown.esc.stop.prevent="renamingConn = false"
+            @blur="commitRenameConn"
+          />
+          <BbiSelect
+            v-else
+            class="art-select"
+            v-model="activeConnId"
+            :options="connOptions"
+            aria-label="当前连接配置"
+          />
+          <span v-if="!renamingConn" class="art-ops">
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              title="新建一套空配置(会清空下方地址/密钥重填)"
+              aria-label="新建配置"
+              @click="addConn"
+            >
+              <Icon name="plus" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              title="把当前填写的地址/密钥存成一套新配置"
+              aria-label="存为新配置"
+              @click="saveConnAs"
+            >
+              <Icon name="copy" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              :disabled="!hasConn"
+              :title="!hasConn ? '当前是手动填写,没有可改名的配置' : '重命名当前配置'"
+              aria-label="重命名当前配置"
+              @click="startRenameConn"
+            >
+              <Icon name="edit" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op art-remove"
+              type="button"
+              :disabled="!hasConn"
+              :title="!hasConn ? '当前是手动填写,没有可删除的配置' : '删除当前配置'"
+              aria-label="删除当前配置"
+              @click="connDeleteOpen = true"
+            >
+              <Icon name="trash" :size="14" />
+            </button>
+          </span>
+        </div>
+        <p class="bbi-field-hint">
+          多套「接口地址 + API Key」成对保存,一键切换官方/第三方;当前填写的改动会实时同步进选中的配置,选「手动填写」则不存档。
+        </p>
+
         <div class="bbi-field">
           <div class="bbi-field-head">
             <span class="bbi-field-label">接口地址</span>
@@ -701,7 +879,7 @@ async function removeVibe(vibe: NaiVibe) {
           <input
             class="bbi-input"
             type="text"
-            v-model="settings.nai.url"
+            v-model="connUrl"
             placeholder="https://image.novelai.net"
             spellcheck="false"
           />
@@ -716,7 +894,7 @@ async function removeVibe(vibe: NaiVibe) {
             <input
               class="bbi-input"
               :type="showKey ? 'text' : 'password'"
-              v-model="settings.nai.key"
+              v-model="connKey"
               placeholder="nai-..."
               spellcheck="false"
             />
@@ -1393,6 +1571,17 @@ async function removeVibe(vibe: NaiVibe) {
       @confirm="confirmRemoveArtist"
     >
       确定删除画师串「{{ artist?.name || '未命名画师串' }}」？删除后无法恢复。
+    </ConfirmDialog>
+
+    <ConfirmDialog
+      v-model:open="connDeleteOpen"
+      title="删除连接配置"
+      confirm-text="删除"
+      confirm-icon="trash"
+      tone="danger"
+      @confirm="confirmRemoveConn"
+    >
+      确定删除配置「{{ conn?.name || '未命名配置' }}」？地址和密钥会保留在下方输入框,只是不再存档、改名后无法找回。
     </ConfirmDialog>
 
     <!-- ===== 质量词 / 负面词编辑弹窗(与设置页自定义提示词同款) ===== -->
