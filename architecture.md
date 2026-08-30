@@ -509,9 +509,12 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
     在全局库共享存储的 blocked 键)与本聊天层(charChatBlockedTags,随聊天基线落
     chatMetadata 的 blocked 键),blockedTagSet 取**并集**后统一生效——全局条目配的屏蔽
     处处生效,本聊天条目配的只管本聊天,同名不同卡不串。语义:**字段值本体保留**,只在
-    两个消费端把命中片段剥掉——①库文本 formatEntryForPrompt(AI 看不到就不会照抄,
-    这是主生效路径;字段被整段屏蔽时该字段整个不出现)②V5 角色提示词提交前
-    (Card.generate 走 filterCharTagByName)。匹配 = 逗号分段后 trim、大小写不敏感的
+    三个消费端把命中片段剥掉——①库文本 formatEntryForPrompt(AI 看不到就不会照抄,
+    这是主生效路径;字段被整段屏蔽时该字段整个不出现)②@占位符兜底替换(applyCharRefs
+    系,与库文本同口径)③V5 角色提示词提交前(Card.generate 走 filterCharTagByName)。
+    **非 V5 的主 tag 是混合串、无角色归属,不做生成时剥除**:旧正文里的片段不追溯,
+    该 tag 被重写(编辑应用/AI 变更)后随过滤后的库文本自然干净(已与需求方确认接受)。
+    匹配 = 逗号分段后 trim、大小写不敏感的
     **整段精确匹配**(black hair 不挡 black hairband)。两份名单 AI 的 changes 协议
     永远不写,只由用户在角色管理页编辑器里维护(编辑器按所在层只写自己那层;全局条目
     改名时名单跟名字走);删除条目不清屏蔽(重建同名角色屏蔽意图仍在)。

@@ -99,6 +99,14 @@ describe('applyCharRefs', () => {
     expect(unknown).toEqual([]);
   });
 
+  it('屏蔽名单同样作用于 @占位符兜底替换,按名字逐个取屏蔽集', () => {
+    const blockedOf = (name: string) =>
+      name === '小雪' ? new Set(['long black hair']) : new Set<string>();
+    // 小雪的头发片段被剥掉;张三没有屏蔽,同片段若出现也不受影响
+    const { text } = applyCharRefs('@张三 and @小雪, classroom', entries, 'tag', blockedOf);
+    expect(text).toBe('1boy and 1girl, red eyes, classroom');
+  });
+
   it('handles multiple placeholders and mixed content', () => {
     const { text } = applyCharRefs('@张三 and @小雪, classroom', entries);
     expect(text).toBe('1boy and 1girl, long black hair, red eyes, classroom');

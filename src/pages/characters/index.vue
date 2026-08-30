@@ -643,7 +643,7 @@ function sourceLabel(entry: CharTagEntry): string {
             </button>
           </div>
           <span class="bbi-field-hint">
-            生成时从该角色的 tag 里去掉这些片段(与字段值整段一致才命中);字段值本体保留,解除屏蔽即恢复。名单跨聊天生效,AI 永远不会改它。
+            新生成的 tag 会避开这些片段(与字段值整段一致才命中);已写进正文旧楼层的片段不追溯,该楼重写后生效。字段值本体保留,解除屏蔽即恢复。名单跨聊天生效,AI 永远不会改它。
           </span>
         </div>
         <div v-else class="bbi-modal-field">
@@ -673,7 +673,7 @@ function sourceLabel(entry: CharTagEntry): string {
             全局层已为该名屏蔽 {{ globalBlockedDraft.length }} 条({{ globalBlockedDraft.join('、') }}),跨聊天生效;要改它请编辑全局条目。
           </p>
           <span class="bbi-field-hint">
-            生成时从该角色的 tag 里去掉这些片段(与字段值整段一致才命中);字段值本体保留,解除屏蔽即恢复。只影响当前聊天,AI 永远不会改它。
+            新生成的 tag 会避开这些片段(与字段值整段一致才命中);已写进正文旧楼层的片段不追溯,该楼重写后生效。字段值本体保留,解除屏蔽即恢复。名单只影响当前聊天,AI 永远不会改它。
           </span>
         </div>
 
