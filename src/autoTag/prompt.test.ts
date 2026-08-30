@@ -425,8 +425,8 @@ describe('auto tag prompt', () => {
       text = (await buildAutoTagMessages(context(), 1, options, null))
         .map(m => m.content)
         .join('\n');
-      expect(text).toContain('落 JSON 时放在该角色 characters[].tag 的首位');
-      expect(text).toContain('每个同人角色的身份 tag 都在其 characters[].tag 的首位');
+      expect(text).toContain('身份 tag 必须写进档案');
+      expect(text).toContain('每个同人角色的身份 tag 都逐字照抄自档案 fandom 字段');
       expect(text).toContain('若正文明确为显式 NSFW 场景');
       expect(text).toContain('若本图是显式 NSFW 场景');
       expect(text).not.toContain('若本图协议含 negative 键');

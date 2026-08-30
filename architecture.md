@@ -392,7 +392,9 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   这套结构是 V4 时代的协议、V5 只是继承,而自然语言是 **4.5 才引入**的(原版 NAI4 只吃 tag)。
   曾按 `isNai5` 卡过,导致 4.5 明明支持却一条角色提示都发不出去,角色外貌全糊进 Base
   (`nai.test.ts` 有回归锁)。nl 一律写**英文**:生图模型读英文自然语言更可靠,中文还要多花
-  几倍 token(4.5 的 base + 全部 character prompts 合计约 512 T5 token)。
+  几倍 token(4.5 的 base + 全部 character prompts 合计约 512 T5 token)。**角色名是唯一例外**:
+  characters[].name / changes[].name 与 tag/nl 里出现的角色名必须逐字保持原文(中文名写
+  中文,不音译不意译)——插件按名字逐字匹配库条目做替换,名字对不上档案/正文锚定就断。
   **真正的 V5 专属差异只有三处**:`params_version: 4`、采样器限子集(列表随模型过滤,面板同步)、
   varietyBoost 无效(`skipCfgAboveSigma` 对 V5 返回 null,4.5 用 magic 58)。
   **Vibe 对 V5 同样可用**:`vibeModelKey` 已含 v5full/v5curated 键,V5 走与 v4 系相同的编码
@@ -575,8 +577,13 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
     永远不写,只由用户在角色管理页编辑器里维护(编辑器按所在层只写自己那层;全局条目
     改名时名单跟名字走);删除条目不清屏蔽(重建同名角色屏蔽意图仍在)。
   - 建档与后续维护都归主请求(changes 的 field="new"/字段更新),与选图同属一次推理;
-    外貌按字段(sex/hair/eyes/skin/body/extra/outfit)记录,拼接顺序即最终 tag;
-    旧整串以 raw 兼容。建档必须带 hair 与 eyes(二次元身份锚点),缺任一项该条丢弃。
+    外貌按字段(fandom/sex/hair/eyes/skin/body/extra/outfit)记录,拼接顺序即最终 tag,
+    fandom(同人身份 tag,character name (copyright name))拼在首位;旧整串以 raw 兼容。
+    建档必须带 hair 与 eyes(二次元身份锚点),缺任一项该条丢弃。
+    同人身份 tag 必须写进档案:判定为同人的角色,field:"new" 建档时写 fields.fandom;
+    已建档但缺 fandom 的用 field:"fandom" 的 changes 补档;画图时从档案照抄放首位。
+    原创角色不写 fandom。ComfyUI 侧不照抄 fandom(括号转义规则不同,身份 tag 仍按
+    comfy 规范现场判定并转义)。
     柏宝书的中文外貌随角色参考块发给主请求作依据;角色管理页另有「按柏宝书最新外貌
     生成」按钮(generateCharTags),那是用户主动点的一次性转换,不在自动流程里。
   - AI 引用走**直接照抄**(v0.1.2 起):提示词要求把库中字段值一字不改写进 tag/nl(库里写
@@ -586,6 +593,9 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
     无条件放大。库文本本就在同一上下文里,照抄可见文本比凭记忆复述可靠。
     applyCharRefs 系函数保留为兜底:模型偶发写出 @名字 时仍会被替换,不至于把字面量
     送进生图。同一角色的固定外貌一张图里只写一遍,再次提到用简短指代承接。
+    名字一致性写进提示词:首次建档的 name = 角色卡/世界书/柏宝书/正文里的原名(中文名写
+    中文);已建档角色的引用(含 nl 里的名字) = 档案名,逐字相同,禁止音译/变体——
+    插件所有锚定与替换都按名字精确匹配,名字不一致即断链。
     页面提供历史查看与逐条回滚(建档记录回滚 = 删条目)。
 
 ## 8. 贯穿全项目的约定

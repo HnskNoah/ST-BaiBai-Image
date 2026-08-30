@@ -70,6 +70,7 @@ const confirmRollbackOpen = ref(false);
 const pendingRollback = ref<{ name: string; record: CharTagChangeRecord } | null>(null);
 
 const FIELD_PLACEHOLDERS: Record<CharTagField, string> = {
+  fandom: '同人角色填: character name (copyright name), 不带转义括号; 原创留空',
   sex: '如 1girl / 1boy',
   hair: '如 long black hair',
   eyes: '如 red eyes',
