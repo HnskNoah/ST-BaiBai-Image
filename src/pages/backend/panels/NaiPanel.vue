@@ -107,9 +107,13 @@ const connOptions = computed(() => [
   ...settings.nai.connPresets.map(c => ({ value: c.id, label: c.name || '未命名配置' })),
 ]);
 
-/** 切换配置:把该条的地址/密钥拷进顶层生效值;选「手动填写」则保留当前值不动。 */
+/**
+ * 切换配置:把该条的地址/密钥拷进顶层生效值;选「手动填写」则保留当前值不动。
+ * get 走 activeNaiConn() 而非直读存的 id:悬空 id(运行中改坏库等时序)显示
+ * 「手动填写」而非空白下拉——与画师串的 `artist.value?.id ?? NO_ARTIST` 同口径。
+ */
 const activeConnId = computed<string>({
-  get: () => settings.nai.activeConnId,
+  get: () => conn.value?.id ?? NO_CONN,
   set: id => {
     settings.nai.activeConnId = id;
     const c = settings.nai.connPresets.find(x => x.id === id);

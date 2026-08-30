@@ -204,7 +204,9 @@ export interface NaiConnPreset {
   id: string;
   /** 显示名(下拉列表与切换用;允许重名,以 id 为键)。 */
   name: string;
-  /** 接口地址;空串 = 官方默认(naiEndpoint 对空串回落官方域名)。 */
+  /** 接口地址;留空**不会**回落官方——请求时 naiEndpoint 对空串直接抛
+   *  「请先填写 NAI 接口地址」(nai.ts 不猜默认值;「新建配置」产生的空条目就是这个
+   *  状态,填上域名即可;官方域名作为默认值只存在于顶层 nai.url 的出生值里)。 */
   url: string;
   /** API Key。 */
   key: string;
