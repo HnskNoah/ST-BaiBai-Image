@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   containsTagMarkup,
   ensureImageTagRegexRegistered,
+  hasImageTagTrace,
   IMAGE_TAG_HIDE_REGEX_ID,
   IMAGE_TAG_SLOT_REGEX_ID,
   imageTagHideScript,
@@ -82,6 +83,27 @@ describe('parseImageTags', () => {
   });
 });
 
+describe('hasImageTagTrace', () => {
+  it('sees complete tags', () => {
+    expect(hasImageTagTrace('场景\n<bbi_image>1girl</bbi_image>')).toBe(true);
+  });
+
+  it('sees a lone closing tag — the case that used to make the button a no-op', () => {
+    // 按钮层曾用 /<bbi_image\b/(只认开标签)→ 判定「没 tag」不弹确认、传 replace=false;
+    // runner 层认开也认闭 → 判定「有 tag」静默放弃。两侧同源后这种楼照样能重新生成。
+    expect(hasImageTagTrace('模型学着上下文写了半截 </bbi_image>')).toBe(true);
+  });
+
+  it('sees a lone opening tag and is case-insensitive', () => {
+    expect(hasImageTagTrace('<BBI_Image>')).toBe(true);
+  });
+
+  it('is false for tag-free text and for a lookalike prefix', () => {
+    expect(hasImageTagTrace('普通正文')).toBe(false);
+    expect(hasImageTagTrace('<bbi_images>')).toBe(false);
+  });
+});
+
 describe('stripImageTags', () => {
   it('removes plugin-injected tags together with their line break, restoring the original text', () => {
     expect(stripImageTags('第一行\n<bbi_image>1girl</bbi_image>\n第二行')).toBe('第一行\n第二行');
@@ -101,6 +123,24 @@ describe('stripImageTags', () => {
 
   it('leaves tag-free text untouched and preserves CRLF', () => {
     expect(stripImageTags('没有\r\n标签')).toBe('没有\r\n标签');
+  });
+
+  it('also clears half-written orphan tags left after the pairs are gone', () => {
+    // 留一个孤立的 <bbi_image> 会让非贪婪查找正则从它吃到下一个 </bbi_image>,
+    // 把中间的正文连同后面那条真 tag 一起吞掉 —— 残骸只删自己,真 tag 整段删。
+    expect(stripImageTags('第一行\n<bbi_image>\n第二行\n<bbi_image>1girl</bbi_image>\n第三行')).toBe(
+      '第一行\n第二行\n第三行',
+    );
+    expect(stripImageTags('半截 </bbi_image> 残骸')).toBe('半截  残骸');
+    expect(stripImageTags('第一行\n</bbi_image>\n第二行')).toBe('第一行\n第二行');
+  });
+
+  it('clears an empty tag pair (the old pair regex required non-empty content and left it behind)', () => {
+    expect(stripImageTags('第一行\n<bbi_image></bbi_image>\n第二行')).toBe('第一行\n第二行');
+  });
+
+  it('deletes the whole outer span when opening tags nest', () => {
+    expect(stripImageTags('前\n<bbi_image>a<bbi_image>b</bbi_image></bbi_image>\n后')).toBe('前\n后');
   });
 });
 

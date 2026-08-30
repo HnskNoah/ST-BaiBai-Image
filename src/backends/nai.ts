@@ -3,6 +3,11 @@ import { randomUuid } from '@/randomUuid';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { ComfyImageResult } from '@/backends/comfyui';
+import {
+  parseRetryAfter,
+  runNaiWithRetry,
+  type NaiRetryInfo,
+} from '@/backends/naiRateLimit';
 import { parseSize, pickSize, type Orientation } from '@/backends/size';
 import { clampVibeStrength, loadVibeData } from '@/backends/vibeStore';
 import type {
@@ -26,7 +31,16 @@ import type {
  */
 
 export class NaiError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(
+    message: string,
+    readonly status?: number,
+    /**
+     * 对方 Retry-After 换算出的毫秒数(没给则 null)。
+     * 由 naiRateLimit 的重试器当退避下界用 —— 这是「该等多久」最权威的一手信息,
+     * 扔掉它就只能凭指数退避瞎猜。
+     */
+    readonly retryAfterMs: number | null = null,
+  ) {
     super(message);
     this.name = 'NaiError';
   }
@@ -481,17 +495,23 @@ async function naiHttpError(resp: Response, label: string): Promise<NaiError> {
   } catch {
     /* 非 JSON 错误体直接用原文 */
   }
+  // Retry-After 一并带上:重试器拿它当退避下界(见 NaiError.retryAfterMs)
+  const retryAfterMs = parseRetryAfter(resp.headers?.get('Retry-After'));
   switch (resp.status) {
     case 400:
-      return new NaiError(`${label}:请求校验失败:${detail.slice(0, 300)}`, resp.status);
+      return new NaiError(`${label}:请求校验失败:${detail.slice(0, 300)}`, resp.status, retryAfterMs);
     case 401:
-      return new NaiError(`${label}:API Key 错误或无效`, resp.status);
+      return new NaiError(`${label}:API Key 错误或无效`, resp.status, retryAfterMs);
     case 402:
-      return new NaiError(`${label}:需要有效订阅(402)`, resp.status);
+      return new NaiError(`${label}:需要有效订阅(402)`, resp.status, retryAfterMs);
     case 429:
-      return new NaiError(`${label}:请求过于频繁(429),请稍候再试`, resp.status);
+      return new NaiError(
+        `${label}:请求过于频繁(429),已自动退避重试;仍失败请调低「同时出图数」或稍后再试`,
+        resp.status,
+        retryAfterMs,
+      );
     default:
-      return new NaiError(`${label} (${resp.status}):${detail.slice(0, 300)}`, resp.status);
+      return new NaiError(`${label} (${resp.status}):${detail.slice(0, 300)}`, resp.status, retryAfterMs);
   }
 }
 
@@ -537,11 +557,16 @@ export function unzipNaiImage(buffer: ArrayBuffer): { base64: string; filename: 
 
 /**
  * 生图。返回与 ComfyImageResult 同构的结果(dataURL 形式),楼层卡片/落盘层可直接复用。
+ *
+ * 429/5xx/网络级失败会自动退避重试(backends/naiRateLimit.ts);配置类错误
+ * (key 错、订阅过期、参数非法)立刻抛出,不做无谓重试。onRetry 用于把退避过程
+ * 报给卡片显示 —— 否则用户看着「生成中…」一动不动几十秒,只会以为卡死了再点一次。
  */
 export async function generateNaiImage(
   nai: NaiSettings,
   values: NaiGenerateValues,
   signal?: AbortSignal,
+  opts: { onRetry?: (info: NaiRetryInfo) => void } = {},
 ): Promise<ComfyImageResult> {
   if (!nai.key.trim()) throw new NaiError('请先填写 NAI API Key');
   if (!values.prompt.trim()) throw new NaiError('正向提示词不能为空');
@@ -580,25 +605,32 @@ export async function generateNaiImage(
     parameters: params,
     use_new_shared_trial: true,
   };
-  const resp = await fetch(naiEndpoint(nai.url, 'generate-image'), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${nai.key.trim()}`,
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!resp.ok) throw await naiHttpError(resp, 'NAI 生图失败');
+  // 只把「发请求 + 解包」包进重试:上面拼参数、读 vibe 数据的活是一次性的,
+  // 重跑它们既白费功夫,也会把 vibe 缺编码的 toastr 警告重复弹出来。
+  return runNaiWithRetry(
+    async () => {
+      const resp = await fetch(naiEndpoint(nai.url, 'generate-image'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${nai.key.trim()}`,
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (!resp.ok) throw await naiHttpError(resp, 'NAI 生图失败');
 
-  const { base64, filename } = unzipNaiImage(await resp.arrayBuffer());
-  const format = filename.split('.').pop()?.toLowerCase() || 'png';
-  return {
-    url: `data:image/${format === 'jpg' ? 'jpeg' : format};base64,${base64}`,
-    filename: `nai-${Date.now()}.${format}`,
-    format,
-    revoke() {},
-  };
+      const { base64, filename } = unzipNaiImage(await resp.arrayBuffer());
+      const format = filename.split('.').pop()?.toLowerCase() || 'png';
+      return {
+        url: `data:image/${format === 'jpg' ? 'jpeg' : format};base64,${base64}`,
+        filename: `nai-${Date.now()}.${format}`,
+        format,
+        revoke() {},
+      };
+    },
+    { signal, onRetry: opts.onRetry },
+  );
 }
 
 /* ============ vibe 编码与 .naiv4vibe 互通 ============ */
@@ -609,6 +641,9 @@ export const VIBE_ENCODING_KEY = 'b36a8472fe418d9f80d6bb1c54e3a6e62c62936aa7bf31
 /**
  * 调 /ai/encode-vibe 把参考图编码成 vibe 数据(base64)。
  * NAI4/4.5 的 vibe 必须经此编码;NAI3 不需要(直接发原图)。
+ *
+ * 与生图同样带退避重试:这也是一次真实的 NAI 请求,吃 429 时不该只是弹个红条了事。
+ * (并发槽由调用方取,见 pages/backend/panels/NaiPanel.vue —— 与卡片同一条纪律。)
  */
 export async function encodeVibeImage(
   nai: Pick<NaiSettings, 'url' | 'key'>,
@@ -616,23 +651,29 @@ export async function encodeVibeImage(
   model: string,
   infoExtracted = 1,
   signal?: AbortSignal,
+  opts: { onRetry?: (info: NaiRetryInfo) => void } = {},
 ): Promise<string> {
   if (!nai.key.trim()) throw new NaiError('请先填写 NAI API Key');
-  const resp = await fetch(naiEndpoint(nai.url, 'encode-vibe'), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${nai.key.trim()}`,
+  return runNaiWithRetry(
+    async () => {
+      const resp = await fetch(naiEndpoint(nai.url, 'encode-vibe'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${nai.key.trim()}`,
+        },
+        body: JSON.stringify({ image: imageBase64, information_extracted: infoExtracted, model }),
+        signal,
+      });
+      if (!resp.ok) throw await naiHttpError(resp, 'vibe 编码失败');
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+      if (bytes.length < 100) {
+        throw new NaiError(`vibe 编码数据异常(仅 ${bytes.length} 字节),接口可能返回了错误响应`);
+      }
+      return uint8ToBase64(bytes);
     },
-    body: JSON.stringify({ image: imageBase64, information_extracted: infoExtracted, model }),
-    signal,
-  });
-  if (!resp.ok) throw await naiHttpError(resp, 'vibe 编码失败');
-  const bytes = new Uint8Array(await resp.arrayBuffer());
-  if (bytes.length < 100) {
-    throw new NaiError(`vibe 编码数据异常(仅 ${bytes.length} 字节),接口可能返回了错误响应`);
-  }
-  return uint8ToBase64(bytes);
+    { signal, onRetry: opts.onRetry },
+  );
 }
 
 export interface ImportedVibe {

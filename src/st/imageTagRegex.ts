@@ -86,12 +86,58 @@ export function parseImageTags(mes: string): string[] {
 }
 
 /**
+ * 正文里是否有生图 tag 的痕迹——**含只剩半截的孤立开/闭标签**。
+ *
+ * **只有这一份**:楼层按钮判断「要不要先弹重新生成确认」与 runner 判断「要不要跳过
+ * 已有 tag 的楼」共用它。两侧各写一条正则的后果:按钮那份只认开标签,正文里只剩一个
+ * `</bbi_image>` 时按钮以为没 tag(不弹确认、传 replace=false),runner 那份认开也认闭、
+ * 于是以为有 tag 而静默放弃——用户看到的就是「按钮点了永远没反应」。
+ */
+export function hasImageTagTrace(mes: string): boolean {
+  return /<\/?bbi_image\b/i.test(mes ?? '');
+}
+
+/**
  * 剔除消息里的全部生图 tag（重新生成前用）。
  * 插件注入的 tag 独占一行（注入形态：行文本 + 换行 + tag），连同前行换行一起删，
  * 恰好还原注入前原文；手写内联 tag 前面没有换行，仅删 tag 本身。
+ *
+ * 为什么不能直接 `.replace(查找正则, '')`:那条正则是非贪婪的,正文里多出一个半截的
+ * `<bbi_image>`(AI 照着上下文模仿只写了一半、或 tag 被别的插件截断)时,它会从这个
+ * 残骸一路吃到下一个 `</bbi_image>`,把中间的正文连同后面那条真 tag 一起删掉。
+ * 故改为逐 token 扫:闭标签与**最近一个未配对的开标签**成对(整段删),扫完仍落单的
+ * 开/闭标签只删自己。残骸必须清干净——留着它,ST 显示侧那条同样非贪婪的锚点正则
+ * 会把正文吞进锚点(破图)。
  */
 export function stripImageTags(mes: string): string {
-  return mes.replace(/(?:\r\n|\n|\r)?<bbi_image>[\s\S]+?<\/bbi_image>/gi, '');
+  const source = String(mes ?? '');
+  // 就地新建:模块级带 /g 的正则实例 lastIndex 有状态,exec 循环不能共用(同 replaceImageTagAt)
+  const tokens = /<\/?bbi_image\b[^>]*>/gi;
+  const ranges: Array<{ start: number; end: number }> = [];
+  const openStack: Array<{ start: number; end: number }> = [];
+  for (let match = tokens.exec(source); match; match = tokens.exec(source)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (match[0][1] === '/') {
+      const open = openStack.pop();
+      ranges.push({ start: open ? open.start : start, end });
+    } else {
+      openStack.push({ start, end });
+    }
+  }
+  for (const open of openStack) ranges.push(open);
+  if (!ranges.length) return source;
+
+  ranges.sort((left, right) => left.start - right.start);
+  let out = '';
+  let cursor = 0;
+  for (const range of ranges) {
+    // `O O C C` 这种嵌套下外层区间已经把内层吃掉了,跳过
+    if (range.start < cursor) continue;
+    out += source.slice(cursor, range.start).replace(/(?:\r\n|\n|\r)$/, '');
+    cursor = range.end;
+  }
+  return out + source.slice(cursor);
 }
 
 /**

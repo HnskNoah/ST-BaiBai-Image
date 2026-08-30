@@ -27,8 +27,8 @@ import {
 import { injectImageTags, parseImagePlan, type ImagePlan } from '@/autoTag/protocol';
 import { clearAutoGenerateForFloor, markForAutoGenerate } from '@/floor/autoGenerate';
 import { applyMessageText, type ApplyMessageResult } from '@/st/messageEdit';
-import { getContext, type STMessage } from '@/st/context';
-import { stripImageTags } from '@/st/imageTagRegex';
+import { getContext, isAiStoryMessage, type STMessage } from '@/st/context';
+import { hasImageTagTrace, stripImageTags } from '@/st/imageTagRegex';
 import { getTagGenChannel, isCurrentChatExcluded, settings } from '@/state/settings';
 import { triageAssistantText } from '@/autoTag/triage';
 
@@ -59,6 +59,23 @@ function diagnostic(event: string, payload: unknown = null): void {
   console.info(`${DIAGNOSTIC_PREFIX} ${event} ${detail}`);
 }
 
+/**
+ * 放弃本次运行并交代原因:诊断日志照旧记全量,**手动路径必须同时给 toast**。
+ *
+ * 手动点击是显式意图,静默 return 在用户那里就等于「按钮点了没反应」——查不出、
+ * 也没法反馈。自动路径保持安静(每层楼都弹一次没人受得了),它的去向看诊断日志。
+ */
+function abort(
+  floor: number,
+  reason: string,
+  manual: boolean | undefined,
+  hint: string,
+  payload: Record<string, unknown> = {},
+): void {
+  diagnostic('runForFloor:skip', { floor, reason, ...payload });
+  if (manual) toastr.warning(hint, '柏宝绘');
+}
+
 function activeSwipeId(message: STMessage): number | null {
   if (!Array.isArray(message.swipes)) return null;
   return typeof message.swipe_id === 'number' ? message.swipe_id : 0;
@@ -71,11 +88,6 @@ function textHash(text: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
-}
-
-function isAiStoryMessage(message: STMessage | undefined): message is STMessage {
-  if (!message || message.is_user || !message.mes?.trim()) return false;
-  return !(message.is_system && typeof message.extra?.type === 'string');
 }
 
 interface RunOptions {
@@ -158,11 +170,11 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     autoTagEnabled: settings.autoTag.enabled,
   });
   if (!context) {
-    diagnostic('runForFloor:skip', { floor, reason: 'missing-context' });
+    abort(floor, 'missing-context', opts.manual, 'SillyTavern 还没就绪，请稍后重试');
     return;
   }
   if (!settings.enabled) {
-    diagnostic('runForFloor:skip', { floor, reason: 'extension-disabled' });
+    abort(floor, 'extension-disabled', opts.manual, '柏宝绘已停用，请先在插件设置里开启');
     return;
   }
   if (!opts.manual && !settings.autoTag.enabled) {
@@ -170,10 +182,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     return;
   }
   // 排除角色闸门(与柏宝书同名单):该角色名所在聊天的自动 tag 全流程停用,
-  // 手动按钮也在 actionButton 层隐藏,这里做兜底(手动触发时给反馈)。
+  // 手动按钮也在 actionButton 层撤掉,这里做兜底(手动触发时给反馈)。
   if (isCurrentChatExcluded()) {
-    diagnostic('runForFloor:skip', { floor, reason: 'chat-excluded' });
-    if (opts.manual) toastr.warning('该角色已被排除，不生成生图 tag', '柏宝绘');
+    abort(floor, 'chat-excluded', opts.manual, '该角色已被排除，不生成生图 tag');
     return;
   }
   const message = context.chat[floor];
@@ -185,47 +196,60 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         extraType: message.extra?.type ?? null,
       }
     : null;
+  // 与楼层按钮同一个谓词(st/context.ts):被 /hide 隐藏的普通楼算剧情楼,照样能跑
   if (!isAiStoryMessage(message)) {
-    diagnostic('runForFloor:skip', {
-      floor,
-      reason: 'not-ai-story-message',
+    abort(floor, 'not-ai-story-message', opts.manual, '这一楼不是可插图的剧情楼层（用户楼 / ST 系统楼）', {
       message: messageDiagnostic,
     });
     return;
   }
   const rawSource = message.mes;
-  if (/<\/?bbi_image\b/i.test(rawSource) && !opts.replace) {
-    diagnostic('runForFloor:skip', { floor, reason: 'already-has-image-tag' });
-    // 手动路径在按钮层已弹过「重新生成」确认,到这里仍不带 replace = 用户没确认或状态已变,静默放弃
+  // 探测口径与按钮层同源(imageTagRegex.hasImageTagTrace):两侧漂移过一次——
+  // 按钮只认开标签、这里认开也认闭,只剩 `</bbi_image>` 的楼就卡成「点了没反应」。
+  if (hasImageTagTrace(rawSource) && !opts.replace) {
+    abort(
+      floor,
+      'already-has-image-tag',
+      opts.manual,
+      '本楼已有生图 tag，没有确认重新生成，本次未改动',
+    );
     if (!opts.manual) console.debug(`[柏宝绘] 第 ${floor} 楼已经含有 bbi_image tag，跳过自动分析`);
     return;
   }
   // replace:分析和注入都基于剔除旧 tag 后的正文;写回时旧 tag 随之消失
   const source = opts.replace ? stripImageTags(rawSource) : rawSource;
   // 空回 / API 错误文本直接放弃:这样的楼层没有可分析的正文,发去副 API 只会把
-  // 「[API错误：无可用渠道]」当故事配图。判定与 ST-Quicker-Api 同源(autoTag/triage.ts);
-  // auto 路径静默跳过(与其它 skip 同口径),手动路径对 API 错误给一条说明。
+  // 「[API错误：无可用渠道]」当故事配图。判定与 ST-Quicker-Api 同源(autoTag/triage.ts)。
   const triage = triageAssistantText(source);
-  if (triage.kind !== 'ok') {
-    diagnostic('runForFloor:skip', {
+  if (triage.kind === 'empty') {
+    abort(floor, 'empty-source', opts.manual, '本楼正文是空的（或只剩生图 tag），没有可分析的内容');
+    return;
+  }
+  if (triage.kind === 'api_error') {
+    abort(
       floor,
-      reason: triage.kind === 'empty' ? 'empty-source' : 'api-error-text',
-      detail: triage.detail,
-    });
-    if (opts.manual && triage.kind === 'api_error') {
-      toastr.warning(`本楼正文是 API 错误信息，不生成生图 tag：${triage.detail ?? ''}`, '柏宝绘');
-    }
+      'api-error-text',
+      opts.manual,
+      `本楼正文是 API 错误信息，不生成生图 tag：${triage.detail ?? ''}`,
+      { detail: triage.detail },
+    );
     return;
   }
   const preparedTarget = prepareTargetText(source, settings.excludes.customStripTags);
   if (!preparedTarget.segments.length) {
-    diagnostic('runForFloor:skip', { floor, reason: 'no-target-segments', sourceLength: source.length });
+    abort(
+      floor,
+      'no-target-segments',
+      opts.manual,
+      '本楼正文清洗后没剩下叙事内容（可能被「剔除标签」名单或思维链/注释规则全删了），没有可分析的段落',
+      { sourceLength: source.length },
+    );
     return;
   }
 
   const chatId = context.getCurrentChatId?.() ?? '';
   if (!chatId) {
-    diagnostic('runForFloor:skip', { floor, reason: 'missing-chat-id' });
+    abort(floor, 'missing-chat-id', opts.manual, '当前没有打开的聊天，本次没有生成生图 tag');
     return;
   }
   const swipeId = activeSwipeId(message);
@@ -432,7 +456,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         const base = opts.replace ? stripImageTags(currentText) : currentText;
         if (!plan.images.length) return base;
         // 请求期间用户/别的插件已经贴过 tag:再注入就是重复,交回 build-failed 走放弃分支
-        if (!opts.replace && /<\/?bbi_image\b/i.test(currentText)) return null;
+        if (!opts.replace && hasImageTagTrace(currentText)) return null;
         const rebased = rebaseImagePositions(
           base,
           preparedTarget.segments,

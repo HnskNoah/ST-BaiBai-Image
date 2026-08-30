@@ -16,7 +16,7 @@ import {
   fetchWorldInfo,
 } from '@/autoTag/context';
 import type { BookMemoryContext } from '@/autoTag/bookMemory';
-import type { STContext } from '@/st/context';
+import { isAiStoryMessage, isStoryMessage, type STContext } from '@/st/context';
 import type { AutoTagSettings } from '@/state/settings';
 import {
   activeComfyPreset,
@@ -76,22 +76,17 @@ function backendThinkingPrompt(options: AutoTagSettings, naiV5On: boolean): stri
   return (options.prompts?.comfyThinking ?? '').trim() || DEFAULT_COMFY_THINKING;
 }
 
-function isContextMessage(message: STContext['chat'][number] | undefined): boolean {
-  if (!message || typeof message.mes !== 'string' || !message.mes.trim()) return false;
-  return !(message.is_system && typeof message.extra?.type === 'string');
-}
-
 function recentFloors(context: STContext, targetFloor: number, count: number): number[] {
   const aiFloors: number[] = [];
   for (let floor = 0; floor <= targetFloor; floor += 1) {
     const message = context.chat[floor];
-    if (isContextMessage(message) && !message.is_user) aiFloors.push(floor);
+    if (isAiStoryMessage(message)) aiFloors.push(floor);
   }
   const keep = Math.max(1, Math.floor(count) || 1);
   const start = aiFloors[Math.max(0, aiFloors.length - keep)] ?? targetFloor;
   const floors: number[] = [];
   for (let floor = start; floor <= targetFloor; floor += 1) {
-    if (isContextMessage(context.chat[floor])) floors.push(floor);
+    if (isStoryMessage(context.chat[floor])) floors.push(floor);
   }
   return floors;
 }

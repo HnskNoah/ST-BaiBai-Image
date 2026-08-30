@@ -21,6 +21,7 @@ import {
   isCurrentGen,
   reconcileGen,
   setGenPhase,
+  setGenRetry,
   setQueueAhead,
   slotKey,
 } from '@/floor/genState';
@@ -117,6 +118,8 @@ const phase = computed<Phase>(() => {
 
 const error = computed(() => record.value?.error ?? '');
 const queueAhead = computed(() => record.value?.queueAhead ?? null);
+/** 限流退避中(NAI 自动重试);非 null 时状态文案优先报它。 */
+const retryInfo = computed(() => record.value?.retry ?? null);
 
 const comfyActive = computed(() => settings.defaultBackend === 'comfyui');
 const naiActive = computed(() => settings.defaultBackend === 'nai');
@@ -163,6 +166,9 @@ const busy = computed(() => phase.value === 'generating' || phase.value === 'que
 const pageable = computed(() => props.history.length > 1 && !busy.value);
 
 const statusLabel = computed(() => {
+  // 退避优先:请求已经失败过、正在等重试,不能继续报「生成中」骗人
+  const retry = retryInfo.value;
+  if (retry) return `请求受限,稍后第 ${retry.attempt}/${retry.max} 次重试…`;
   if (phase.value === 'queued') return '排队中…';
   const ahead = queueAhead.value;
   if (phase.value === 'generating' && ahead !== null && ahead > 0) return `排队中(前面 ${ahead} 个)`;
@@ -242,6 +248,10 @@ async function generate(): Promise<void> {
           settings.nai,
           { prompt: job.prompt, nl: job.nl, characters: job.characters, seed, size: job.size },
           signal,
+          {
+            onRetry: info =>
+              setGenRetry(slot, token, { attempt: info.attempt, max: info.max }),
+          },
         )
       : await generateComfyImage(
           effectiveComfyConn(),
@@ -255,6 +265,8 @@ async function generate(): Promise<void> {
           signal,
           { onQueue: ahead => setQueueAhead(slot, token, ahead) },
         );
+    // 退避文案到此为止:图已拿到,落盘还要一会儿,不该继续显示「稍后重试」
+    setGenRetry(slot, token, null);
     // 图已经拿到手:此时若发现本任务已被取代(取消后重绘 / reconcile),不要落盘,
     // 否则会把旧提示词的结果写进 extra,并触发一次多余的重水合打断新任务。
     if (!isCurrentGen(slot, token)) {

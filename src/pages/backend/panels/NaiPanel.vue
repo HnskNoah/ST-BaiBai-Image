@@ -34,6 +34,7 @@ import {
   vibeMetaFromData,
 } from '@/backends/vibeStore';
 import NaiArtistManager from '@/pages/backend/panels/NaiArtistManager.vue';
+import { acquireNaiSlot } from '@/floor/genQueue';
 import { makeJpegThumbnail } from '@/st/imageFile';
 import { deleteUserImage } from '@/st/images';
 import {
@@ -498,6 +499,22 @@ async function makeThumbnail(dataUrl: string): Promise<string> {
   }
 }
 
+/**
+ * 取闸门槽位跑一次 vibe 编码。
+ *
+ * 编码是一次真实的 NAI 请求,所以与楼层卡片共用同一个闸门(floor/genQueue.ts):
+ * 否则「一边出图一边编码」在账号上就是两条并发,且完全绕过 429 冷却。
+ * 代价是出图在跑时点编码会先等出图完 —— 这是对的,按钮那边有 vibeEncoding 转圈提示。
+ */
+async function encodeVibeGated(imageBase64: string): Promise<string> {
+  const release = await acquireNaiSlot();
+  try {
+    return await encodeVibeImage(settings.nai, imageBase64, settings.nai.model);
+  } finally {
+    release();
+  }
+}
+
 /** 上传参考图 → 调 /ai/encode-vibe 编码(按当前模型)→ 入库。 */
 async function onVibeFileChange(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -513,7 +530,7 @@ async function onVibeFileChange(event: Event) {
       reader.readAsDataURL(file);
     });
     const imageBase64 = dataUrl.split(',')[1] ?? '';
-    const encoding = await encodeVibeImage(settings.nai, imageBase64, settings.nai.model);
+    const encoding = await encodeVibeGated(imageBase64);
     const thumbnail = await makeThumbnail(dataUrl);
     const id = `vibe_${Date.now()}_${++vibeSeq}`;
     const data = {
@@ -548,7 +565,7 @@ async function reencodeVibe(vibe: NaiVibe) {
   try {
     const data = await loadVibeData(vibe);
     if (!data.image) throw new Error('该 Vibe 没有参考原图');
-    const encoding = await encodeVibeImage(settings.nai, data.image, settings.nai.model);
+    const encoding = await encodeVibeGated(data.image);
     data.encodings[currentVibeKey.value] = { encoding, infoExtracted: 1 };
     const paths = await saveVibeFiles(data, vibe, vibe.id);
     vibe.dataPath = paths.dataPath;
@@ -1213,6 +1230,7 @@ async function removeVibe(vibe: NaiVibe) {
         </div>
         <p class="bbi-field-hint">
           NAI 服务端不排队,并发高容易被限流(429),建议保持 1;超出的请求自动排队等待。
+          被限流时会自动退避重试(最多 3 次),并让所有排队任务一起冷却,不会连着撞上去。
         </p>
       </Collapsible>
 

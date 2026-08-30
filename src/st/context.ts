@@ -16,6 +16,30 @@ export interface STMessage {
   extra?: Record<string, unknown>;
 }
 
+/**
+ * 是不是一条「剧情消息」——即 ST 的真·系统消息之外的一切,**含被 /hide 隐藏的普通楼**。
+ *
+ * 判据只看 extra.type:ST 只给 narrator/comment/sys 这类真系统消息盖这个戳
+ * (system-messages.js、slash-commands.js 的 /role system),而 /hide 只翻 is_system、
+ * 不碰 extra(chats.js hideChatMessageRange)。所以隐藏的普通楼在这里是 true——
+ * 隐藏的语义是「不进提示词」,不是「不是剧情」,ST 自己也这么认:messageFormatting
+ * 对隐藏楼有一句 `// Let hidden messages have markdown`,强行把 isSystem 置回 false,
+ * 好让它照常吃 markdown 与正则(我们的锚点正则也是靠这条才在隐藏楼生效)。
+ *
+ * **只有这一份**:楼层按钮的显隐、自动 tag 的目标闸门、历史上下文的取舍共用它。
+ * 各写一份的后果是活生生的 bug——旧版 actionButton 直接读 DOM 的 is_system 属性,
+ * 隐藏楼一律不给按钮,而 runner 其实放行,用户看到的就是「有的楼没有按钮」。
+ */
+export function isStoryMessage(message: STMessage | undefined): message is STMessage {
+  if (!message || typeof message.mes !== 'string' || !message.mes.trim()) return false;
+  return !(message.is_system && typeof message.extra?.type === 'string');
+}
+
+/** 剧情消息里的 AI 楼(用户楼不算)。楼层按钮与自动 tag 的目标楼判据。 */
+export function isAiStoryMessage(message: STMessage | undefined): message is STMessage {
+  return isStoryMessage(message) && !message.is_user;
+}
+
 export interface STEventSource {
   on(event: string, handler: (...args: any[]) => void): void;
   off?(event: string, handler: (...args: any[]) => void): void;
