@@ -1,10 +1,21 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import {
+  NAI_MIN_INTERVAL_MS,
+  noteNaiRateLimited,
+  setNaiMinInterval,
+} from '@/backends/naiRateLimit';
 import { acquireNaiSlot, naiSlotBusy, resetNaiGate, setNaiConcurrency } from '@/floor/genQueue';
 
 describe('NAI 并发闸门', () => {
   beforeEach(() => {
     resetNaiGate();
+    // 本组只验并发,把节奏关掉;节奏另有一组(见下)。
+    setNaiMinInterval(0);
+  });
+
+  afterEach(() => {
+    setNaiMinInterval(NAI_MIN_INTERVAL_MS);
   });
 
   it('默认上限 1:第二个请求要等第一个 release', async () => {
@@ -93,5 +104,68 @@ describe('NAI 并发闸门', () => {
     const a = await acquireNaiSlot();
     expect(naiSlotBusy()).toBe(true);
     a();
+  });
+});
+
+describe('NAI 全局节奏(闸门侧)', () => {
+  /** 用小间隔跑真实时钟:比假时钟更能验到「持槽等待」的真实次序。 */
+  const INTERVAL = 40;
+
+  beforeEach(() => {
+    resetNaiGate();
+    setNaiMinInterval(INTERVAL);
+  });
+
+  afterEach(() => {
+    setNaiMinInterval(NAI_MIN_INTERVAL_MS);
+    resetNaiGate();
+  });
+
+  it('第一个请求不等待', async () => {
+    const started = Date.now();
+    const release = await acquireNaiSlot();
+    expect(Date.now() - started).toBeLessThan(INTERVAL);
+    release();
+  });
+
+  it('相邻两个请求之间至少隔一个最小间隔', async () => {
+    const first = await acquireNaiSlot();
+    first();
+    const started = Date.now();
+    const second = await acquireNaiSlot();
+    // 时钟精度留 5ms 余量
+    expect(Date.now() - started).toBeGreaterThanOrEqual(INTERVAL - 5);
+    second();
+  });
+
+  it('节奏等待持槽进行:上限 2 时第二个也得排在第一个之后,不会同时放行', async () => {
+    setNaiConcurrency(2);
+    const started = Date.now();
+    const [a, b] = await Promise.all([acquireNaiSlot(), acquireNaiSlot()]);
+    // 两个都在上限内,但第二个仍要等完间隔——否则「并发 2」等于「同时发 2 个」
+    expect(Date.now() - started).toBeGreaterThanOrEqual(INTERVAL - 5);
+    a();
+    b();
+  });
+
+  it('429 冷却会拦住新任务取槽', async () => {
+    noteNaiRateLimited(120);
+    const started = Date.now();
+    const release = await acquireNaiSlot();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(115);
+    release();
+  });
+
+  it('节奏等待期间被取消:抛错且把槽还回去(不泄漏)', async () => {
+    noteNaiRateLimited(5000);
+    const controller = new AbortController();
+    const pending = acquireNaiSlot(controller.signal);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    // 此刻已持槽、正在等冷却
+    expect(naiSlotBusy()).toBe(true);
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    // 槽已归还:否则并发永久少一格
+    expect(naiSlotBusy()).toBe(false);
   });
 });

@@ -26,6 +26,12 @@ export interface GenRecord {
    */
   queueAhead: number | null;
   /**
+   * 限流退避进度:非 null 表示请求失败了、正在等着重试(见 backends/naiRateLimit.ts)。
+   * 必须让用户看见 —— 否则卡片会挂着一动不动的「生成中…」几十秒,
+   * 用户只会以为卡死了,再点一次,那就白白多压一个请求上去。
+   */
+  retry: { attempt: number; max: number } | null;
+  /**
    * 发起时的 promptHash。重水合后卡片用它确认「在途任务属于当前提示词」——
    * 用户中途改了 tag,key 不变但 hash 变,旧任务的结果已无意义(见 reconcile)。
    */
@@ -75,7 +81,7 @@ export function beginGen(key: string, hash: string, phase: GenPhase = 'generatin
   const controller = new AbortController();
   controllers.set(key, controller);
   const token = nextToken++;
-  records.set(key, { phase, error: '', queueAhead: null, hash, token });
+  records.set(key, { phase, error: '', queueAhead: null, retry: null, hash, token });
   return { signal: controller.signal, token };
 }
 
@@ -102,6 +108,16 @@ export function setQueueAhead(key: string, token: number, ahead: number | null):
   if (record) record.queueAhead = ahead;
 }
 
+/** 更新限流退避进度(NAI 重试期间上报;传 null 表示已不在退避中)。 */
+export function setGenRetry(
+  key: string,
+  token: number,
+  retry: { attempt: number; max: number } | null,
+): void {
+  const record = owned(key, token);
+  if (record) record.retry = retry;
+}
+
 /** 生成成功/放弃:清运行态,卡片回落到派生态(ready/stale/pending)。 */
 export function clearGen(key: string, token?: number): void {
   // 不带 token 表示无条件清(取消/全量重建);带 token 时只有本任务仍在位才清
@@ -118,6 +134,8 @@ export function failGen(key: string, token: number, message: string): void {
   record.phase = 'error';
   record.error = message;
   record.queueAhead = null;
+  // 退避已经结束(重试次数用尽才走到这儿),别让红字上面还挂着「稍后重试」
+  record.retry = null;
 }
 
 /** 用户取消:中止在途请求并清运行态。无在途任务时是安全空操作。 */
