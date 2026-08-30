@@ -44,8 +44,15 @@ describe('负面提示词并框迁移', () => {
   });
 
   it('折进去时用的是该配置自己的模型,不是默认模型', async () => {
-    const settings = await hydrateWithNai({ model: 'nai-diffusion-3', negativePrompt: 'bad hands' });
-    expect(settings.nai.undesiredContent).toBe(`bad hands, ${naiDefaultUndesired('nai-diffusion-3')}`);
+    // 与默认模型(5-full)不同的另一个在列模型:已下线的旧模型会被白名单改写成默认,
+    // 那样就测不出「用的是谁的模型」了。
+    const settings = await hydrateWithNai({
+      model: 'nai-diffusion-4-5-curated',
+      negativePrompt: 'bad hands',
+    });
+    expect(settings.nai.undesiredContent).toBe(
+      `bad hands, ${naiDefaultUndesired('nai-diffusion-4-5-curated')}`,
+    );
   });
 
   it('已有 undesiredContent 时不动它(迁移只跑一次,不会重复追加)', async () => {

@@ -11,8 +11,6 @@ import {
   DEFAULT_COMFY_SPEC,
   DEFAULT_COMFY_THINKING,
   DEFAULT_JAILBREAK_PROMPT,
-  DEFAULT_NAI_SPEC,
-  DEFAULT_NAI_THINKING,
   DEFAULT_NAI_V5_SPEC,
   DEFAULT_NAI_V5_THINKING,
   DEFAULT_PREFILL_PROMPT,
@@ -120,6 +118,10 @@ interface TagPromptMeta {
 // 规范与思维链按后端成对排列:两者必须配对使用(思维链槽位要填的字段,
 // 得在同后端规范里有判据和词表),列在一起是为了改一个时能看见另一个。
 // 不按当前后端过滤——过滤会让「现在用的是哪份」变成隐式状态,反而更难排查。
+//
+// ⚠ NAI 只列一对,存的是 naiV5Spec / naiV5Thinking(键名带 V5 是历史包袱,见 settings.ts)。
+// 4.5 以下那套单串 tag 的 naiSpec / naiThinking 已随模型列表收窄一起下线,不再列出:
+// 可选模型只剩 4.5/V5,那两份永远走不到,列出来只会让人以为还有第二种口径要维护。
 const TAG_PROMPT_METAS: TagPromptMeta[] = [
   {
     key: 'jailbreak',
@@ -129,30 +131,16 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
     macros: [],
   },
   {
-    key: 'naiSpec',
-    label: 'NAI 规范',
-    hint: '默认后端为 NAI、且模型是 V5 以下时拼进自动 tag 请求，约束 tag 的书写规范。留空用内置默认。',
-    builtin: DEFAULT_NAI_SPEC,
-    macros: [],
-  },
-  {
-    key: 'naiThinking',
-    label: 'NAI 思维链',
-    hint: '默认后端为 NAI、且模型是 V5 以下时使用的输出前思考清单，作为 system 压在任务消息之后（解析时会自动剥掉思考块）。与「NAI 规范」配套。留空用内置默认。',
-    builtin: DEFAULT_NAI_THINKING,
-    macros: [],
-  },
-  {
     key: 'naiV5Spec',
-    label: 'NAI V5 \u89c4\u8303',
-    hint: 'Used by NAI V5 to define Base Prompt, Character Prompts, and Chinese natural language. Empty uses the built-in default.',
+    label: 'NAI \u89c4\u8303',
+    hint: '\u9ed8\u8ba4\u540e\u7aef\u4e3a NAI \u65f6\u62fc\u8fdb\u81ea\u52a8 tag \u8bf7\u6c42\uff0c\u5b9a\u4e49 Base Prompt\u3001\u539f\u751f Character Prompts \u4e0e\u82f1\u6587\u81ea\u7136\u8bed\u8a00\uff08nl \u4e00\u5f8b\u5199\u82f1\u6587\uff09\u30024.5 \u4e0e V5 \u5171\u7528\u8fd9\u4e00\u4efd\uff1achar_captions \u672c\u5c31\u662f v4 \u65f6\u4ee3\u7684\u534f\u8bae\uff0c\u4e24\u4ee3\u5199\u6cd5\u53e3\u5f84\u76f8\u540c\u3002\u7559\u7a7a\u7528\u5185\u7f6e\u9ed8\u8ba4\u3002',
     builtin: DEFAULT_NAI_V5_SPEC,
     macros: [],
   },
   {
     key: 'naiV5Thinking',
-    label: 'NAI V5 思维链',
-    hint: '默认后端为 NAI、且模型是 V5 时使用的输出前思考清单。槽位块是「Base 块 + 每角色一块」，对应 V5 的 characters[] 协议，与另两份的单串形态不通用。留空用内置默认。',
+    label: 'NAI 思维链',
+    hint: '默认后端为 NAI 时使用的输出前思考清单，作为 system 压在任务消息之后（解析时会自动剥掉思考块）。槽位块是「Base 块 + 每角色一块」，对应 characters[] 协议，与 ComfyUI 那份的单串形态不通用。与「NAI 规范」配套。留空用内置默认。',
     builtin: DEFAULT_NAI_V5_THINKING,
     macros: [],
   },

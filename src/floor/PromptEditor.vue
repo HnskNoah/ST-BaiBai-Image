@@ -258,7 +258,7 @@ onBeforeUnmount(() => {
 
       <div class="bbi-modal-field">
         <span class="bbi-modal-label">
-          角色提示词(NAI V5 多角色;其它模型会并进画面 tag)
+          角色提示词(多角色;仅 NAI 后端发送)
         </span>
         <div v-for="(character, index) in characters" :key="index" class="bbi-char-row">
           <input

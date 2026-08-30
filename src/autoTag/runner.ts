@@ -1,5 +1,5 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
-import { isNai5 } from '@/backends/nai';
+import { naiSupportsCharacterPrompts } from '@/backends/nai';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
   applyPositionedCharRefs,
@@ -324,10 +324,10 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           );
           if (
             settings.defaultBackend === 'nai' &&
-            isNai5(settings.nai.model) &&
+            naiSupportsCharacterPrompts(settings.nai.model) &&
             candidate.changes.some(change => change.field === 'new' && !change.nl?.trim())
           ) {
-            throw new Error('NAI V5 建档必须附带 nl 外貌描述');
+            throw new Error('NAI 4.5/V5 建档必须附带 nl 外貌描述');
           }
           parsed.plan = candidate;
         };
