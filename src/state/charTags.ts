@@ -94,12 +94,97 @@ const HISTORY_CAP = 50;
 interface CharTagStore {
   version: 3;
   entries: CharTagEntry[];
+  /** 按角色名的本聊天层屏蔽名单(可选键:旧存储无此键 → 空表,零迁移)。 */
+  blocked?: Record<string, string[]>;
 }
 
 export const charTagLib = reactive<{ entries: CharTagEntry[] }>({ entries: [] });
 /** 本聊天基线(手动层)里的名字,响应式——UI 用它判断「本聊天覆盖全局」。随 recompute 同步。 */
 export const charTagBaseNames = reactive<Set<string>>(new Set());
 let baseEntries: CharTagEntry[] = [];
+
+/**
+ * 按角色名维护的「屏蔽 tag」,**分两层**:全局层(下面这块镜像,真身在
+ * globalCharTags 的共享存储里,跨聊天/跨设备)与本聊天层(charChatBlockedTags,
+ * 随本聊天基线落 chatMetadata)。两层在 blockedTagSet 取并集后统一生效——
+ * 「全局条目配的屏蔽处处生效,本聊天条目配的只管本聊天」,同名不同卡不串。
+ *
+ * 语义:**非破坏性排除**——条目字段值本体保留,只在「库文本(发给 AI)」与
+ * 「V5 角色提示词(发给生图后端)」两处把命中的片段去掉;解除屏蔽即恢复。
+ * 按名字而非条目挂存储:条目会在三层间漂移,挂条目上会被同名覆盖悄悄丢掉。
+ * AI 的 changes 协议永远不碰这两份名单。
+ */
+export const charGlobalBlockedTags = reactive<Record<string, string[]>>({});
+export const charChatBlockedTags = reactive<Record<string, string[]>>({});
+
+/** 某角色的屏蔽片段集(全局层 ∪ 本聊天层;trim 后大小写不敏感的整段精确匹配)。 */
+export function blockedTagSet(name: string): ReadonlySet<string> {
+  const key = name.trim();
+  const merged = [...(charGlobalBlockedTags[key] ?? []), ...(charChatBlockedTags[key] ?? [])];
+  return new Set(merged.map(fragment => fragment.trim().toLowerCase()).filter(Boolean));
+}
+
+/**
+ * 从逗号分隔的 tag 文本里滤掉屏蔽片段:逐段 trim、与屏蔽集做大小写不敏感的整段比对
+ * (「black hair」只挡「black hair」本身,不波及「black hairband」),保序回拼。
+ * 纯函数——屏蔽集由调用方传入(UI/盖章位用 blockedTagSet(name) 现取)。
+ */
+export function filterBlockedTagFragments(text: string, blocked: ReadonlySet<string>): string {
+  if (!text.trim() || !blocked.size) return text;
+  return text
+    .split(',')
+    .map(fragment => fragment.trim())
+    .filter(fragment => fragment && !blocked.has(fragment.toLowerCase()))
+    .join(', ');
+}
+
+/** 便捷封装:按角色名把一段 tag 文本过屏蔽(未维护屏蔽的角色原样返回)。 */
+export function filterCharTagByName(name: string, text: string): string {
+  return filterBlockedTagFragments(text, blockedTagSet(name));
+}
+
+/** 规整一条屏蔽名单:trim、去空、按小写形态去重(保留首个原始大小写)、剥尖括号。 */
+export function normalizeBlockedFragments(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const fragment = item.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+    if (!fragment) continue;
+    const key = fragment.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(fragment);
+  }
+  return out;
+}
+
+/** 规整整张屏蔽表(共享存储/聊天基线反序列化用):键 trim,空名单的键丢弃。 */
+export function normalizeBlockedMap(raw: unknown): Record<string, string[]> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, string[]> = {};
+  for (const [name, list] of Object.entries(raw as Record<string, unknown>)) {
+    const cleanName = name.trim();
+    if (!cleanName) continue;
+    const fragments = normalizeBlockedFragments(list);
+    if (fragments.length) out[cleanName] = fragments;
+  }
+  return out;
+}
+
+/**
+ * 用户维护本聊天层的屏蔽名单(整表覆盖;空表 = 清除该名的条目)。
+ * 只写本聊天基线存储,随 chatMetadata 落盘;全局层走 globalCharTags.setCharBlockedTags。
+ */
+export function setChatBlockedTags(name: string, fragments: string[]): void {
+  const clean = name.trim();
+  if (!clean) return;
+  const list = normalizeBlockedFragments(fragments);
+  if (list.length) charChatBlockedTags[clean] = list;
+  else delete charChatBlockedTags[clean];
+  persistBase();
+}
 
 /**
  * 全局角色库(跨聊天)的条目来源,由 globalCharTags.ts 启动时注入。
@@ -421,9 +506,13 @@ export function recomputeCharTags(): void {
 }
 
 export function hydrateCharTags(): void {
-  const raw = getContext()?.chatMetadata?.[META_KEY];
+  const raw = getContext()?.chatMetadata?.[META_KEY] as Partial<CharTagStore> | undefined;
   // v2 的整库快照无法可靠反推来源楼层,迁移时作为基线保留,避免丢用户现有数据。
   baseEntries = normalizeCharTagStore(raw);
+  // 本聊天层屏蔽名单随基线整体恢复(旧存储无 blocked 键 → 空表)
+  const blocked = normalizeBlockedMap(raw?.blocked);
+  for (const key of Object.keys(charChatBlockedTags)) delete charChatBlockedTags[key];
+  Object.assign(charChatBlockedTags, blocked);
   recomputeCharTags();
 }
 
@@ -433,6 +522,7 @@ function persistBase(): void {
   const store: CharTagStore = {
     version: 3,
     entries: baseEntries.map(cloneEntry),
+    blocked: JSON.parse(JSON.stringify(charChatBlockedTags)) as Record<string, string[]>,
   };
   context.chatMetadata[META_KEY] = store;
   context.saveMetadataDebounced?.();

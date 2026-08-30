@@ -39,6 +39,31 @@ describe('formatEntryForPrompt / buildLibraryText', () => {
     expect(formatEntryForPrompt(e)).toBe('- 旧角色: tag=1girl, red eyes');
   });
 
+  it('屏蔽片段不进库文本:命中的片段被剥掉,其余字段原样保留', () => {
+    const blocked = new Set(['twintails']);
+    const text = formatEntryForPrompt(
+      entry('小雪', { hair: 'long black hair, twintails', eyes: 'red eyes' }),
+      false,
+      blocked,
+    );
+    expect(text).toBe('- 小雪: 头发=long black hair, 眼睛=red eyes');
+  });
+
+  it('raw 回退路径同样过滤;buildLibraryText 按 blockedOf 逐名取屏蔽集', () => {
+    const e = entry('旧角色', {});
+    e.raw = '1girl, maid outfit';
+    expect(formatEntryForPrompt(e, false, new Set(['maid outfit']))).toBe('- 旧角色: tag=1girl');
+    const text = buildLibraryText(
+      [entry('小雪', { hair: 'twintails' }), entry('玩家', { sex: '1boy' })],
+      undefined,
+      name => (name === '小雪' ? new Set(['twintails']) : new Set()),
+    );
+    // 小雪唯一字段被整体屏蔽 → 无字段可列,回退「未记录字段」占位
+    expect(text).toContain('- 小雪: (未记录字段)');
+    expect(text).not.toContain('twintails');
+    expect(text).toContain('- 玩家: 性别=1boy');
+  });
+
   it('builds the library block with a header', () => {
     const text = buildLibraryText([entry('小雪', { sex: '1girl' })]);
     expect(text).toContain('【角色固定外貌库');

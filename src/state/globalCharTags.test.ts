@@ -197,4 +197,66 @@ describe('提升为全局 / 复制到本聊天', () => {
     expect(charTags.lockedCharTagNames().size).toBe(0);
     expect(charTags.findCharTag('玩家')?.fields.sex).toBe('1boy');
   });
+
+  it('屏蔽名单:整表覆盖并落盘,清空即删键,过滤按名字生效', () => {
+    globalTags.setCharBlockedTags('小雪', ['twintails', 'Maid Outfit', '', 'twintails']);
+    expect(charTags.charGlobalBlockedTags['小雪']).toEqual(['twintails', 'Maid Outfit']);
+    const stored = ctx.extensionSettings['baibai_image_char_global'] as {
+      blocked?: Record<string, string[]>;
+    };
+    expect(stored.blocked?.['小雪']).toEqual(['twintails', 'Maid Outfit']);
+    expect(charTags.filterCharTagByName('小雪', 'long black hair, maid outfit')).toBe('long black hair');
+    globalTags.setCharBlockedTags('小雪', []);
+    expect(charTags.charGlobalBlockedTags['小雪']).toBeUndefined();
+    expect(
+      (ctx.extensionSettings['baibai_image_char_global'] as { blocked?: Record<string, string[]> })
+        .blocked?.['小雪'],
+    ).toBeUndefined();
+  });
+
+  it('屏蔽名单随共享存储跨实例恢复(模拟刷新后重进模块)', async () => {
+    globalTags.setCharBlockedTags('小雪', ['twintails']);
+    vi.resetModules();
+    charTags = await import('@/state/charTags');
+    globalTags = await import('@/state/globalCharTags');
+    globalTags.initGlobalCharTags();
+    expect(charTags.charGlobalBlockedTags['小雪']).toEqual(['twintails']);
+    expect(charTags.filterCharTagByName('小雪', 'long black hair, Twintails')).toBe('long black hair');
+  });
+
+  it('全局条目改名时屏蔽名单跟名字走', () => {
+    globalTags.upsertGlobalCharTag(makeEntry('小雪', { hair: 'long black hair' }));
+    globalTags.setCharBlockedTags('小雪', ['twintails']);
+    globalTags.upsertGlobalCharTag(makeEntry('雪儿', { hair: 'long black hair' }), '小雪');
+    expect(charTags.charGlobalBlockedTags['雪儿']).toEqual(['twintails']);
+    expect(charTags.charGlobalBlockedTags['小雪']).toBeUndefined();
+  });
+
+  it('聊天层屏蔽名单:随基线落 chatMetadata,重进模块后恢复,并与全局层并集过滤', async () => {
+    globalTags.setCharBlockedTags('小雪', ['twintails']);
+    charTags.setChatBlockedTags('小雪', ['maid outfit']);
+    const stored = ctx.chatMetadata['baibai_image_char_tags'] as {
+      blocked?: Record<string, string[]>;
+    };
+    expect(stored.blocked?.['小雪']).toEqual(['maid outfit']);
+    // 两层并集生效:全局的 twintails 与聊天的 maid outfit 都被滤掉
+    expect(charTags.filterCharTagByName('小雪', 'long black hair, Twintails, maid outfit')).toBe(
+      'long black hair',
+    );
+    // 各层独立:玩家只有聊天层名单,不吃全局里小雪的片段
+    charTags.setChatBlockedTags('玩家', ['scar on cheek']);
+    expect(charTags.filterCharTagByName('玩家', '1boy, scar on cheek, twintails')).toBe(
+      '1boy, twintails',
+    );
+
+    // 模拟刷新:整模块重进,chatMetadata 与 extensionSettings 各自恢复
+    vi.resetModules();
+    charTags = await import('@/state/charTags');
+    globalTags = await import('@/state/globalCharTags');
+    globalTags.initGlobalCharTags();
+    charTags.hydrateCharTags();
+    expect(charTags.charChatBlockedTags['小雪']).toEqual(['maid outfit']);
+    expect(charTags.charGlobalBlockedTags['小雪']).toEqual(['twintails']);
+    expect(charTags.blockedTagSet('小雪').size).toBe(2);
+  });
 });

@@ -13,6 +13,7 @@ import { rebaseImagePositions, type RebaseReport } from '@/autoTag/rebase';
 import {
   BBI_CHAR_EXTRA_KEY,
   CHAR_TAG_FIELDS,
+  blockedTagSet,
   charTagsBeforeFloor,
   createCharTagNewOp,
   createCharTagSetOp,
@@ -285,8 +286,10 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const entriesBefore = charTagsBeforeFloor(floor);
     // 锁定名(全局库 ⊖ 本聊天基线):AI 的 changes 对这些名字一律无效,库文本里带 [locked] 标记
     const lockedNames = lockedCharTagNames();
+    // 屏蔽片段解析器:库文本与 @占位符替换共用同一份(见 charAnchors/formatEntryForPrompt)
+    const blockedOf = (name: string) => blockedTagSet(name);
     // 纯本地渲染:建档由主请求在同一次输出里完成(changes 的 field="new")
-    const anchors = resolveCharAnchors(entriesBefore, lockedNames);
+    const anchors = resolveCharAnchors(entriesBefore, lockedNames, blockedOf);
     const messages = await buildAutoTagMessages(
       context,
       floor,
@@ -387,6 +390,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         image.sourceLine,
         'tag',
         lockedNames,
+        blockedOf,
       );
       if (tagRes.text) image.tag = tagRes.text;
       if (image.nl) {
@@ -397,6 +401,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           image.sourceLine,
           'nl',
           lockedNames,
+          blockedOf,
         );
         image.nl = nlRes.text;
         for (const n of nlRes.unknown) unknownNames.add(n);
@@ -409,6 +414,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           image.sourceLine,
           'tag',
           lockedNames,
+          blockedOf,
         );
         character.tag = charTag.text;
         for (const n of charTag.unknown) unknownNames.add(n);
@@ -420,6 +426,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             image.sourceLine,
             'nl',
             lockedNames,
+            blockedOf,
           );
           character.nl = charNl.text;
           for (const n of charNl.unknown) unknownNames.add(n);

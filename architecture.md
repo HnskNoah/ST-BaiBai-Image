@@ -505,6 +505,16 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
     `charTagsBeforeFloor(floor)` 取楼层时刻快照;MESSAGE_DELETED/MESSAGE_SWIPED 后重算。
   - 手动编辑/删除 = 用户接管:detachFromExistingFloors 清掉该角色在旧楼层里的同名操作
     (压进手动基线),之后新楼层仍可继续被 AI 变更。
+  - **屏蔽栏(按角色名的非破坏性排除,分两层)**:全局层(charGlobalBlockedTags,真身
+    在全局库共享存储的 blocked 键)与本聊天层(charChatBlockedTags,随聊天基线落
+    chatMetadata 的 blocked 键),blockedTagSet 取**并集**后统一生效——全局条目配的屏蔽
+    处处生效,本聊天条目配的只管本聊天,同名不同卡不串。语义:**字段值本体保留**,只在
+    两个消费端把命中片段剥掉——①库文本 formatEntryForPrompt(AI 看不到就不会照抄,
+    这是主生效路径;字段被整段屏蔽时该字段整个不出现)②V5 角色提示词提交前
+    (Card.generate 走 filterCharTagByName)。匹配 = 逗号分段后 trim、大小写不敏感的
+    **整段精确匹配**(black hair 不挡 black hairband)。两份名单 AI 的 changes 协议
+    永远不写,只由用户在角色管理页编辑器里维护(编辑器按所在层只写自己那层;全局条目
+    改名时名单跟名字走);删除条目不清屏蔽(重建同名角色屏蔽意图仍在)。
   - 建档与后续维护都归主请求(changes 的 field="new"/字段更新),与选图同属一次推理;
     外貌按字段(sex/hair/eyes/skin/body/extra/outfit)记录,拼接顺序即最终 tag;
     旧整串以 raw 兼容。建档必须带 hair 与 eyes(二次元身份锚点),缺任一项该条丢弃。
@@ -548,6 +558,7 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
 | 柏宝书状态读取 | src/autoTag/bookMemory.ts |
 | 角色库 v3(基线+楼层增量/changes ops/@占位符兜底/历史回滚) | src/autoTag/charAnchors.ts + src/state/charTags.ts + src/autoTag/runner.ts |
+| 角色屏蔽栏(按名两层并集,库文本+角色提示词两处过滤) | src/state/charTags.ts 的 `charGlobalBlockedTags`/`charChatBlockedTags` + `filterBlockedTagFragments`(消费端 charAnchors.formatEntryForPrompt / Card.generate;UI 在角色管理页) |
 | Vibe 分组 / 搜索 / 启用集合判定 | src/backends/vibeGroups.ts(纯逻辑)+ NaiPanel.vue(交互) |
 | 副 API 请求(代理/SSE/超时/测试) | src/api/client.ts |
 | 思考强度(渠道弹窗 + custom 源请求体) | src/state/settings.ts 的 `ApiChannel.reasoningEffort` + api/client.ts 的 `buildRequestBody`(UI 在 settings/index.vue) |

@@ -1,7 +1,10 @@
 import { getContext } from '@/st/context';
 import { reactive } from 'vue';
 import {
+  charGlobalBlockedTags,
   findCharTag,
+  normalizeBlockedFragments,
+  normalizeBlockedMap,
   normalizeCharTagStore,
   recomputeCharTags,
   removeCharTag,
@@ -33,6 +36,8 @@ interface GlobalCharTagStore {
   schemaVersion: number;
   revision: number;
   entries: CharTagEntry[];
+  /** 按角色名维护的屏蔽 tag(可选键:旧存储无此键 → 空表,零迁移)。 */
+  blocked?: Record<string, string[]>;
 }
 
 export const globalCharTagLib = reactive<{ entries: CharTagEntry[] }>({ entries: [] });
@@ -40,8 +45,8 @@ let fingerprint = '';
 let revision = 0;
 let listenerBound = false;
 
-function fingerprintOf(entries: CharTagEntry[]): string {
-  return JSON.stringify(entries);
+function fingerprintOf(entries: CharTagEntry[], blocked: Record<string, string[]>): string {
+  return JSON.stringify([entries, blocked]);
 }
 
 /** 全局条目一律不带 history(没有可回滚的自动变更,手动编辑也不留痕,保持简单)。 */
@@ -60,6 +65,7 @@ function readStore(raw: unknown): GlobalCharTagStore | null {
         ? Math.max(0, Math.floor(store.revision))
         : 0,
     entries: normalizeGlobalEntries({ version: 3, entries: store.entries }),
+    blocked: normalizeBlockedMap(store.blocked),
   };
 }
 
@@ -71,9 +77,10 @@ function persist(): void {
     schemaVersion: SCHEMA_VERSION,
     revision,
     entries: JSON.parse(JSON.stringify(globalCharTagLib.entries)) as CharTagEntry[],
+    blocked: JSON.parse(JSON.stringify(charGlobalBlockedTags)) as Record<string, string[]>,
   };
   ctx.extensionSettings[GLOBAL_KEY] = store;
-  fingerprint = fingerprintOf(store.entries);
+  fingerprint = fingerprintOf(store.entries, store.blocked ?? {});
   ctx.saveSettingsDebounced?.();
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
     window.dispatchEvent(
@@ -85,10 +92,14 @@ function persist(): void {
 }
 
 function applyStore(store: GlobalCharTagStore): void {
-  const next = fingerprintOf(store.entries);
+  const blocked = store.blocked ?? {};
+  const next = fingerprintOf(store.entries, blocked);
   revision = Math.max(revision, store.revision);
   if (next === fingerprint) return;
   globalCharTagLib.entries = store.entries;
+  // 屏蔽表(全局层)整体替换(协议是全量快照,不是逐名补丁):镜像给消费方
+  for (const key of Object.keys(charGlobalBlockedTags)) delete charGlobalBlockedTags[key];
+  Object.assign(charGlobalBlockedTags, blocked);
   fingerprint = next;
   // 派生库(合并种子 + 锁定名)随全局库变化即时刷新
   recomputeCharTags();
@@ -132,6 +143,12 @@ export function upsertGlobalCharTag(entry: CharTagEntry, oldName?: string): bool
   if (oldName && oldName !== name) {
     const oldIndex = globalCharTagLib.entries.findIndex(candidate => candidate.name === oldName);
     if (oldIndex >= 0) globalCharTagLib.entries.splice(oldIndex, 1);
+    // 全局层的屏蔽名单跟名字走:改名不是换人(本聊天层的名单由聊天侧自行迁移)
+    const oldBlocked = charGlobalBlockedTags[oldName.trim()];
+    if (oldBlocked) {
+      charGlobalBlockedTags[name] = oldBlocked;
+      delete charGlobalBlockedTags[oldName.trim()];
+    }
   }
   const index = globalCharTagLib.entries.findIndex(candidate => candidate.name === name);
   if (index >= 0) globalCharTagLib.entries[index] = normalized;
@@ -139,6 +156,22 @@ export function upsertGlobalCharTag(entry: CharTagEntry, oldName?: string): bool
   persist();
   recomputeCharTags();
   return true;
+}
+
+/**
+ * 用户维护**全局层**的屏蔽名单(整表覆盖;空表 = 清除该名的条目)。
+ * 跨聊天/跨设备同步;本聊天层走 charTags.setChatBlockedTags(随聊天基线落盘)。
+ * **AI 的 changes 协议永远不写它**——这是用户手动维护的排除栏,与条目字段值分离:
+ * 字段值本体保留,屏蔽只在消费端(库文本/角色提示词)生效,解除即恢复。
+ * 删除角色条目不连带清屏蔽:重建同名角色时屏蔽意图仍在(要清就在编辑器里删光)。
+ */
+export function setCharBlockedTags(name: string, fragments: string[]): void {
+  const clean = name.trim();
+  if (!clean) return;
+  const list = normalizeBlockedFragments(fragments);
+  if (list.length) charGlobalBlockedTags[clean] = list;
+  else delete charGlobalBlockedTags[clean];
+  persist();
 }
 
 export function removeGlobalCharTag(name: string): boolean {

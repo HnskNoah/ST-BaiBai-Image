@@ -35,6 +35,7 @@ import {
   type BbiImageEntry,
 } from '@/floor/storage';
 import { activeComfyPreset, effectiveComfyConn, settings } from '@/state/settings';
+import { filterCharTagByName } from '@/state/charTags';
 import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
 import { copyText } from '@/st/clipboard';
 import { getContext } from '@/st/context';
@@ -211,7 +212,12 @@ async function generate(): Promise<void> {
     prompt: props.prompt,
     nl: props.nl,
     negative: props.negative,
-    characters: props.characters.map(character => ({ ...character })),
+    // 屏蔽栏:V5 角色提示词提交前按名字滤掉屏蔽片段(库文本层已在 runner 过滤);
+    // nl 是自然语言句子不做片段过滤
+    characters: props.characters.map(character => ({
+      ...character,
+      tag: filterCharTagByName(character.name, character.tag),
+    })),
     size: props.size,
   };
   // NAI 需要闸门排队 → 先显示「排队中」;ComfyUI 有服务端队列,直接进 generating

@@ -6,6 +6,7 @@ import {
   type CharTagAutoOp,
   type CharTagEntry,
   type CharTagField,
+  filterBlockedTagFragments,
 } from '@/state/charTags';
 import { getTagGenChannel } from '@/state/settings';
 
@@ -34,14 +35,28 @@ import { getTagGenChannel } from '@/state/settings';
  * 主流程顺序:先落 changes(本楼发生的变化当楼生效) → 再兜底替换残留的 @占位符。
  */
 
-/** 把库条目渲染成给 AI 看的一行(字段式明细 + 占位符提示);锁定条目带 [locked] 标记。 */
-export function formatEntryForPrompt(entry: CharTagEntry, locked = false): string {
+/**
+ * 把库条目渲染成给 AI 看的一行(字段式明细 + 占位符提示);锁定条目带 [locked] 标记。
+ * blocked 为该角色的屏蔽片段集:命中的片段**不进库文本**——AI 看不见就不会照抄进 tag,
+ * 这是屏蔽栏的主生效路径(字段值本体在库条目里保留,这里只是消费端过滤)。
+ */
+export function formatEntryForPrompt(
+  entry: CharTagEntry,
+  locked = false,
+  blocked?: ReadonlySet<string>,
+): string {
   const parts: string[] = [];
   for (const f of CHAR_TAG_FIELDS) {
     const v = entry.fields[f]?.trim();
-    if (v) parts.push(`${CHAR_TAG_FIELD_LABELS[f]}=${v}`);
+    if (!v) continue;
+    // 先过滤后判空:字段值被屏蔽剥空时,该字段整个不出现,而不是留下「字段名=」空壳
+    const filtered = blocked ? filterBlockedTagFragments(v, blocked) : v;
+    if (filtered) parts.push(`${CHAR_TAG_FIELD_LABELS[f]}=${filtered}`);
   }
-  if (!parts.length && entry.raw.trim()) parts.push(`tag=${entry.raw.trim()}`);
+  if (!parts.length && entry.raw.trim()) {
+    const rawFiltered = blocked ? filterBlockedTagFragments(entry.raw.trim(), blocked) : entry.raw.trim();
+    if (rawFiltered) parts.push(`tag=${rawFiltered}`);
+  }
   if (entry.nl.trim()) parts.push(`nl=${entry.nl.trim()}`);
   return `- ${entry.name}${locked ? ' [locked]' : ''}: ${parts.join(', ') || '(未记录字段)'}`;
 }
@@ -49,10 +64,17 @@ export function formatEntryForPrompt(entry: CharTagEntry, locked = false): strin
 /**
  * 库文本:发给 AI 的角色库部分。AI 依据它决定 changes,并在 tag/nl 中照抄对应字段;
  * 名单与字段值都由插件生成,AI 只读。锁定名(全局库)带 [locked] 标记并在头部声明不可变。
+ * blockedOf 按名字取各角色的屏蔽片段集(可省略 = 不过滤,测试与旧调用方用)。
  */
-export function buildLibraryText(entries: CharTagEntry[], lockedNames?: ReadonlySet<string>): string {
+export function buildLibraryText(
+  entries: CharTagEntry[],
+  lockedNames?: ReadonlySet<string>,
+  blockedOf?: (name: string) => ReadonlySet<string>,
+): string {
   if (!entries.length) return '';
-  const lines = entries.map(entry => formatEntryForPrompt(entry, lockedNames?.has(entry.name) ?? false));
+  const lines = entries.map(entry =>
+    formatEntryForPrompt(entry, lockedNames?.has(entry.name) ?? false, blockedOf?.(entry.name)),
+  );
   const lockedNote = lockedNames?.size
     ? '; entries marked [locked] are global and immutable: never report changes for them, always copy their fields as-is'
     : '';
@@ -180,8 +202,9 @@ export interface ResolvedCharAnchors {
 export function resolveCharAnchors(
   entriesBefore: CharTagEntry[],
   lockedNames?: ReadonlySet<string>,
+  blockedOf?: (name: string) => ReadonlySet<string>,
 ): ResolvedCharAnchors {
-  const text = buildLibraryText(entriesBefore, lockedNames);
+  const text = buildLibraryText(entriesBefore, lockedNames, blockedOf);
   return { text: text || null, entries: entriesBefore };
 }
 
@@ -190,14 +213,14 @@ export function resolveCharAnchors(
 /** @名 占位符;名字允许中文/字母/数字/点/下划线/间隔号(常见角色名形态)。 */
 const REF_PATTERN = /@([\p{L}\p{N}_.·]+)/gu;
 
-function joinEntryTag(entry: CharTagEntry): string {
+function joinEntryTag(entry: CharTagEntry, blocked?: ReadonlySet<string>): string {
   // 与 state/charTags.buildEntryTag 同构;重复这一小段以避开循环依赖
-  if (entry.raw.trim() && CHAR_TAG_FIELDS.every(f => !(entry.fields[f] ?? '').trim())) {
-    return entry.raw.trim();
-  }
-  return CHAR_TAG_FIELDS.map(f => (entry.fields[f] ?? '').trim())
-    .filter(Boolean)
-    .join(', ');
+  const text = entry.raw.trim() && CHAR_TAG_FIELDS.every(f => !(entry.fields[f] ?? '').trim())
+    ? entry.raw.trim()
+    : CHAR_TAG_FIELDS.map(f => (entry.fields[f] ?? '').trim())
+        .filter(Boolean)
+        .join(', ');
+  return blocked ? filterBlockedTagFragments(text, blocked) : text;
 }
 
 /** 压缩替换后残留的分隔符垃圾:连续逗号、行首行尾逗号。 */
@@ -219,6 +242,7 @@ export function applyCharRefs(
   text: string,
   entries: CharTagEntry[],
   mode: 'tag' | 'nl' = 'tag',
+  blockedOf?: (name: string) => ReadonlySet<string>,
 ): { text: string; unknown: string[] } {
   const byName = new Map(entries.map(e => [e.name, e]));
   const unknown: string[] = [];
@@ -227,7 +251,7 @@ export function applyCharRefs(
     const entry = byName.get(name);
     if (entry) {
       if (mode === 'nl' && entry.nl.trim()) return entry.nl.trim();
-      return joinEntryTag(entry);
+      return joinEntryTag(entry, blockedOf?.(entry.name));
     }
     if (!seen.has(name)) {
       seen.add(name);
@@ -235,7 +259,7 @@ export function applyCharRefs(
     }
     return '';
   });
-  return { text: tidySeparators(replaced), unknown };
+  return { text: tidySeparators(replaced), unknown: unknown };
 }
 
 export interface PositionedCharOp {
@@ -258,9 +282,10 @@ export function applyPositionedCharRefs(
   sourceLine: number,
   mode: 'tag' | 'nl' = 'tag',
   locked?: ReadonlySet<string>,
+  blockedOf?: (name: string) => ReadonlySet<string>,
 ): { text: string; unknown: string[] } {
   const activeOps = ops
     .filter(item => item.op.kind === 'new' || item.sourceLine <= sourceLine)
     .map(item => item.op);
-  return applyCharRefs(text, applyCharTagOps(entries, activeOps, -1, locked), mode);
+  return applyCharRefs(text, applyCharTagOps(entries, activeOps, -1, locked), mode, blockedOf);
 }

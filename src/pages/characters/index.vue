@@ -8,13 +8,18 @@ import { readBookMemory } from '@/autoTag/bookMemory';
 import {
   CHAR_TAG_FIELDS,
   CHAR_TAG_FIELD_LABELS,
+  blockedTagSet,
   buildEntryTag,
+  charChatBlockedTags,
+  charGlobalBlockedTags,
   charTagBaseNames,
   charTagLib,
   emptyCharFields,
+  filterCharTagByName,
   findCharTag,
   removeCharTag,
   rollbackCharTag,
+  setChatBlockedTags,
   upsertCharTag,
   type CharTagChangeRecord,
   type CharTagEntry,
@@ -25,6 +30,7 @@ import {
   globalCharTagLib,
   promoteCharTagToGlobal,
   removeGlobalCharTag,
+  setCharBlockedTags,
   upsertGlobalCharTag,
 } from '@/state/globalCharTags';
 import { getContext } from '@/st/context';
@@ -95,8 +101,48 @@ const draftIsRaw = computed(
 const previewTag = computed(() => {
   const d = draft.value;
   if (!d) return '';
-  return buildEntryTag({ fields: d.fields, raw: d.raw });
+  // 预览展示「实际会生效」的串:屏蔽片段已按名字滤掉(字段值本体不动)
+  return filterCharTagByName(d.name.trim(), buildEntryTag({ fields: d.fields, raw: d.raw }));
 });
+
+/* —— 屏蔽栏:按角色名的非破坏性排除,分两层——
+ * 全局层(跨聊天,真身在全局库共享存储)与本聊天层(随聊天基线落 chatMetadata),
+ * 过滤时两层取并集。草稿名单点「完成」才整表写回,取消弹窗不落任何改动。 —— */
+const globalBlockedDraft = ref<string[]>([]);
+const chatBlockedDraft = ref<string[]>([]);
+const globalBlockedInput = ref('');
+const chatBlockedInput = ref('');
+
+function loadBlockedDrafts(name: string): void {
+  const key = name.trim();
+  globalBlockedDraft.value = [...(charGlobalBlockedTags[key] ?? [])];
+  chatBlockedDraft.value = [...(charChatBlockedTags[key] ?? [])];
+  globalBlockedInput.value = '';
+  chatBlockedInput.value = '';
+}
+
+/** 输入框回车/按钮:支持逗号分隔多个;大小写不敏感去重,空段丢弃。 */
+function addBlocked(layer: 'global' | 'chat'): void {
+  const input = layer === 'global' ? globalBlockedInput : chatBlockedInput;
+  const draft = layer === 'global' ? globalBlockedDraft : chatBlockedDraft;
+  for (const raw of input.value.split(',')) {
+    const fragment = raw.trim();
+    if (!fragment) continue;
+    if (draft.value.some(existing => existing.toLowerCase() === fragment.toLowerCase())) continue;
+    draft.value.push(fragment);
+  }
+  input.value = '';
+}
+
+function removeBlocked(layer: 'global' | 'chat', index: number): void {
+  const draft = layer === 'global' ? globalBlockedDraft : chatBlockedDraft;
+  draft.value.splice(index, 1);
+}
+
+/** 卡片徽标:该名下屏蔽片段数(两层并集;0 不显示)。 */
+function blockedCount(name: string): number {
+  return blockedTagSet(name).size;
+}
 
 /** 正在编辑的本聊天条目的实时历史(回滚后随之刷新);全局条目不记历史。 */
 const editingHistory = computed<CharTagChangeRecord[]>(() => {
@@ -126,6 +172,7 @@ function openEntry(entry: CharTagEntry, scope: Scope) {
   };
   draftSource.value = entry.source;
   draftDesc.value = entry.desc;
+  loadBlockedDrafts(entry.name);
   historyOpen.value = false;
 }
 
@@ -136,6 +183,10 @@ function addEntry(scope: Scope = 'chat') {
   draft.value = { name: '', fields: emptyCharFields(), raw: '', nl: '' };
   draftSource.value = 'manual';
   draftDesc.value = '';
+  globalBlockedDraft.value = [];
+  chatBlockedDraft.value = [];
+  globalBlockedInput.value = '';
+  chatBlockedInput.value = '';
   historyOpen.value = false;
 }
 
@@ -210,7 +261,18 @@ function confirmEntry() {
     draftScope.value === 'global'
       ? upsertGlobalCharTag(entryData, editingName.value ?? undefined)
       : upsertCharTag(entryData, editingName.value ?? undefined, { recordChanges: true });
-  if (ok) closeEntry();
+  if (ok) {
+    // 屏蔽名单按编辑器所在层落盘(全局编辑器只写全局层,聊天编辑器只写聊天层);
+    // 改名时旧名键清掉、名单跟到新名(全局层的键迁移在 upsertGlobalCharTag 内已做)
+    if (draftScope.value === 'global') {
+      setCharBlockedTags(name, globalBlockedDraft.value);
+      if (editingName.value && editingName.value !== name) setCharBlockedTags(editingName.value, []);
+    } else {
+      setChatBlockedTags(name, chatBlockedDraft.value);
+      if (editingName.value && editingName.value !== name) setChatBlockedTags(editingName.value, []);
+    }
+    closeEntry();
+  }
 }
 
 /* —— 删除:二次确认 —— */
@@ -368,6 +430,13 @@ function sourceLabel(entry: CharTagEntry): string {
                   <span v-if="charTagBaseNames.has(entry.name)" class="bbi-char-pill is-override" title="本聊天有同名角色,当前聊天以本聊天的为准">
                     本聊天已覆盖
                   </span>
+                  <span
+                    v-if="blockedCount(entry.name)"
+                    class="bbi-char-pill is-blocked"
+                    :title="`屏蔽片段:${[...(charGlobalBlockedTags[entry.name] ?? []), ...(charChatBlockedTags[entry.name] ?? [])].join('、')}`"
+                  >
+                    屏蔽 {{ blockedCount(entry.name) }}
+                  </span>
                 </span>
               </span>
               <span v-if="chipsOf(entry).length" class="bbi-char-chips">
@@ -425,6 +494,13 @@ function sourceLabel(entry: CharTagEntry): string {
                   </span>
                   <span v-if="globalNameSet.has(entry.name)" class="bbi-char-pill is-override" title="与全局库同名,当前聊天以本条为准">
                     覆盖全局
+                  </span>
+                  <span
+                    v-if="blockedCount(entry.name)"
+                    class="bbi-char-pill is-blocked"
+                    :title="`屏蔽片段:${[...(charGlobalBlockedTags[entry.name] ?? []), ...(charChatBlockedTags[entry.name] ?? [])].join('、')}`"
+                  >
+                    屏蔽 {{ blockedCount(entry.name) }}
                   </span>
                   <span
                     v-if="entry.history.length"
@@ -540,6 +616,66 @@ function sourceLabel(entry: CharTagEntry): string {
             @input="markManual"
           />
         </label>
+
+        <!-- 屏蔽栏:非破坏性排除,分层维护——全局编辑器写全局层,聊天编辑器写本聊天层;
+             过滤时两层并集,故这里是本条目实际生效的全部屏蔽来源 -->
+        <div v-if="draftScope === 'global'" class="bbi-modal-field">
+          <span class="bbi-modal-label">屏蔽 tag(可选,跨所有聊天生效)</span>
+          <ul v-if="globalBlockedDraft.length" class="bbi-char-blocked-list">
+            <li v-for="(fragment, i) in globalBlockedDraft" :key="i" class="bbi-char-blocked-item">
+              <span class="bbi-char-blocked-frag">{{ fragment }}</span>
+              <button class="bbi-icon-mini" type="button" title="解除屏蔽" @click="removeBlocked('global', i)">
+                <Icon name="close" />
+              </button>
+            </li>
+          </ul>
+          <div class="bbi-char-blocked-row">
+            <input
+              v-model="globalBlockedInput"
+              class="bbi-input"
+              type="text"
+              placeholder="要屏蔽的片段,如 twintails(可逗号分隔多个)"
+              spellcheck="false"
+              @keydown.enter.prevent="addBlocked('global')"
+            />
+            <button class="bbi-btn bbi-btn-sm" type="button" @click="addBlocked('global')">
+              <Icon name="plus" /> 添加
+            </button>
+          </div>
+          <span class="bbi-field-hint">
+            生成时从该角色的 tag 里去掉这些片段(与字段值整段一致才命中);字段值本体保留,解除屏蔽即恢复。名单跨聊天生效,AI 永远不会改它。
+          </span>
+        </div>
+        <div v-else class="bbi-modal-field">
+          <span class="bbi-modal-label">屏蔽 tag(可选,仅本聊天生效)</span>
+          <ul v-if="chatBlockedDraft.length" class="bbi-char-blocked-list">
+            <li v-for="(fragment, i) in chatBlockedDraft" :key="i" class="bbi-char-blocked-item">
+              <span class="bbi-char-blocked-frag">{{ fragment }}</span>
+              <button class="bbi-icon-mini" type="button" title="解除屏蔽" @click="removeBlocked('chat', i)">
+                <Icon name="close" />
+              </button>
+            </li>
+          </ul>
+          <div class="bbi-char-blocked-row">
+            <input
+              v-model="chatBlockedInput"
+              class="bbi-input"
+              type="text"
+              placeholder="要屏蔽的片段,如 twintails(可逗号分隔多个)"
+              spellcheck="false"
+              @keydown.enter.prevent="addBlocked('chat')"
+            />
+            <button class="bbi-btn bbi-btn-sm" type="button" @click="addBlocked('chat')">
+              <Icon name="plus" /> 添加
+            </button>
+          </div>
+          <p v-if="globalBlockedDraft.length" class="bbi-field-hint">
+            全局层已为该名屏蔽 {{ globalBlockedDraft.length }} 条({{ globalBlockedDraft.join('、') }}),跨聊天生效;要改它请编辑全局条目。
+          </p>
+          <span class="bbi-field-hint">
+            生成时从该角色的 tag 里去掉这些片段(与字段值整段一致才命中);字段值本体保留,解除屏蔽即恢复。只影响当前聊天,AI 永远不会改它。
+          </span>
+        </div>
 
         <div class="bbi-char-preview">
           <span class="bbi-field-label">最终 tag 预览</span>
@@ -842,6 +978,46 @@ function sourceLabel(entry: CharTagEntry): string {
   color: var(--bbi-warning);
   background: var(--bbi-warning-soft);
   border-color: transparent;
+}
+.bbi-char-pill.is-blocked {
+  color: var(--bbi-danger);
+  background: var(--bbi-danger-soft);
+  border-color: transparent;
+}
+
+/* —— 编辑弹窗里的屏蔽栏:chips 名单 + 输入行 —— */
+.bbi-char-blocked-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.bbi-char-blocked-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--bbi-line);
+  border-radius: var(--bbi-radius-pill);
+  background: var(--bbi-danger-soft);
+  font-size: 12px;
+  color: var(--bbi-ink);
+}
+.bbi-char-blocked-item .bbi-icon-mini {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+}
+.bbi-char-blocked-row {
+  display: flex;
+  gap: 8px;
+}
+.bbi-char-blocked-row .bbi-input {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* —— 字段 chips:两行封顶,超出裁切 —— */

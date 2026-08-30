@@ -8,7 +8,9 @@ import {
   createCharTagSetOp,
   deriveCharTags,
   emptyCharFields,
+  filterBlockedTagFragments,
   mergeCharTagSeed,
+  normalizeBlockedFragments,
   normalizeCharTagStore,
   type CharTagAutoOp,
 } from '@/state/charTags';
@@ -236,5 +238,33 @@ describe('global library merge & lock', () => {
     const base = [globalEntry('玩家', { sex: '1boy', hair: 'short black hair' })];
     expect(deriveCharTags(base, chat, chat.length, new Set(['玩家']))[0].fields.hair).toBe('short black hair');
     expect(deriveCharTags(base, chat)[0].fields.hair).toBe('long red hair');
+  });
+});
+
+describe('屏蔽片段过滤', () => {
+  it('按整段精确匹配剔除(大小写不敏感),保序回拼', () => {
+    const blocked = new Set(['twintails']);
+    expect(filterBlockedTagFragments('long black hair, Twintails, ahoge', blocked)).toBe(
+      'long black hair, ahoge',
+    );
+  });
+
+  it('不波及包含关系:屏蔽 black hair 不挡 black hairband', () => {
+    expect(filterBlockedTagFragments('black hair, black hairband', new Set(['black hair']))).toBe(
+      'black hairband',
+    );
+  });
+
+  it('空文本与空屏蔽集原样返回', () => {
+    expect(filterBlockedTagFragments('1girl', new Set())).toBe('1girl');
+    expect(filterBlockedTagFragments('', new Set(['x']))).toBe('');
+  });
+
+  it('normalizeBlockedFragments:剥尖括号、折叠空白、去空、按小写形态去重', () => {
+    expect(normalizeBlockedFragments([' Twintails ', 'twintails', '', '<maid> outfit', 'x\ny', 42])).toEqual([
+      'Twintails',
+      'maid outfit',
+      'x y',
+    ]);
   });
 });
