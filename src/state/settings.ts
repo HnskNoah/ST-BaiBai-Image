@@ -416,6 +416,7 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
 - 若角色明确来自已有动漫、游戏、小说等作品，必须在人数/构图之后、普通外貌之前写模型可识别的英文 Danbooru 身份 tag，格式为 character name \\(copyright name\\)。角色名与作品名使用其通行英文 tag，不得直译中文、缩写作品名或只写角色名。
 - ComfyUI 会把未转义圆括号当作权重语法，所以身份 tag 的括号必须转义。实际提示词形态为 character name \\(copyright name\\)；由于最终输出是 JSON，tag 字符串中必须写成 "character name \\\\(copyright name\\\\)"，JSON 解析后才会保留单个反斜杠。
 - 原创角色不写身份 tag；无法从角色卡、世界书或正文可靠确定作品时不得猜测作品名，按原创角色处理。
+- 角色固定外貌库条目的 fandom 字段只作档案记录，画图时不照抄它；同人身份 tag 一律按本规范现场判定并转义。
 
 多人画面（两人及以上）额外规则：
 - 人数 tag 必须明确（2girls、1boy 1girl 等）；缺了模型会漏画或多画。
@@ -745,7 +746,8 @@ A. 事实与状态账本
 B. 角色清点与建档（具体建档字段与写法见任务协议，这里只做清点判断）
    - 通读目标正文，逐个列出实际在场且有名有姓的角色。不能只看最终入选图片里的人，也不能漏掉世界书、角色卡或柏宝书为其给出了设定的角色。
    - 每人写一行结论：命中的同名库条目，或本次 field:"new"。只有名字实际列在【角色固定外貌库】区块中的才算已建档——世界书、角色卡、柏宝书或正文里的详细设定只是建档来源，不代表已经在库，不得凭印象宣称已在库。库里没有、但属于正式角色（有设定或持续参与剧情）的，首次出场就建档，不论他是否入选本次图片；一次性无名路人不建。
-   - 同一行里顺带判定原创还是同人：只有角色卡、世界书、正文或通行角色名能可靠指向某个已有作品时才判为同人，证据不足按原创处理，不猜作品。判定为同人时同一行定出最终身份 tag 词：模型可识别的英文 Danbooru 角色名与作品名，格式 character name (copyright name)，不转义圆括号；落 JSON 时放在该角色 characters[].tag 的首位，不得放进 Base。
+   - 名字一律用原文：field:"new" 建档的 name 必须与角色卡/世界书/柏宝书/正文中该角色的名字逐字相同，中文名写中文（小雪，不写 Xiaoxue 也不意译）；引用已建档角色时，characters[].name 与 tag/nl 里出现的名字同样照抄档案里的原名字，不得音译、翻译或变体——插件按名字逐字匹配，名字对不上档案或正文，锚定就会断开。
+   - 同一行里顺带判定原创还是同人：只有角色卡、世界书、正文或通行角色名能可靠指向某个已有作品时才判为同人，证据不足按原创处理，不猜作品。判定为同人时同一行定出最终身份 tag 词：模型可识别的英文 Danbooru 角色名与作品名，格式 character name (copyright name)，不转义圆括号。身份 tag 必须写进档案：本次 field:"new" 建档的写进 fields.fandom；已建档但档案缺 fandom 的补一条 field:"fandom" 的 changes；档案已有 fandom 的直接照抄。画图时逐字放在该角色 characters[].tag 的首位，不得放进 Base。原创角色档案不写 fandom。
    - 缺发色、发型或瞳色时一次性补全：hair 必须同时带发色和长度/发型（long black hair 行，只写 black hair 这种裸颜色不行），eyes 必须带瞳色；建档在本楼全程有效，不要对同一角色给出两套外貌。
    - 对照角色库检查永久变化：染发、剪发、永久变身等写入 changes 并标出生效 P编号；假发、美瞳、湿发、光照变色等临时状态不写。即使 images 为空也不能跳过这一步。
 
@@ -799,11 +801,11 @@ V5 的一张图 = 一个 Base 块 + 每个在场角色各一块，与最终 JSON
 第三层｜落笔前自查（只核对，不预写答案）
 
 这一层只逐张核对下面几条，每点写一句结论即可。<thinking> 里禁止出现任何最终答案的草稿——不写完整 tag 串、不写完整 nl 句、更不要写出 JSON 对象或 "JSON:" 之类的标题。答案只在 </thinking> 之后出现一次，在思考里先写一遍等于把整份输出付两遍钱。核对完直接闭合 </thinking> 并输出 JSON：
-   - 每张图的 Base tag 逐槽核对过：人数、景别、场景、环境光、多人画面的核心互动，每一项都能在 tag 里找到对应的词，环境光不许漏（光源/时间/色调至少落一个具体词）；nl 与 tag 描述同一画面，且所有 nl（Base 与每个角色）一律用英文写——正文和上面的思考是中文也不例外，中文 nl 会被生图模型读得更差，还要多花几倍 token；每个角色块都变成了 characters[] 里的一项，name/tag/nl 都不为空。
+   - 每张图的 Base tag 逐槽核对过：人数、景别、场景、环境光、多人画面的核心互动，每一项都能在 tag 里找到对应的词，环境光不许漏（光源/时间/色调至少落一个具体词）；nl 与 tag 描述同一画面，且所有 nl（Base 与每个角色）一律用英文写——正文和上面的思考是中文也不例外，中文 nl 会被生图模型读得更差，还要多花几倍 token；角色名是唯一例外：每个角色的 name 与 nl 里出现的名字都逐字对应档案/正文原名（中文名写中文），没有任何音译或变体；每个角色块都变成了 characters[] 里的一项，name/tag/nl 都不为空。
    - 每个剧情 tag 都能追溯到正文/设定；地形、地面、道路、天气和环境状态 tag 没依据就删除。
    - Base 的 tag 和 nl 里都没有混进任何单个角色的外貌、服装或个人动作；每个角色的服装和个人动作都在他自己的 characters[].tag 里实际出现了，没有谁的服装或动作只写在槽位或 nl 里却没进 tag，也没有 school uniform、pantyhose 这类被简写掉的笼统词；每个角色都各有一个表情词和一个视线词，没有谁只有动作没有表情。
    - 这一层只核对、不改决定：发现问题就在落 tag 时直接改对，不要在思考里写出「超限，需精简」「让位」「改为」这类修订过程。张数在 E 段就已经定死，这里不该再变。
-   - 每个同人角色的身份 tag 都在其 characters[].tag 的首位，没有放进 Base，原创角色没有被误加作品名。
+   - 每个同人角色的身份 tag 都逐字照抄自档案 fandom 字段、在其 characters[].tag 的首位，没有放进 Base；同人角色的档案都带 fandom（本次建档或 field:"fandom" 补档），原创角色档案没有 fandom、没有被误加作品名。
    - 若本图是显式 NSFW 场景：可见解剖部位都在所属角色的 tag 里、多人共担的性行为与整体接触在 Base，没有只写泛化 NSFW 词；非显式场景本项直接跳过。
    - 每个在场正式角色都能二选一：指出【角色固定外貌库】中的同名条目，或在 changes 中有 field:"new"；世界书里有详细设定不能代替建档。每条 field:"new" 建档的 hair 都同时带发色和长度/发型、eyes 都带瞳色。永久变化的 P编号合法，临时状态没被误写进 changes。
    - 张数在设定范围内；仅当下限为 0 且确实无可画时 images 才为空，且无论如何都保留应有的建档与 changes。`;
@@ -824,20 +826,24 @@ Map every image to one Base Prompt plus zero or more native Character Prompts.
 Each image must contain:
 - tag: English comma-separated danbooru tags for the Base Prompt. Put global character counts, scene, composition, camera, lighting, atmosphere, and shared interactions here. Do not put one character's appearance, outfit, or individual action in Base.
 - nl: a coherent English natural-language Base Prompt describing the whole scene, spatial relationships, camera, and overall event. Like the Base tag it stays global: never put one character's appearance, outfit, or individual action in the Base nl; those belong to that character's own nl.
-- characters: an array of named characters actually visible in the image, ordered left-to-right then top-to-bottom. Every item is {"name":"...","tag":"...","nl":"..."}.
+- characters: an array of named characters actually visible in the image, ordered left-to-right then top-to-bottom. Every item is {"name":"...","tag":"...","nl":"..."}. Every name must follow the Name consistency rules below.
 
 Character Prompt rules:
 1. tag uses English danbooru tags for that character's identity, sex, fixed appearance, current outfit, expression, gaze, pose, action, visible anatomy, and necessary relative position. Use girl/boy rather than 1girl/2girls; numeric counts belong only in Base. Expression and gaze are mandatory for every character and must use real danbooru tags rather than invented descriptive phrases: pick expressions from smile, grin, laughing, blush, embarrassed, frown, pout, puffy cheeks, surprised, crying, tears, angry, serious, sad, worried, scared, smug, seductive smile, expressionless, half-closed eyes, open mouth, clenched teeth; pick one gaze from looking at viewer, looking at another, looking away, looking down, looking up, looking back, closed eyes. Write smile rather than gentle smile and blush rather than shy expression; phrases like neutral curious expression are not tags and only dilute the prompt. Save adjectival nuance for nl. When the story does not state an expression, infer one; write expressionless explicitly rather than omitting it.
 2. First decide whether the named character is an original character or a fandom character. Treat a character as fandom only when the character card, lorebook, story, or an unambiguous well-known name reliably identifies an existing anime, game, novel, or other work. If the work is uncertain, do not guess; treat the character as original.
-3. For every fandom character, put the model-recognized English Danbooru identity tag first in that character's tag, formatted exactly as character name (copyright name). Do not escape the parentheses for NovelAI, do not translate the names literally, do not abbreviate the copyright, and do not put this per-character identity tag in Base. Original characters receive no copyright identity tag.
+3. For every fandom character, the model-recognized English Danbooru identity tag, formatted exactly as character name (copyright name), must be the first tag in that character's tag. The identity tag is stored in the fixed appearance library: when creating the entry (changes field:"new"), register it as the fields.fandom of that entry; when an existing entry lacks it and the character is fandom, add it via a changes item with field:"fandom"; then copy it verbatim every time. Do not escape the parentheses for NovelAI, do not translate the names literally, do not abbreviate the copyright, and do not put this per-character identity tag in Base. Original characters receive no copyright identity tag and no fandom field.
 4. For an explicit NSFW scene. Do not rely on vague tags such as nsfw, nude, or sex: name each actually visible, action-relevant anatomical feature or genital in the owning character's tag, such as breasts, nipples, penis, pussy, anus, or testicles. Do not claim fully covered or out-of-frame anatomy is visible.
 5. Put the shared sexual act and overall contact in Base. Use source# / target# / mutual# tags in Character Prompts when they clarify who acts, which body part is involved, and who or what receives the action. The tags must describe the exact visible contact rather than euphemize it.
 6. nl uses English natural language for the same character's appearance, outfit, action, facing, interaction, visible anatomy, and approximate position. It may add relationship or spatial detail but must not conflict with tag.
-7. For characters in the fixed appearance library, copy the library Tag fields into that character's tag after any fandom identity tag. Keep appearance wording verbatim, but convert the library sex count tag 1girl/1boy to girl/boy. Library natural-language notes may inform that character's nl. Tag fields remain canonical.
+7. For characters in the fixed appearance library, copy the library Tag fields into that character's tag, keeping the fandom identity tag (fields.fandom) first. Keep appearance wording verbatim, but convert the library sex count tag 1girl/1boy to girl/boy. Library natural-language notes may inform that character's nl. Tag fields remain canonical.
 8. For other multi-character interactions, use NovelAI source# / target# / mutual# tags when they clarify actor and target. Do not use ComfyUI's multi-person segmentation convention.
 9. Do not create Character Prompts for absent named characters. Anonymous background crowds remain in Base.
 
-Both Base and Character Prompts must use Tag + English natural language. Write nl in English even when the story text and your own thinking are in another language: the image model reads English natural language far more reliably, and non-English sentences also cost several times more tokens against the shared prompt budget. Tags stabilize identity and attributes; natural language supplies complex relations and spatial semantics. Do not output quality tags, generic negative tags, artist presets, or XML. The backend adds artist and quality tags.
+Name consistency (critical — the plugin matches names verbatim):
+- First-time registration: when you register a character via changes field:"new", the name must be exactly the name used for that character in the character card, lorebook, book memory, or story text — a Chinese name stays Chinese (小雪, never Xiaoxue or Snow). Never transliterate, translate, or pinyin-ize a name.
+- Existing profiles: when a character already has a library entry (or was just registered above), every reference to that character — characters[].name and any name appearing inside a tag or nl — must match the library entry name verbatim. A library entry written 小雪 must be referenced as 小雪, not as Xiaoxue or any other variant. A mismatched name can never be matched or replaced by the plugin, and the character loses its fixed appearance.
+
+Both Base and Character Prompts must use Tag + English natural language. Write nl in English even when the story text and your own thinking are in another language: the image model reads English natural language far more reliably, and non-English sentences also cost several times more tokens against the shared prompt budget. Character names are the only exception: they must stay in their original language and spelling (see Name consistency above). Tags stabilize identity and attributes; natural language supplies complex relations and spatial semantics. Do not output quality tags, generic negative tags, artist presets, or XML. The backend adds artist and quality tags.
 
 Visual completion (important):
 The story text is prose, not a shot list. It will never state camera, lighting, or period costume — the things that only exist once something is drawn. Your job is not to transcribe the text but to complete it into a finished picture. Handle these four classes differently.
@@ -865,7 +871,7 @@ Write landscape for group shots, distant or panoramic views, wide scenes, and ho
 Two characters in frame does not mean the image must be landscape. The direction must agree with the shot distance in Base: wide shot usually pairs with landscape, close-up and upper body usually pair with portrait. When unsure, write portrait.
 
 Example:
-{"position":"P2","tag":"2girls, classroom, sunset, medium shot","nl":"Two girls stand in a classroom with sunset light coming in.","characters":[{"name":"Xiaoxue","tag":"girl, long black hair, blue eyes, white dress, source#waving","nl":"The girl waves on the left side of the frame."}],"size":"landscape"}`;
+{"position":"P2","tag":"2girls, classroom, sunset, medium shot","nl":"Two girls stand in a classroom with sunset light coming in.","characters":[{"name":"小雪","tag":"girl, long black hair, blue eyes, white dress, source#waving","nl":"The girl waves on the left side of the frame."}],"size":"landscape"}`;
 
 /** 预填充内置默认:以 <thinking> 开头,引导模型先过思考清单再输出 JSON。 */
 export const DEFAULT_PREFILL_PROMPT = '<thinking>';
