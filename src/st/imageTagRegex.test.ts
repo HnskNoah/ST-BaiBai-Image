@@ -235,6 +235,26 @@ describe('parseImageTagContent', () => {
     expect(parseImageTagContent('<bbi_image>1girl</bbi_image>').size).toBe('portrait');
     expect(parseImageTagContent('<bbi_image>1girl<size>乱写</size></bbi_image>').size).toBe('portrait');
   });
+
+  it('extracts <artist> as display metadata without leaking it into the tag part', () => {
+    // 展示名绝不进提示词:剥干净是硬要求
+    expect(
+      parseImageTagContent('<bbi_image><artist>画师串 1</artist>1girl, moonlight<size>portrait</size></bbi_image>'),
+    ).toEqual({
+      tag: '1girl, moonlight',
+      nl: '',
+      negative: '',
+      characters: [],
+      size: 'portrait',
+      artist: '画师串 1',
+    });
+  });
+
+  it('omits the artist key entirely for legacy tags without <artist>', () => {
+    // 键缺省(而非空串):存量数据与深比较夹具零变化
+    const content = parseImageTagContent('<bbi_image>1girl</bbi_image>');
+    expect('artist' in content).toBe(false);
+  });
 });
 
 describe('serializeImageTag', () => {
@@ -258,6 +278,24 @@ describe('serializeImageTag', () => {
     expect(
       serializeImageTag({ tag: '1girl', nl: '', negative: '', characters: [], size: 'portrait' }),
     ).toBe('<bbi_image>1girl<size>portrait</size></bbi_image>');
+  });
+
+  it('writes <artist> first — the display name sits in front of the tags in raw text', () => {
+    expect(
+      serializeImageTag({
+        tag: '1girl',
+        nl: '',
+        negative: '',
+        characters: [],
+        size: 'portrait',
+        artist: '画师串 1',
+      }),
+    ).toBe('<bbi_image><artist>画师串 1</artist>1girl<size>portrait</size></bbi_image>');
+  });
+
+  it('round-trips an artist-stamped tag through parse and back', () => {
+    const raw = '<bbi_image><artist>画师串 1</artist>1girl<nl>A girl.</nl><size>portrait</size></bbi_image>';
+    expect(serializeImageTag(parseImageTagContent(raw))).toBe(raw);
   });
 
   it('always writes <size> — generation is deferred, so orientation must persist in the text', () => {
@@ -344,6 +382,7 @@ describe('containsTagMarkup', () => {
     expect(containsTagMarkup('a<characters>b')).toBe(true);
     expect(containsTagMarkup('a<size>b')).toBe(true);
     expect(containsTagMarkup('a<tag>b')).toBe(true);
+    expect(containsTagMarkup('a<artist>b')).toBe(true);
   });
 
   it('leaves ordinary prompt text alone', () => {

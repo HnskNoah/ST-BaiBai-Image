@@ -186,7 +186,8 @@ runForFloor(floor, opts)
  10. rebase.rebaseImagePositions 把插入位置从「请求开始时的正文」平移到「落盘那一刻的正文」
      (清洗后叙事行按文本 LCS 求骨架,空隙按序号比例配对,整句消失的顺延到上一锚点),
      再由 protocol.injectImageTags 在新物理行后插入
-     <bbi_image>tag<nl>…</nl><negative>…</negative><size>…</size></bbi_image>
+     <bbi_image>[<artist>画师串名</artist>]tag<nl>…</nl><negative>…</negative><size>…</size></bbi_image>
+     (<artist> 为可选展示元数据,见下「画师串显示名盖章」)
  11. 若 autoGenerate 开:先 markForAutoGenerate 每个新槽位(见链路 B 握手)
  12. messageEdit.applyMessageText 写回(正文 + extra 增量一体)。身份 CAS:聊天/消息/swipe
      任一变化即放弃;**正文内容不参与比对**——分析期间别的插件对正文的修改(翻译、润色、
@@ -274,6 +275,12 @@ runForFloor(floor, opts)
   两处漂移 = 「解析出的字段」与「落进正文的原文」对不上,而 promptHash 吃的是原文,
   表现为「什么都没改却全变 stale」。同理「改动检测」按**字段值**比对,不比对序列化结果:
   解析是容忍式的、序列化是规范式的,非规范的手写 tag 打开再原样保存,原文会变。
+- **画师串显示名盖章**:`<artist>名</artist>` 是 bbi_image 里的可选展示元数据——记录
+  「写入时」生效的画师串名,卡片 `promptText` 以 `名字:tags` 前缀显示;**生成侧不读**
+  (真正拼画师串走生成时刻的 naiArtistPrompt)。两个写入方统一盖章 `activeNaiArtistName()`
+  (非 NAI 后端/未选画师串 = 空,序列化整段省略):runner 注入与编辑弹窗写回——换过
+  画师串再「应用」,记录跟着刷新。老正文无此键 → parse 不产出该键(可选键,零迁移);
+  名字消毒剥尖括号(activeNaiArtistName),防自由文本伪造子标签。
 - **子标签字面量必须拦**(`containsTagMarkup`,与 AI 侧共用 `FORBIDDEN_SUBTAG`):查找正则
   非贪婪,内容里混进一个 `</bbi_image>` 会让 tag 提前截断、**后半截漏进 DOM 与提示词**。
 - **不可编辑 Card.vue 的 `promptText`**:那是带「角色: 」「Negative: 」前缀的展示串,
@@ -552,6 +559,7 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe / 智绘姬提示词预设导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
 | NAI 连接配置库(多套地址/密钥保存切换) | src/state/settings.ts 的 `NaiConnPreset` + `activeNaiConn`(UI 在 NaiPanel.vue 的「配置」区) |
+| 画师串显示名盖章(<artist> 展示元数据,不进提示词) | st/imageTagRegex.ts 的 `ImageTagContent.artist` + settings.activeNaiArtistName()(盖章位 runner/promptEditor;展示在 Card.vue promptText) |
 | NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
 | 画师串库管理器(搜索/预览图/批量删除) | src/pages/backend/panels/NaiArtistManager.vue(纯逻辑在 backends/naiArtistLib.ts;内置只读库在 backends/nai.ts 的 `BUILTIN_NAI_ARTISTS`) |
 | 画师串预览图(user/images 上传/删除) | src/st/images.ts + imageFile.ts(文件夹常量 `ARTIST_PREVIEW_FOLDER`) |

@@ -64,6 +64,11 @@ const props = defineProps<{
   characters: ImageCharacterPrompt[];
   /** 画幅方向(模型判定,随 tag 持久化):决定用渠道配置里的竖屏还是横屏尺寸。 */
   size: Orientation;
+  /**
+   * 写入时盖章的画师串显示名(纯展示;老正文无此键 → 空串,提示词展示串不加前缀)。
+   * 只进 promptText 这类「拼给人看」的串,不进生成提交(生成走生成时刻的当前画师串)。
+   */
+  artist?: string;
   /** tag 原文(含 <bbi_image> 壳):生成提交与 promptHash 的输入。 */
   tag: string;
   messageId: number;
@@ -136,10 +141,10 @@ const configured = computed(() => {
 });
 
 const current = computed(() => props.history[index.value] ?? null);
-/** 提示词全文:复制、灯箱、展开区共用。 */
+/** 提示词全文:复制、灯箱、展开区共用。画师串名按「名字:tags」前缀盖在首行(仅展示)。 */
 const promptText = computed(() =>
   [
-    props.prompt,
+    props.artist ? `${props.artist}:${props.prompt}` : props.prompt,
     props.nl,
     ...props.characters.map(character =>
       [`\u89d2\u8272: ${character.name}`, character.tag, character.nl].filter(Boolean).join('\n'),

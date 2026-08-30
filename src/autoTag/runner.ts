@@ -29,7 +29,12 @@ import { clearAutoGenerateForFloor, markForAutoGenerate } from '@/floor/autoGene
 import { applyMessageText, type ApplyMessageResult } from '@/st/messageEdit';
 import { getContext, isAiStoryMessage, type STMessage } from '@/st/context';
 import { hasImageTagTrace, stripImageTags } from '@/st/imageTagRegex';
-import { getTagGenChannel, isCurrentChatExcluded, settings } from '@/state/settings';
+import {
+  activeNaiArtistName,
+  getTagGenChannel,
+  isCurrentChatExcluded,
+  settings,
+} from '@/state/settings';
 import { triageAssistantText } from '@/autoTag/triage';
 
 const processed = new Set<string>();
@@ -465,7 +470,13 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         );
         if (!rebased) return null;
         rebaseNote = describeRebase(rebased.report);
-        return injectImageTags(base, rebased.images);
+        // 盖章:写进正文的每条 tag 记下当前生效画师串名(纯展示,生成侧不读;
+        // 空 = 非 NAI 后端 / 未选画师串,序列化时整段省略)
+        const artist = activeNaiArtistName();
+        return injectImageTags(
+          base,
+          rebased.images.map(image => ({ ...image, artist })),
+        );
       },
       chatId,
       swipeId,

@@ -151,6 +151,8 @@ export function hydrateMessage(messageId: number, ctx: STContext): void {
               negative: content.negative,
               characters: content.characters,
               size: content.size,
+              // 写入时盖章的画师串显示名(老正文无此键 → 空串,展示侧不加前缀)
+              artist: content.artist ?? '',
               tag: tags[seq],
               messageId,
               seq,

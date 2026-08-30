@@ -123,7 +123,7 @@ const error = computed(() => {
   }
   for (const [label, value] of fields) {
     if (value && containsTagMarkup(value)) {
-      return `${label}不能包含 <bbi_image> / <tag> / <nl> / <negative> / <characters> / <size> 标签`;
+      return `${label}不能包含 <bbi_image> / <tag> / <nl> / <negative> / <characters> / <size> / <artist> 标签`;
     }
   }
   return '';

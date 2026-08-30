@@ -148,7 +148,7 @@ export function stripImageTags(mes: string): string {
  * 内容里混进一个 `</bbi_image>` 就会让 tag 提前截断、后半截漏进 DOM 与提示词，
  * 正好破掉「tag 永不进 DOM、永不进提示词」这条不变式。
  */
-export const FORBIDDEN_SUBTAG = /<\/?(?:bbi_image|tag|nl|negative|characters|size)\b/i;
+export const FORBIDDEN_SUBTAG = /<\/?(?:bbi_image|tag|nl|negative|characters|size|artist)\b/i;
 
 /** 文本里是否含 bbi_image 子标签字面量（手输校验用；口径同 AI 侧）。 */
 export function containsTagMarkup(text: string): boolean {
@@ -165,6 +165,15 @@ export interface ImageTagContent {
   characters: ImageCharacterPrompt[];
   /** 画幅方向：<size> 子标签内容，无/不可识别则竖屏（存量 tag 即走这条，行为与改动前一致）。 */
   size: Orientation;
+  /**
+   * 画师串显示名（<artist> 子标签内容，可选键）——**纯展示元数据，生成侧不读**：
+   * 记录「这条 tag 写进正文时」生效的画师串名，卡片提示词展示串里以 `名字:tags`
+   * 前缀显示（见 floor/Card.vue 的 promptText）。拼真正发给 NAI 的画师串走
+   * backends/nai.ts 的 naiArtistPrompt（按生成时刻的当前画师串），与本字段无关——
+   * 用户中途换画师串后这里就是历史记录，重新写回（编辑弹窗应用/重新生成）时盖章刷新。
+   * 老正文没有此键 → parse 不产出该键（与 NaiArtistPreset.previewPath 同例），零迁移。
+   */
+  artist?: string;
 }
 
 /**
@@ -204,7 +213,10 @@ export function parseImageTagContent(raw: string): ImageTagContent {
   }
   const sizeMatch = inner.match(/<size>([\s\S]*?)<\/size>/i);
   const size = normalizeOrientation(sizeMatch ? oneLine(sizeMatch[1]) : '');
+  const artistMatch = inner.match(/<artist>([\s\S]*?)<\/artist>/i);
+  const artist = artistMatch ? oneLine(artistMatch[1]) : '';
   const withoutSubTags = inner
+    .replace(/<artist>[\s\S]*?<\/artist>/gi, '')
     .replace(/<nl>[\s\S]*?<\/nl>/gi, '')
     .replace(/<negative>[\s\S]*?<\/negative>/gi, '')
     .replace(/<characters>[\s\S]*?<\/characters>/gi, '')
@@ -214,7 +226,16 @@ export function parseImageTagContent(raw: string): ImageTagContent {
     .filter(Boolean);
   const bare = oneLine(withoutSubTags.replace(/<tag>[\s\S]*?<\/tag>/gi, ''));
   const tag = [...(bare ? [bare] : []), ...explicit].join(', ');
-  return { tag, nl, negative, characters, size };
+  return {
+    tag,
+    nl,
+    negative,
+    characters,
+    size,
+    // 老正文没有 <artist> 键 → 结果里也缺省该键(而非空串):深比较的测试夹具与
+    // 旧数据零变化;消费方一律 `content.artist ?? ''`。
+    ...(artist ? { artist } : {}),
+  };
 }
 
 /**
@@ -226,14 +247,17 @@ export function parseImageTagContent(raw: string): ImageTagContent {
  *
  * 标准形态：tag 部分保持裸文本（与存量格式一致），nl/negative/characters 空则整段不写。
  * size **恒写出**：生成是延后的(点卡片才出图)，方向必须随 tag 持久化在正文里。
+ * artist 只在非空时写出，且**排在最前**——原文视角就是「画师串名画在 tags 前面」；
+ * 盖章(写当前值)由两个写入方负责，本函数只做忠实的读写往返。
  */
 export function serializeImageTag(content: ImageTagContent): string {
+  const artist = content.artist ? `<artist>${content.artist}</artist>` : '';
   const nl = content.nl ? `<nl>${content.nl}</nl>` : '';
   const negative = content.negative ? `<negative>${content.negative}</negative>` : '';
   const characters = content.characters.length
     ? `<characters>${JSON.stringify(content.characters)}</characters>`
     : '';
-  return `<bbi_image>${content.tag}${nl}${negative}${characters}<size>${content.size}</size></bbi_image>`;
+  return `<bbi_image>${artist}${content.tag}${nl}${negative}${characters}<size>${content.size}</size></bbi_image>`;
 }
 
 /**

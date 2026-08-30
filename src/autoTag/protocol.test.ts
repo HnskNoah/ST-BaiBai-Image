@@ -226,6 +226,24 @@ describe('auto tag position protocol', () => {
     );
   });
 
+  it('writes the artist display name as a leading <artist> sub-tag when stamped', () => {
+    // 盖章由 runner 负责(协议解析恒不产 artist);这里只锁序列化形状
+    expect(
+      injectImageTags('第一行', [
+        {
+          position: 'P1',
+          sourceLine: 0,
+          tag: '1girl',
+          nl: '',
+          negative: '',
+          characters: [],
+          size: 'portrait',
+          artist: '画师串 1',
+        },
+      ]),
+    ).toBe('第一行\n<bbi_image><artist>画师串 1</artist>1girl<size>portrait</size></bbi_image>');
+  });
+
   it('wraps the dynamic negative part in a <negative> sub-tag', () => {
     expect(
       injectImageTags('第一行', [

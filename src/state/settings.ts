@@ -1182,6 +1182,19 @@ export function activeNaiArtist(): NaiArtistPreset | null {
 }
 
 /**
+ * 当前出图后端为 NAI 时,生效画师串的显示名;其它后端 / 未选画师串返回空串 = 不盖章。
+ * 专供「把画师串名写进 bbi_image 正文」的盖章位使用(runner 注入 + 手动编辑写回)——
+ * 拼真正发给 NAI 的画师串走 backends/nai.ts 的 naiArtistPrompt,与本函数无关。
+ * 消毒:画师串名是自由文本,剥掉尖括号并折叠空白,防止名字里的字符伪造 <artist> 子标签
+ * 破坏 bbi_image 解析(FORBIDDEN_SUBTAG 只拦内容字段,盖进 <artist> 的值靠这里保证干净)。
+ */
+export function activeNaiArtistName(): string {
+  if (settings.defaultBackend !== 'nai') return '';
+  const name = activeNaiArtist()?.name ?? '';
+  return name.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
  * 当前选中的连接配置;**空串 / 指向已删条目时返回 null(= 手动填写)**。
  * 悬空 id 在 normalizeNai 已清,这里再兜一层是防「UI 运行中把库改坏」的时序。
  * 刻意只读不写(同 activeNaiArtist):本函数在 computed 里被调用,写 settings 会递归求值。

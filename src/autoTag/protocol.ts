@@ -27,6 +27,12 @@ export interface ImageInsertion {
   characters: ImageCharacterPrompt[];
   /** 画幅方向:模型只判横/竖,具体像素由用户在后端面板配置。漏给/乱给一律降级竖屏。 */
   size: Orientation;
+  /**
+   * 画师串显示名(可选,纯展示元数据,生成侧不读)。协议解析( parseImagePlan )恒不产
+   * 此键——模型不知道画师串;盖章由写入方负责:runner 注入与手动编辑写回时以
+   * settings.activeNaiArtistName() 盖上当前值,序列化见 st/imageTagRegex.ts。
+   */
+  artist?: string;
 }
 
 export interface ImagePlan {
