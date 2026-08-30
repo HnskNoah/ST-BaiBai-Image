@@ -565,9 +565,11 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
     处处生效,本聊天条目配的只管本聊天,同名不同卡不串。语义:**字段值本体保留**,只在
     三个消费端把命中片段剥掉——①库文本 formatEntryForPrompt(AI 看不到就不会照抄,
     这是主生效路径;字段被整段屏蔽时该字段整个不出现)②@占位符兜底替换(applyCharRefs
-    系,与库文本同口径)③V5 角色提示词提交前(Card.generate 走 filterCharTagByName)。
-    **非 V5 的主 tag 是混合串、无角色归属,不做生成时剥除**:旧正文里的片段不追溯,
-    该 tag 被重写(编辑应用/AI 变更)后随过滤后的库文本自然干净(已与需求方确认接受)。
+    系,与库文本同口径)③4.5/V5 角色提示词提交前(Card.generate 走 filterCharTagByName;
+    naiSupportsCharacterPrompts 把结构化路径放宽到 4.5 后,按名过滤覆盖全部在列模型)。
+    **混串主 tag(旧模型线遗留/未带 characters[] 的历史 tag)无角色归属,不做生成时剥除**:
+    其中的片段不追溯,该 tag 被重写(编辑应用/AI 变更)后随过滤后的库文本自然干净
+    (已与需求方确认接受)。
     匹配 = 逗号分段后 trim、大小写不敏感的
     **整段精确匹配**(black hair 不挡 black hairband)。两份名单 AI 的 changes 协议
     永远不写,只由用户在角色管理页编辑器里维护(编辑器按所在层只写自己那层;全局条目
