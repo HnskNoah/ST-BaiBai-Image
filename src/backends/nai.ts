@@ -603,6 +603,7 @@ export function unzipNaiImage(buffer: ArrayBuffer): { base64: string; filename: 
  * (key 错、订阅过期、参数非法)立刻抛出,不做无谓重试。`noRetry429` 给「429=配额耗尽」
  * 的渠道用(latent 周限额):此时退避等不来额度,与配置错误同类立刻抛。`allowNon64Size`
  * 豁免 NAI 的 64 倍数画幅校验(SD 管线站点的原生档不是 64 倍数,如 Latent 的 920×1536)。
+ * `latentResolution` 是 Latent 渠道的画幅发送方式(枚举替数字对,见字段注释)。
  * onRetry 用于把退避过程报给卡片显示 —— 否则用户看着「生成中…」一动不动几十秒,
  * 只会以为卡死了再点一次。
  */
@@ -614,6 +615,12 @@ export async function generateNaiImage(
     onRetry?: (info: NaiRetryInfo) => void;
     noRetry429?: boolean;
     allowNon64Size?: boolean;
+    /**
+     * Latent 渠道:画幅不传 width/height 数字对,改发站点原生枚举
+     * (openapi GenerationRequest.resolution:portrait=920×1536 / landscape=1536×920;
+     * square 档不暴露)。设了此键,width/height 从载荷移除、resolution 入替。
+     */
+    latentResolution?: 'portrait' | 'landscape';
   } = {},
 ): Promise<ComfyImageResult> {
   if (!nai.key.trim()) throw new NaiError('请先填写 NAI API Key');
@@ -622,6 +629,12 @@ export async function generateNaiImage(
   const params = buildNaiParameters(nai, values, {
     multipleOf64: !opts.allowNon64Size,
   });
+  if (opts.latentResolution) {
+    // 站点原生面收枚举不收数字对;宽高在本地仍用于 skip_cfg 等派生计算,只从载荷移除。
+    delete (params as Record<string, unknown>).width;
+    delete (params as Record<string, unknown>).height;
+    params.resolution = opts.latentResolution;
+  }
   const activeVibes = naiSupportsVibes(nai.model) ? nai.vibes.filter(vibe => vibe.enabled) : [];
   const loaded = new Map<string, NaiVibeData>();
   for (const vibe of activeVibes) {

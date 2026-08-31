@@ -34,7 +34,13 @@ import {
   saveImageResult,
   type BbiImageEntry,
 } from '@/floor/storage';
-import { activeComfyPreset, effectiveComfyConn, latentAsNai, settings } from '@/state/settings';
+import {
+  activeComfyPreset,
+  effectiveComfyConn,
+  LATENT_NEGATIVE_MAX_LEN,
+  latentAsNai,
+  settings,
+} from '@/state/settings';
 import { filterCharTagByName } from '@/state/charTags';
 import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
 import { copyText } from '@/st/clipboard';
@@ -278,11 +284,12 @@ async function generate(): Promise<void> {
     );
     // Latent 渠道:渠道级负面(latentAsNai 映射)+ 本画面 <negative> 合并;
     // 合并用 naiUndesiredContent 取值,渠道留空时官方负面基线照常回落,不被画面负面顶掉。
+    // 站点 negativePrompt maxLength 2000(settings.LATENT_NEGATIVE_MAX_LEN),超长直接 400。
     // NAI 渠道维持既有行为(只发渠道级负面)。两条 NAI 系分支共用同一调用,退避进度一致可见。
     const latentView = latentActive.value ? latentAsNai(settings.latent) : null;
     if (latentView) {
       const merged = [naiUndesiredContent(latentView), job.negative.trim()].filter(Boolean);
-      latentView.undesiredContent = merged.join(', ');
+      latentView.undesiredContent = merged.join(', ').slice(0, LATENT_NEGATIVE_MAX_LEN);
     }
     const naiView = latentView ?? (naiActive.value ? settings.nai : null);
     const result = naiView
@@ -296,6 +303,9 @@ async function generate(): Promise<void> {
             // 64 倍数,豁免协议校验(格式/范围检查仍生效)。
             noRetry429: latentActive.value,
             allowNon64Size: latentActive.value,
+            // 站点原生面收分辨率枚举(portrait/landscape)而非宽高数字对
+            latentResolution:
+              latentActive.value ? (job.size === 'landscape' ? 'landscape' : 'portrait') : undefined,
             onRetry: info =>
               setGenRetry(slot, token, { attempt: info.attempt, max: info.max }),
           },

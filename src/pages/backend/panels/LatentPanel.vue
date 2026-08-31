@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import Collapsible from '@/components/Collapsible.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Icon from '@/components/Icon.vue';
-import { activeNaiArtist, LATENT_SAMPLERS, LATENT_SCHEDULERS, NAI_MODELS, settings } from '@/state/settings';
+import { activeNaiArtist, LATENT_SAMPLERS, LATENT_SCHEDULERS, settings } from '@/state/settings';
 import {
   BUILTIN_NAI_ARTISTS,
   isBuiltinNaiArtist,
@@ -13,8 +13,9 @@ import {
 /**
  * Latent 渠道:第三方站点 NovelAI 兼容面的精简适配。
  * 生成完全复用 NAI 机器(latentAsNai 映射后走 generateNaiImage),面板只暴露
- * 站点需要的子集:无尺寸输入(站点固定两档,随设置内置)、无 Vibe、无 rescale/variety。
- * 画师串库与 NAI 渠道共用同一份(settings.nai.artistPresets,跨模型设计)。
+ * 站点 openapi 真实存在的参数:无模型下拉(单模型站点,GenerationRequest 无 model 字段)、
+ * 无 Scale(无 CFG 字段)、无尺寸输入(resolution 是枚举,按 tag 判向发 portrait/landscape)、
+ * 无 Vibe、无 rescale/variety。画师串库与 NAI 渠道共用同一份(settings.nai.artistPresets)。
  */
 
 const inUse = computed(() => settings.defaultBackend === 'latent');
@@ -163,14 +164,6 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
       </Collapsible>
 
       <Collapsible title="默认参数" :open="false">
-        <div class="bbi-field">
-          <div class="bbi-field-head">
-            <span class="bbi-field-label">模型(兼容层口径;站点实际渲染自家模型)</span>
-          </div>
-          <select class="bbi-input bbi-select" v-model="settings.latent.model">
-            <option v-for="m in NAI_MODELS" :key="m.value" :value="m.value">{{ m.label }}</option>
-          </select>
-        </div>
 
         <div class="be-row">
           <div class="bbi-field">
@@ -216,22 +209,15 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
-              <span class="bbi-field-label">Scale</span>
+              <span class="bbi-field-label">种子</span>
             </div>
             <input
               class="bbi-input"
               type="number"
-              v-model.number="settings.latent.scale"
+              v-model.number="settings.latent.seed"
               min="0"
-              max="10"
-              step="0.1"
+              placeholder="0 = 随机"
             />
-          </div>
-          <div class="bbi-field">
-            <div class="bbi-field-head">
-              <span class="bbi-field-label">种子</span>
-            </div>
-            <input class="bbi-input" type="number" v-model.number="settings.latent.seed" min="0" />
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
@@ -289,7 +275,7 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
   margin-bottom: 0;
 }
 .be-row--nums {
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
 }
 @media (max-width: 640px) {
   .be-row {
