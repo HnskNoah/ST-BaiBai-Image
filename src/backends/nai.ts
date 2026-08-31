@@ -206,7 +206,11 @@ export function parseResolution(
   return { width, height };
 }
 
-/** NAI 种子是 32 位无符号整数(与 ComfyUI 的 2^53 不同,不能复用 randomSeed)。 */
+/**
+ * NAI 官方种子域 32 位无整数上限(ComfyUI 是 2^53,不能复用 randomSeed)。
+ * Latent 站点原生域更宽(0–2^53-1,openapi seed 上限),用户显式大值经
+ * normalizeLatent 透传;随机兜底仍取 32 位子集——对两渠道都合法,无需分叉。
+ */
 export function naiRandomSeed(): number {
   return Math.floor(Math.random() * 2 ** 32);
 }
@@ -705,8 +709,14 @@ export async function generateNaiImage(
     toastr.warning(`vibe「${skipped.join('、')}」${reason},已跳过`, '柏宝绘');
   }
 
+  const positiveForInput = opts.latentTagOnly
+    ? // 站点只吃 tag:input 与 parameters.prompt 同源(纯 tag、无 nl、截到 2000)。
+      // 此前只重算 parameters.prompt、input 仍拼 nl 且不截——违反本函数自立的
+      // 「nl 不拼 prompt」不变式,站长口径被顶层字段绕过,本次修复。
+      truncateTagsToLength(fullPositivePrompt(nai, values.prompt), LATENT_MAX_PROMPT_LENGTH)
+    : fullPositivePrompt(nai, values.prompt, values.nl);
   const body = {
-    input: fullPositivePrompt(nai, values.prompt, values.nl),
+    input: positiveForInput,
     model: nai.model,
     action: 'generate',
     parameters: params,

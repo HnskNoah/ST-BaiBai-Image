@@ -8,7 +8,7 @@ import {
 } from '@/autoTag/charAnchors';
 import { prepareTargetText } from '@/autoTag/clean';
 import { beginGeneration, clearGeneration, consumeGeneration } from '@/autoTag/generationGate';
-import { buildAutoTagMessages } from '@/autoTag/prompt';
+import { buildAutoTagMessages, isNaiFamilyBackend } from '@/autoTag/prompt';
 import { rebaseImagePositions, type RebaseReport } from '@/autoTag/rebase';
 import {
   BBI_CHAR_EXTRA_KEY,
@@ -322,12 +322,12 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             settings.autoTag.minImages,
             settings.autoTag.maxImages,
           );
-          // latent 与 NAI 共用同一验收:兼容层的 Character Prompts 支持面按 NAI 名口径
+          // NAI 4.5/V5 建档:field:"new" 的新档必须带 nl 外貌描述。
+          // 有建档缺失才拦(无 changes/已带 nl 的完美输出放行);0.3.2 扩 latent 分支时
+          // 曾误删 changes.some 子条件导致两渠道自动 tag 无条件抛错,本次修复。
           if (
-            (settings.defaultBackend === 'nai' &&
-              naiSupportsCharacterPrompts(settings.nai.model)) ||
-            (settings.defaultBackend === 'latent' &&
-              naiSupportsCharacterPrompts(settings.latent.model))
+            isNaiFamilyBackend() &&
+            candidate.changes.some(change => change.field === 'new' && !change.nl?.trim())
           ) {
             throw new Error('NAI 4.5/V5 建档必须附带 nl 外貌描述');
           }

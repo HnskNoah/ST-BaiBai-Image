@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Latent 渠道(站点 NovelAI 兼容面)的设置清洗与 NAI 视图映射:
- * 1. normalizeLatent 钳制到站点原生域:steps 8–16、并发 1–4、scale 0–10;
+ * 1. normalizeLatent 钳制到站点原生域:steps 8–16、并发 1–4;scale/seed 域见用例;
  * 2. latentAsNai 把渠道设置映射成 NAI 视图:vibes 恒空、undesiredContent=negativePrompt、
  *    画师串等与 NAI 渠道共享的字段照抄 settings.nai;
  * 3. latentDefaults 内置站点固定档尺寸与原生默认参数。

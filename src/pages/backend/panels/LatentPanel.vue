@@ -54,7 +54,7 @@ const activeArtistId = computed<string>({
 });
 const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value.id) : false));
 
-/** 站点原生枚举(无动态端点,硬编码);datalist 自由输入兜底,但候选即站点全量。 */
+/** 站点原生枚举(openapi 逐字一致),select 下拉;无自由输入——站点只认枚举值,填别的也是白填。 */
 const samplerOptions = computed(() => LATENT_SAMPLERS.map(s => ({ value: s, label: s })));
 const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, label: s })));
 </script>
@@ -170,33 +170,19 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
             <div class="bbi-field-head">
               <span class="bbi-field-label">采样器</span>
             </div>
-            <input
-              class="bbi-input"
-              type="text"
-              v-model="settings.latent.sampler"
-              list="latent-sampler-presets"
-              spellcheck="false"
-            />
-            <datalist id="latent-sampler-presets">
+            <select class="bbi-input" v-model="settings.latent.sampler">
               <option v-for="s in samplerOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
-            </datalist>
+            </select>
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
               <span class="bbi-field-label">噪声表</span>
             </div>
-            <input
-              class="bbi-input"
-              type="text"
-              v-model="settings.latent.noiseSchedule"
-              list="latent-noise-presets"
-              spellcheck="false"
-            />
-            <datalist id="latent-noise-presets">
+            <select class="bbi-input" v-model="settings.latent.noiseSchedule">
               <option v-for="s in noiseOptions" :key="s.value" :value="s.value">
                 {{ s.label }}
               </option>
-            </datalist>
+            </select>
           </div>
         </div>
 
