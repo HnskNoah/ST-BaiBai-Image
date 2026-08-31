@@ -184,16 +184,24 @@ export interface NaiSize {
   height: number;
 }
 
-/** 解析「832×1216 / 832x1216」;宽高须为 64 的倍数、256–2048。 */
-export function parseResolution(text: string): NaiSize {
+/**
+ * 解析「832×1216 / 832x1216」;宽高须为 64 的倍数、256–2048。
+ * 64 倍数是 **NAI 协议专属**限制(size.ts 的注释口径);第三方 SD 管线站点
+ * (Latent)的原生档(920×1536/1536×920)不是 64 的倍数,其调用点用
+ * `multipleOf64: false` 豁免——格式与 256–2048 范围检查照常生效。
+ */
+export function parseResolution(
+  text: string,
+  opts: { multipleOf64?: boolean } = {},
+): NaiSize {
   const size = parseSize(text);
   if (!size) throw new NaiError(`分辨率格式无效:${text || '(空)'};应如 832×1216`);
   const { width, height } = size;
-  if (width % 64 !== 0 || height % 64 !== 0) {
+  if ((opts.multipleOf64 ?? true) && (width % 64 !== 0 || height % 64 !== 0)) {
     throw new NaiError(`分辨率 ${width}×${height} 不是 64 的倍数,NAI 要求宽高均为 64 的倍数`);
   }
   if (width < 256 || height < 256 || width > 2048 || height > 2048) {
-    throw new NaiError(`分辨率 ${width}×${height} 超出 NAI 允许范围(256–2048)`);
+    throw new NaiError(`分辨率 ${width}×${height} 超出允许范围(256–2048)`);
   }
   return { width, height };
 }
@@ -357,10 +365,17 @@ export function fullNegativePrompt(nai: NaiSettings): string {
  * 构造 parameters。v4 系模型带 v4_prompt/v4_negative_prompt 结构;NAI3 不带。
  * vibe 不在此叠加(见 applyVibes),保持「一次生成 = build + applyVibes」两步。
  */
-export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues): JsonObject {
+export function buildNaiParameters(
+  nai: NaiSettings,
+  values: NaiGenerateValues,
+  opts: { multipleOf64?: boolean } = {},
+): JsonObject {
   // 画幅按方向取用户配的那一格;没填回落竖屏默认
   const orientation = values.size ?? 'portrait';
-  const { width, height } = parseResolution(pickSize(nai, orientation) || '832×1216');
+  const { width, height } = parseResolution(
+    pickSize(nai, orientation) || '832×1216',
+    opts,
+  );
   // 显式传入 > 面板固定种子 > 随机
   const seed = values.seed ?? (nai.seed > 0 ? nai.seed : naiRandomSeed());
   const prompt = fullPositivePrompt(nai, values.prompt, values.nl);
@@ -500,7 +515,11 @@ export function applyVibes(
 
 /* ============ 网络请求 ============ */
 
-async function naiHttpError(resp: Response, label: string): Promise<NaiError> {
+async function naiHttpError(
+  resp: Response,
+  label: string,
+  opts: { quota429?: boolean } = {},
+): Promise<NaiError> {
   const text = (await resp.text().catch(() => '')).trim();
   let detail = text;
   try {
@@ -519,11 +538,19 @@ async function naiHttpError(resp: Response, label: string): Promise<NaiError> {
     case 402:
       return new NaiError(`${label}:需要有效订阅(402)`, resp.status, retryAfterMs);
     case 429:
-      return new NaiError(
-        `${label}:请求过于频繁(429),已自动退避重试;仍失败请调低「同时出图数」或稍后再试`,
-        resp.status,
-        retryAfterMs,
-      );
+      // 文案按渠道语义分:NAI 官方 429=限流(退避有用);latent 429=周配额耗尽
+      // (quota_exhausted,不重试,等下周一),调低并发救不了它。
+      return opts.quota429
+        ? new NaiError(
+            `${label}:本周生成配额已耗尽(429),等额度刷新后再试`,
+            resp.status,
+            retryAfterMs,
+          )
+        : new NaiError(
+            `${label}:请求过于频繁(429),已自动退避重试;仍失败请调低「同时出图数」或稍后再试`,
+            resp.status,
+            retryAfterMs,
+          );
     default:
       return new NaiError(`${label} (${resp.status}):${detail.slice(0, 300)}`, resp.status, retryAfterMs);
   }
@@ -573,19 +600,28 @@ export function unzipNaiImage(buffer: ArrayBuffer): { base64: string; filename: 
  * 生图。返回与 ComfyImageResult 同构的结果(dataURL 形式),楼层卡片/落盘层可直接复用。
  *
  * 429/5xx/网络级失败会自动退避重试(backends/naiRateLimit.ts);配置类错误
- * (key 错、订阅过期、参数非法)立刻抛出,不做无谓重试。onRetry 用于把退避过程
- * 报给卡片显示 —— 否则用户看着「生成中…」一动不动几十秒,只会以为卡死了再点一次。
+ * (key 错、订阅过期、参数非法)立刻抛出,不做无谓重试。`noRetry429` 给「429=配额耗尽」
+ * 的渠道用(latent 周限额):此时退避等不来额度,与配置错误同类立刻抛。`allowNon64Size`
+ * 豁免 NAI 的 64 倍数画幅校验(SD 管线站点的原生档不是 64 倍数,如 Latent 的 920×1536)。
+ * onRetry 用于把退避过程报给卡片显示 —— 否则用户看着「生成中…」一动不动几十秒,
+ * 只会以为卡死了再点一次。
  */
 export async function generateNaiImage(
   nai: NaiSettings,
   values: NaiGenerateValues,
   signal?: AbortSignal,
-  opts: { onRetry?: (info: NaiRetryInfo) => void } = {},
+  opts: {
+    onRetry?: (info: NaiRetryInfo) => void;
+    noRetry429?: boolean;
+    allowNon64Size?: boolean;
+  } = {},
 ): Promise<ComfyImageResult> {
   if (!nai.key.trim()) throw new NaiError('请先填写 NAI API Key');
   if (!values.prompt.trim()) throw new NaiError('正向提示词不能为空');
 
-  const params = buildNaiParameters(nai, values);
+  const params = buildNaiParameters(nai, values, {
+    multipleOf64: !opts.allowNon64Size,
+  });
   const activeVibes = naiSupportsVibes(nai.model) ? nai.vibes.filter(vibe => vibe.enabled) : [];
   const loaded = new Map<string, NaiVibeData>();
   for (const vibe of activeVibes) {
@@ -632,7 +668,8 @@ export async function generateNaiImage(
         body: JSON.stringify(body),
         signal,
       });
-      if (!resp.ok) throw await naiHttpError(resp, 'NAI 生图失败');
+      if (!resp.ok)
+        throw await naiHttpError(resp, 'NAI 生图失败', { quota429: opts.noRetry429 });
 
       const { base64, filename } = unzipNaiImage(await resp.arrayBuffer());
       const format = filename.split('.').pop()?.toLowerCase() || 'png';
@@ -643,7 +680,7 @@ export async function generateNaiImage(
         revoke() {},
       };
     },
-    { signal, onRetry: opts.onRetry },
+    { signal, onRetry: opts.onRetry, noRetry429: opts.noRetry429 },
   );
 }
 

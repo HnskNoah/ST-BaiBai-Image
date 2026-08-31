@@ -108,6 +108,21 @@ describe('parseResolution', () => {
     expect(() => parseResolution('')).toThrow(NaiError);
     expect(() => parseResolution('4096×4096')).toThrow(/范围/);
   });
+
+  it('multipleOf64:false 豁免 64 倍数(SD 管线站点原生档),范围检查仍生效', () => {
+    expect(parseResolution('920×1536', { multipleOf64: false })).toEqual({
+      width: 920,
+      height: 1536,
+    });
+    expect(parseResolution('1536×920', { multipleOf64: false })).toEqual({
+      width: 1536,
+      height: 920,
+    });
+    expect(() => parseResolution('830×1216', { multipleOf64: false })).not.toThrow();
+    // 豁免只针对 64 倍数,256–2048 范围与格式校验照常把关
+    expect(() => parseResolution('4096×4096', { multipleOf64: false })).toThrow(/范围/);
+    expect(() => parseResolution('', { multipleOf64: false })).toThrow(NaiError);
+  });
 });
 
 describe('提示词拼装', () => {

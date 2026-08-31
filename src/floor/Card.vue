@@ -4,7 +4,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import { validateSimpleConfig } from '@/backends/comfyTemplates';
 import { generateComfyImage, randomSeed } from '@/backends/comfyui';
-import { generateNaiImage, naiRandomSeed } from '@/backends/nai';
+import { generateNaiImage, naiRandomSeed, naiUndesiredContent } from '@/backends/nai';
 import type { Orientation } from '@/backends/size';
 import Icon from '@/components/Icon.vue';
 import { confirmDialog } from '@/components/confirm';
@@ -193,8 +193,12 @@ const barText = computed(() => {
 
 /** 无图且后端未就绪时,占位区中央的配置引导。 */
 const pendingHint = computed(() => {
-  if (!comfyActive.value && !naiActive.value)
+  if (!comfyActive.value && !naiActive.value && !latentActive.value)
     return '出图后端未选择,请到柏宝绘「渠道」页选择出图渠道';
+  if (latentActive.value) {
+    if (!settings.latent.url.trim()) return '未配置 Latent,请到柏宝绘「渠道」页填写接口地址';
+    return settings.latent.key.trim() ? '' : '未配置 Latent,请到柏宝绘「渠道」页填写 API Key';
+  }
   return naiActive.value
     ? '未配置 NAI,请到柏宝绘「渠道」页填写 API Key'
     : '未配置 ComfyUI,请到柏宝绘「渠道」页填写工作流';
@@ -222,23 +226,31 @@ async function generate(): Promise<void> {
     })),
     size: props.size,
   };
-  // NAI 需要闸门排队 → 先显示「排队中」;ComfyUI 有服务端队列,直接进 generating
-  const { signal, token } = beginGen(slot, currentHash, naiActive.value ? 'queued' : 'generating');
+  // NAI 系(latent 与 nai 同为阻塞式 POST、无服务端队列)需要闸门排队 → 先显示「排队中」;
+  // ComfyUI 有服务端队列,直接进 generating。
+  const { signal, token } = beginGen(
+    slot,
+    currentHash,
+    naiActive.value || latentActive.value ? 'queued' : 'generating',
+  );
   let release: (() => void) | null = null;
   // 历史记录 id:在 seed 确定后才登记(见下),故这里先置空,catch 里据此判断要不要收尾。
   let historyId: number | null = null;
 
   try {
-    if (naiActive.value) {
+    if (naiActive.value || latentActive.value) {
+      // latent 与 NAI 共用同一闸门与节奏(acquireNaiSlot 是通用信号量):站点同样是
+      // 阻塞式 POST,409=在途任务超上限,客户端闸门直接堵住这一面。
       release = await acquireNaiSlot(signal);
       setGenPhase(slot, token, 'generating');
     }
     // 发起时就确定种子并显式传入(面板种子 > 0 时用固定值;否则随机),
     // 随结果落盘进 extra(entry.seed),历史翻页可查/可复用。
+    // 种子必须 32 位无符号(naiRandomSeed):Latent 走 NAI 协议,不能用 comfy 的 randomSeed。
     const seed = latentActive.value
       ? settings.latent.seed > 0
         ? settings.latent.seed
-        : randomSeed()
+        : naiRandomSeed()
       : naiActive.value
         ? settings.nai.seed > 0
           ? settings.nai.seed
@@ -265,31 +277,31 @@ async function generate(): Promise<void> {
       }),
     );
     // Latent 渠道:渠道级负面(latentAsNai 映射)+ 本画面 <negative> 合并;
-    // NAI 渠道维持既有行为(只发渠道级负面)。此处再合并 history 已登记,互不影响。
+    // 合并用 naiUndesiredContent 取值,渠道留空时官方负面基线照常回落,不被画面负面顶掉。
+    // NAI 渠道维持既有行为(只发渠道级负面)。两条 NAI 系分支共用同一调用,退避进度一致可见。
     const latentView = latentActive.value ? latentAsNai(settings.latent) : null;
-    if (latentView && job.negative.trim()) {
-      latentView.undesiredContent = [latentView.undesiredContent.trim(), job.negative.trim()]
-        .filter(Boolean)
-        .join(', ');
+    if (latentView) {
+      const merged = [naiUndesiredContent(latentView), job.negative.trim()].filter(Boolean);
+      latentView.undesiredContent = merged.join(', ');
     }
-    const result = latentView
+    const naiView = latentView ?? (naiActive.value ? settings.nai : null);
+    const result = naiView
       ? await generateNaiImage(
-          latentView,
+          naiView,
           { prompt: job.prompt, nl: job.nl, characters: job.characters, seed, size: job.size },
           signal,
+          {
+            // latent 的 429 = 周配额耗尽(站点 openapi:quota_exhausted),退避无意义不重试;
+            // NAI 官方 429 = 限流,照旧退避。尺寸:站点原生档(920×1536 等)不是 NAI 的
+            // 64 倍数,豁免协议校验(格式/范围检查仍生效)。
+            noRetry429: latentActive.value,
+            allowNon64Size: latentActive.value,
+            onRetry: info =>
+              setGenRetry(slot, token, { attempt: info.attempt, max: info.max }),
+          },
         )
-      : naiActive.value
-        ? await generateNaiImage(
-            settings.nai,
-            { prompt: job.prompt, nl: job.nl, characters: job.characters, seed, size: job.size },
-            signal,
-            {
-              onRetry: info =>
-                setGenRetry(slot, token, { attempt: info.attempt, max: info.max }),
-            },
-          )
-        : await generateComfyImage(
-            effectiveComfyConn(),
+      : await generateComfyImage(
+          effectiveComfyConn(),
           {
             prompt: job.prompt,
             nl: job.nl,
