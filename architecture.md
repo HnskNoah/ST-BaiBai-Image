@@ -219,10 +219,12 @@ runForFloor(floor, opts)
 
 ⚠ **设置页只暴露两对规范/思维链:ComfyUI 与 NAI**,后者存在 `naiV5Spec` / `naiV5Thinking`
 (键名带 V5 是历史命名,内容对 4.5 同样适用,面板标签已改成不提代数的「NAI 规范/思维链」)。
-另有 `naiSpec` / `naiThinking` 是 4.5 以下的单串 tag 版本,随旧模型下线(见 §6 `NAI_MODELS`)
-**已无 UI 入口**:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 → 那两份永远走不到。
-键与常量都刻意保留(不动存量 settings、不动旧模型标识的协议分支与回归锁),
-但**改 NAI 规范/思维链一律改 `DEFAULT_NAI_V5_*` 那一对**,别去改看着名字更正的那份。
+另有 `naiSpec` / `naiThinking` 是 4.5 以下的单串 tag 版本(含多人邻接绑定口径)。
+NAI 渠道:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 → 那两份对 NAI 走不到,
+键与常量刻意保留(不动存量 settings、不动旧模型标识的协议分支与回归锁);
+**Latent 渠道恒走这两份**(站长确认站点不支持自然语言必须用 tag,characterPromptsOn
+对 latent 恒 false)——所以**两对都要维护**:改 NAI 规范改 `DEFAULT_NAI_V5_*`,
+改 Latent 规范改 `DEFAULT_NAI_SPEC/THINKING`,别按名字猜。
 
 ## 6. 链路 B:楼层卡片与出图(floor/ + backends/)
 
@@ -288,7 +290,7 @@ runForFloor(floor, opts)
   **429 在该站=周配额耗尽**(quota_exhausted)而非限流,生图调用带 `noRetry429` 让它像
   配置错误一样立刻抛(退避等不来额度)。
 - **站点载荷事实(openapi.json GenerationRequest,8 字段)**:prompt / negativePrompt
-  (maxLength 2000,合并后截断——`LATENT_NEGATIVE_MAX_LEN`,超长直接 400)/ seed
+  (maxLength 2000,prompt/negative 均按 tag 边界整条截断——`LATENT_MAX_PROMPT_LENGTH`)/ seed
   (0–2^53-1,omit=random)/ resolution(**枚举**:square=1024×1024 / portrait=920×1536 /
   landscape=1536×920;生图调用带 `latentResolution` 换掉 width/height 数字对)/
   steps(8–16,默认 12)/ sampler(7 枚举)/ scheduler(5 枚举)/ preset(deprecated,不传)。

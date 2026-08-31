@@ -38,7 +38,7 @@ import {
  * 也从 NAI 族取——ComfyUI 规范教的工作流占位符、括号转义等知识对兼容层毫无意义,
  * 只会与本地追加的 NAI 质量词打架。至于取 NAI 族里的哪一份,见 characterPromptsOn。
  */
-function isNaiFamilyBackend(): boolean {
+export function isNaiFamilyBackend(): boolean {
   return settings.defaultBackend === 'nai' || settings.defaultBackend === 'latent';
 }
 

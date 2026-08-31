@@ -371,15 +371,18 @@ describe('NAI V5 support', () => {
       vi.stubGlobal('fetch', realFetch);
     }
     const body0 = bodies[0];
-    if (!body0 || typeof body0 !== 'object' || !('parameters' in body0)) {
-      throw new Error('fetch 未被调用或 body 缺 parameters');
+    if (!body0 || typeof body0 !== 'object' || !('parameters' in body0) || !('input' in body0)) {
+      throw new Error('fetch 未被调用或 body 缺 parameters/input');
     }
-    const params = body0.parameters as Record<string, unknown>;
+    const typed0 = body0 as { parameters: Record<string, unknown>; input: unknown };
+    const params = typed0.parameters;
     expect(params.v4_prompt).toBeUndefined();
     expect(params.v4_negative_prompt).toBeUndefined();
     expect(params.characterPrompts).toBeUndefined();
     // 纯 tag:nl 句子不进 prompt 串,质量词照常在
     expect(params.prompt).toBe('1girl, smile, location, very aesthetic, masterpiece, no text');
+    // 顶层 input 与 parameters.prompt 同源(纯 tag):nl 不经顶层字段绕过站点口径
+    expect(typed0.input).toBe(params.prompt);
     expect(params.resolution).toBe('portrait');
     expect(params.width).toBeUndefined();
     expect(params.height).toBeUndefined();
@@ -401,12 +404,15 @@ describe('NAI V5 support', () => {
       vi.stubGlobal('fetch', realFetch);
     }
     const body1 = bodies[0];
-    if (!body1 || typeof body1 !== 'object' || !('parameters' in body1)) {
+    if (!body1 || typeof body1 !== 'object' || !('parameters' in body1) || !('input' in body1)) {
       throw new Error('第二次 fetch 未被调用');
     }
-    const params1 = body1.parameters as Record<string, unknown>;
+    const typed1 = body1 as { parameters: Record<string, unknown>; input: unknown };
+    const params1 = typed1.parameters;
     expect(String(params1.prompt).length).toBeLessThanOrEqual(2000);
     expect(String(params1.prompt).endsWith('x')).toBe(true);
+    // input 同源同截:顶层字段不超站线上限
+    expect(String(typed1.input).length).toBeLessThanOrEqual(2000);
   });
 
   it('truncateTagsToLength:按 tag 边界整条丢弃,不留半个 tag', () => {

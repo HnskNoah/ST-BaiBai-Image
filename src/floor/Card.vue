@@ -252,7 +252,10 @@ async function generate(): Promise<void> {
     }
     // 发起时就确定种子并显式传入(面板种子 > 0 时用固定值;否则随机),
     // 随结果落盘进 extra(entry.seed),历史翻页可查/可复用。
-    // 种子必须 32 位无符号(naiRandomSeed):Latent 走 NAI 协议,不能用 comfy 的 randomSeed。
+    // 种子:naiRandomSeed 产出 32 位无符号(NAI 协议域);Latent 站点原生域更宽
+    // (0–2^53-1,settings.latent.test.ts 已锁 2^32 可用),用户显式大值照常透传,
+    // 随机兜底取 32 位子集无害。不能用 comfy 的 randomSeed(超站点域)。
+    // NOTE naiRandomSeed 的注释同样过时,见 backends/nai.ts;两处一起改才改这里。
     const seed = latentActive.value
       ? settings.latent.seed > 0
         ? settings.latent.seed

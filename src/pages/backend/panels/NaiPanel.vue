@@ -1161,39 +1161,21 @@ async function removeVibe(vibe: NaiVibe) {
             <div class="bbi-field-head">
               <span class="bbi-field-label">采样器</span>
             </div>
-            <input
-              class="bbi-input"
-              type="text"
-              v-model="settings.nai.sampler"
-              list="nai-sampler-presets"
-              spellcheck="false"
-            />
-            <datalist id="nai-sampler-presets">
+            <select class="bbi-input bbi-select" v-model="settings.nai.sampler">
               <option v-for="s in samplerOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
-            </datalist>
+            </select>
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
               <span class="bbi-field-label">噪声表</span>
             </div>
-            <input
-              class="bbi-input"
-              type="text"
-              v-model="settings.nai.noiseSchedule"
-              list="nai-noise-presets"
-              spellcheck="false"
-            />
-            <datalist id="nai-noise-presets">
+            <select class="bbi-input bbi-select" v-model="settings.nai.noiseSchedule">
               <option v-for="s in NAI_NOISE_SCHEDULES" :key="s.value" :value="s.value">
                 {{ s.label }}
               </option>
-            </datalist>
+            </select>
           </div>
         </div>
-        <p class="bbi-field-hint">
-          下拉建议之外可直接输入:第三方兼容站按站点文档填它自己的采样器/调度器名(如 euler、beta),留空回落默认。
-        </p>
-
         <div class="be-row be-row--nums">
           <div class="bbi-field">
             <div class="bbi-field-head">
