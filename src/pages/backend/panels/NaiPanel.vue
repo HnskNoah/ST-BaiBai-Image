@@ -904,7 +904,9 @@ async function removeVibe(vibe: NaiVibe) {
             placeholder="https://image.novelai.net"
             spellcheck="false"
           />
-          <p class="bbi-field-hint">默认官方;第三方站填域名即可,自动补全 /ai 端点。</p>
+          <p class="bbi-field-hint">
+            默认官方;第三方兼容站填到兼容前缀为止,自动补全 /ai/xxx 端点(个别站点的兼容面不止域名,带一段路径前缀,按站点说明填写)。这类站点可能没有订阅查询(测试连接会提示跳过)或 Vibe,生图参数由站点侧映射。
+          </p>
         </div>
 
         <div class="bbi-field">
