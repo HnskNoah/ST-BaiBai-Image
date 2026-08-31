@@ -282,9 +282,13 @@ export function bindFloorHydration(): boolean {
       }
     },
   );
-  // NAI 并发上限 → 闸门(ComfyUI 不限并发,靠服务端队列)
+  // NAI / Latent 并发上限 → 闸门(ComfyUI 不限并发,靠服务端队列)。
+  // Latent 走同一把闸门(兼容层同为阻塞式 POST),上限跟随当前出图渠道的设置。
   watch(
-    () => settings.nai.concurrency,
+    () =>
+      settings.defaultBackend === 'latent'
+        ? settings.latent.concurrency
+        : settings.nai.concurrency,
     value => setNaiConcurrency(value),
     { immediate: true },
   );

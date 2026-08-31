@@ -229,6 +229,29 @@ describe('重试执行器', () => {
     expect(naiCooldownRemainingMs()).toBe(0);
   });
 
+  it('noRetry429:429(配额耗尽)与 401 同类立刻抛,不退避不上冷却', async () => {
+    const { waits, delay } = fakeDelay();
+    const run = vi.fn(async () => {
+      throw httpError(429);
+    });
+    await expect(runNaiWithRetry(run, { delay, noRetry429: true })).rejects.toThrow('HTTP 429');
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(waits).toEqual([]);
+    // 配额错误同样不该污染全局节奏
+    expect(naiCooldownRemainingMs()).toBe(0);
+  });
+
+  it('noRetry429 不影响其它状态码的既有重试行为', async () => {
+    const { waits, delay } = fakeDelay();
+    const run = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(httpError(503))
+      .mockResolvedValueOnce('ok');
+    await expect(runNaiWithRetry(run, { delay, noRetry429: true })).resolves.toBe('ok');
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(waits).toHaveLength(1);
+  });
+
   it('取消立刻抛出,不重试', async () => {
     const { delay } = fakeDelay();
     const run = vi.fn(async () => {

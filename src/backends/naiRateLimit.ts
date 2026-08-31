@@ -212,6 +212,12 @@ export interface NaiRetryOptions {
   onRetry?: (info: NaiRetryInfo) => void;
   /** 等待实现。留给单测注入,免得跑一遍测试真睡几十秒。 */
   delay?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /**
+   * 429 不重试。语义:该渠道的 429 是**配额耗尽**(如 latent 的周限额),不是「太快了」,
+   * 退避到天荒地老也等不来额度 —— 与 401 同类,立刻抛给用户。默认 false(NAI 官方
+   * 429 = 限流,退避重试)。
+   */
+  noRetry429?: boolean;
 }
 
 /** 鸭子类型取状态码与 Retry-After:不 import NaiError,免成环(见 shouldRetryNai)。 */
@@ -238,7 +244,7 @@ export async function runNaiWithRetry<T>(
   run: () => Promise<T>,
   opts: NaiRetryOptions = {},
 ): Promise<T> {
-  const { signal, onRetry, delay = abortableDelay } = opts;
+  const { signal, onRetry, delay = abortableDelay, noRetry429 } = opts;
   const maxRetries = NAI_MAX_ATTEMPTS - 1;
 
   for (let attempt = 1; ; attempt++) {
@@ -248,8 +254,9 @@ export async function runNaiWithRetry<T>(
       const status = errorStatus(error);
       // 不可重试(取消 / key 错 / 订阅过期 / 参数非法)或次数用尽:原样抛出,
       // 保住原错误信息 —— 用户要看的是「API Key 错误」,不是「重试 4 次后失败」。
-      if (attempt > maxRetries || !shouldRetryNai(error, status)) throw error;
-
+      // noRetry429:渠道 429 = 配额耗尽(周限额花完),退避无意义,与 401 同类立刻抛。
+      const quotaExhausted = noRetry429 === true && status === 429;
+      if (attempt > maxRetries || quotaExhausted || !shouldRetryNai(error, status)) throw error;
       const retryAfterMs = errorRetryAfterMs(error);
       // 429 = 对方明确说「太快了」。除了自己退避,还要给整个闸门上冷却,
       // 否则队列里其余任务会在同一秒接着撞上去 —— 那串密集失败才是封号风险所在。

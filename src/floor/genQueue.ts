@@ -1,13 +1,16 @@
 /**
  * NAI 并发闸门 + 全局节奏。
  *
- * 为什么只有 NAI 需要:两个后端的排队模型不同——
+ * 为什么需要:排队模型不同——
  * - ComfyUI:POST /prompt 拿到 prompt_id 即入**服务端**队列,轮询各查各的 history,
  *   一次性全发出去由 ComfyUI 自己顺序执行。客户端再加队列纯属多余,还白拖慢。
- * - NAI:generate-image 是一次阻塞式 POST,等到图出来才返回,没有队列概念。
- *   并发几个就是几条连接同时压过去,容易吃 429(见 backends/nai.ts 的错误映射)。
+ * - NAI 系(nai 与 latent,后者映射成 NAI 视图后走同一套生成):generate-image 是一次
+ *   阻塞式 POST,等到图出来才返回,没有队列概念。并发几个就是几条连接同时压过去,
+ *   容易吃 429(nai)/409 在途超限(latent),见 backends/nai.ts 的错误映射。
  *
- * 故闸门只包 NAI,上限用户可调(默认 1)。ComfyUI 路径不经过这里。
+ * 故闸门包住 NAI 系(latent 渠道映射成 NAI 视图后共用本闸门,见 settings.ts 的
+ * latentAsNai),上限跟随当前出图渠道(settings.nai.concurrency / settings.latent.concurrency)。
+ * ComfyUI 路径不经过这里。
  *
  * 闸门只管**同时几个**,管不了**多快一个**:release 后立刻 pump,下一个任务在同一个
  * tick 就发出去了。被限流时这会打出一串密集失败请求(429 → release → 立刻再来 → 429),

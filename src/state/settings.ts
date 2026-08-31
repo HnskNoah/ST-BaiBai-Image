@@ -226,7 +226,8 @@ export interface NaiConnPreset {
   key: string;
 }
 
-/** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */export interface NaiSettings extends BackendConn {
+/** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */
+export interface NaiSettings extends BackendConn {
   /** API Key(与副 API 渠道同口径,随设置落盘)。 */
   key: string;
   model: NaiModel;
@@ -300,6 +301,8 @@ export interface LatentSettings extends BackendConn {
   scale: number;
   /** 0 = 每次随机(与 NAI 同口径,随机值在卡片生成时决定)。 */
   seed: number;
+  /** 同时出图数(1–4):站点 409=在途任务超上限,复用 NAI 客户端闸门堵住这一面。 */
+  concurrency: number;
 }
 
 /** 界面偏好里要跨设备同步的部分;activePage 等纯本机临时态不在此。 */
@@ -1104,6 +1107,17 @@ export const LATENT_DEFAULT_URL = 'https://latent.moe/api/novelai';
 /** 站点固定分辨率:竖/横两档,按 tag 判向映射(square 触发不了,无此档)。 */
 export const LATENT_PORTRAIT_SIZE = '920×1536';
 export const LATENT_LANDSCAPE_SIZE = '1536×920';
+/** 站点原生采样器/调度器枚举(来自其 OpenAPI;无动态拉取端点,枚举变更需跟版本)。 */
+export const LATENT_SAMPLERS = [
+  'euler',
+  'euler_ancestral',
+  'dpmpp_2s_ancestral',
+  'dpmpp_2m',
+  'dpmpp_sde',
+  'dpmpp_2m_sde',
+  'ddim',
+];
+export const LATENT_SCHEDULERS = ['karras', 'beta', 'normal', 'simple', 'exponential'];
 
 function latentDefaults(): LatentSettings {
   return {
@@ -1114,12 +1128,14 @@ function latentDefaults(): LatentSettings {
     landscapeSize: LATENT_LANDSCAPE_SIZE,
     key: '',
     model: 'nai-diffusion-4-5-full',
-    sampler: 'k_euler',
-    noiseSchedule: 'karras',
-    // 站点原生默认 steps 偏低(12),按动漫模型常用值给 28;用户可 1-50 调
-    steps: 28,
+    // 站点原生枚举默认项(sampler 7 种 / scheduler 5 种,见 LATENT_SAMPLERS/LATENT_SCHEDULERS)
+    sampler: 'euler',
+    noiseSchedule: 'normal',
+    // 站点原生域 steps 8–16,默认 12;不沿用 NAI 的 28(超出站点域,发了也会被兼容层打回)
+    steps: 12,
     scale: 5,
     seed: 0,
+    concurrency: 1,
   };
 }
 
@@ -1273,14 +1289,15 @@ export function activeNaiArtist(): NaiArtistPreset | null {
 }
 
 /**
- * 当前出图后端为 NAI 时,生效画师串的显示名;其它后端 / 未选画师串返回空串 = 不盖章。
+ * 当前出图后端为 NAI 系(nai / latent)时,生效画师串的显示名;其它后端 / 未选画师串返回空串
+ * = 不盖章。latent 与 NAI 共用同一画师串库(latentAsNai 映射原样携带),盖章口径一致。
  * 专供「把画师串名写进 bbi_image 正文」的盖章位使用(runner 注入 + 手动编辑写回)——
  * 拼真正发给 NAI 的画师串走 backends/nai.ts 的 naiArtistPrompt,与本函数无关。
  * 消毒:画师串名是自由文本,剥掉尖括号并折叠空白,防止名字里的字符伪造 <artist> 子标签
  * 破坏 bbi_image 解析(FORBIDDEN_SUBTAG 只拦内容字段,盖进 <artist> 的值靠这里保证干净)。
  */
 export function activeNaiArtistName(): string {
-  if (settings.defaultBackend !== 'nai') return '';
+  if (settings.defaultBackend !== 'nai' && settings.defaultBackend !== 'latent') return '';
   const name = activeNaiArtist()?.name ?? '';
   return name.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
 }
@@ -1552,14 +1569,17 @@ function normalizeLatent(raw: unknown, def: LatentSettings): LatentSettings {
   const o = (raw ?? {}) as Partial<LatentSettings>;
   return {
     ...conn,
+    sampler: typeof o.sampler === 'string' && o.sampler ? o.sampler : def.sampler,
     key: typeof o.key === 'string' ? o.key : def.key,
     model: typeof o.model === 'string' && NAI_MODEL_VALUES.has(o.model) ? (o.model as NaiModel) : def.model,
-    sampler: typeof o.sampler === 'string' && o.sampler ? o.sampler : def.sampler,
-    noiseSchedule:
-      typeof o.noiseSchedule === 'string' && o.noiseSchedule ? o.noiseSchedule : def.noiseSchedule,
-    steps: Math.round(clampNumber(o.steps, def.steps, 1, 50)),
+    // 站点原生域:steps 8–16(兼容层超域值行为未知,本地先拦)、并发 1–4(409=在途超限)
+    steps: Math.round(clampNumber(o.steps, def.steps, 8, 16)),
+    // 0–10:站点是 SD 管线,CFG 常规域比 NAI 官方(0–35)窄得多
     scale: clampNumber(o.scale, def.scale, 0, 10),
     seed: Math.round(clampNumber(o.seed, def.seed, 0, 4294967295)),
+    concurrency: Math.round(clampNumber(o.concurrency, def.concurrency, 1, 4)),
+    noiseSchedule:
+      typeof o.noiseSchedule === 'string' && o.noiseSchedule ? o.noiseSchedule : def.noiseSchedule,
   };
 }
 

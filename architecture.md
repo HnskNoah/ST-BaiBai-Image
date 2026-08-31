@@ -10,7 +10,7 @@
 
 - 新 AI 正文落地后,**独立**发起一次 LLM 请求,判断哪些画面值得画、产出 danbooru tag,
   把 tag 以 `<bbi_image>...</bbi_image>` 形式插进正文(用户可手改);
-- 楼层里 tag 位置渲染一张「生图卡片」,点生成即调用出图后端(ComfyUI / NovelAI),
+- 楼层里 tag 位置渲染一张「生图卡片」,点生成即调用出图后端(ComfyUI / NovelAI / Latent),
   结果图片落盘到 ST 文件系统,元数据存消息 extra,支持历史翻页/重新生成/stale 提示;
 - 自带一个全屏设置窗口(渠道、角色管理、设置),整个 UI 活在 **shadow DOM** 里,与 ST 样式隔离。
 
@@ -282,6 +282,12 @@ runForFloor(floor, opts)
   排队位置(`onQueue`),卡片显示「排队中(前面 N 个)」而非一律「生成中」。
 - **NAI 要闸门**(genQueue.ts,`settings.nai.concurrency`,默认 1):`generate-image` 是阻塞式
   POST、服务端不排队,并发压过去吃 429。
+- **Latent 渠道共用同一闸门**:站点(`latent.moe`)兼容面同样是阻塞式 POST 返回 zip,无服务端
+  队列;`latentAsNai()` 把渠道设置映射成 NAI 视图后完全复用 generateNaiImage,闸门上限跟随
+  当前出图渠道(`settings.latent.concurrency`,1–4)。站点语义差异:固定分辨率两档
+  (竖 920×1536 / 横 1536×920,按 tag 判向)、无 vibe/variety、steps 原生域 8–16、
+  画师串与 NAI 共库;**429 在该站=周配额耗尽**(quota_exhausted)而非限流,生图调用带
+  `noRetry429` 让它像配置错误一样立刻抛(退避等不来额度),409=在途超上限由客户端闸门堵住。
 - **取消必须分流**(comfyui.ts 的 `cancelPrompt`):任务在排队 → `POST /queue {delete:[id]}`;
   正在执行 → `POST /interrupt`(带 prompt_id)。**无脑 /interrupt 会打断正在跑的别的任务**
   ——旧实现如此,并发下必现。有单测锁定这两条路径。
@@ -320,7 +326,7 @@ release 后立刻 `pump()`,下一个任务在同一 tick 就发出去;而错误�
 - **画师串显示名盖章**:`<artist>名</artist>` 是 bbi_image 里的可选展示元数据——记录
   「写入时」生效的画师串名,卡片 `promptText` 以 `名字:tags` 前缀显示;**生成侧不读**
   (真正拼画师串走生成时刻的 naiArtistPrompt)。两个写入方统一盖章 `activeNaiArtistName()`
-  (非 NAI 后端/未选画师串 = 空,序列化整段省略):runner 注入与编辑弹窗写回——换过
+  (NAI 系渠道(nai/latent)之外的后端、或未选画师串 = 空,序列化整段省略):runner 注入与
   画师串再「应用」,记录跟着刷新。老正文无此键 → parse 不产出该键(可选键,零迁移);
   名字消毒剥尖括号(activeNaiArtistName),防自由文本伪造子标签。
 - **子标签字面量必须拦**(`containsTagMarkup`,与 AI 侧共用 `FORBIDDEN_SUBTAG`):查找正则

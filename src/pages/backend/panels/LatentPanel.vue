@@ -3,13 +3,11 @@ import { computed, ref } from 'vue';
 import Collapsible from '@/components/Collapsible.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Icon from '@/components/Icon.vue';
-import { activeNaiArtist, NAI_MODELS, settings } from '@/state/settings';
+import { activeNaiArtist, LATENT_SAMPLERS, LATENT_SCHEDULERS, NAI_MODELS, settings } from '@/state/settings';
 import {
   BUILTIN_NAI_ARTISTS,
   isBuiltinNaiArtist,
-  naiSamplers,
   testNaiConnection,
-  NAI_NOISE_SCHEDULES,
 } from '@/backends/nai';
 
 /**
@@ -55,7 +53,9 @@ const activeArtistId = computed<string>({
 });
 const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value.id) : false));
 
-const samplerOptions = computed(() => naiSamplers(settings.latent.model));
+/** 站点原生枚举(无动态端点,硬编码);datalist 自由输入兜底,但候选即站点全量。 */
+const samplerOptions = computed(() => LATENT_SAMPLERS.map(s => ({ value: s, label: s })));
+const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, label: s })));
 </script>
 
 <template>
@@ -177,19 +177,33 @@ const samplerOptions = computed(() => naiSamplers(settings.latent.model));
             <div class="bbi-field-head">
               <span class="bbi-field-label">采样器</span>
             </div>
-            <select class="bbi-input bbi-select" v-model="settings.latent.sampler">
+            <input
+              class="bbi-input"
+              type="text"
+              v-model="settings.latent.sampler"
+              list="latent-sampler-presets"
+              spellcheck="false"
+            />
+            <datalist id="latent-sampler-presets">
               <option v-for="s in samplerOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
-            </select>
+            </datalist>
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
               <span class="bbi-field-label">噪声表</span>
             </div>
-            <select class="bbi-input bbi-select" v-model="settings.latent.noiseSchedule">
-              <option v-for="s in NAI_NOISE_SCHEDULES" :key="s.value" :value="s.value">
+            <input
+              class="bbi-input"
+              type="text"
+              v-model="settings.latent.noiseSchedule"
+              list="latent-noise-presets"
+              spellcheck="false"
+            />
+            <datalist id="latent-noise-presets">
+              <option v-for="s in noiseOptions" :key="s.value" :value="s.value">
                 {{ s.label }}
               </option>
-            </select>
+            </datalist>
           </div>
         </div>
 
@@ -198,7 +212,7 @@ const samplerOptions = computed(() => naiSamplers(settings.latent.model));
             <div class="bbi-field-head">
               <span class="bbi-field-label">步数</span>
             </div>
-            <input class="bbi-input" type="number" v-model.number="settings.latent.steps" min="1" max="50" />
+            <input class="bbi-input" type="number" v-model.number="settings.latent.steps" min="8" max="16" />
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
@@ -218,6 +232,18 @@ const samplerOptions = computed(() => naiSamplers(settings.latent.model));
               <span class="bbi-field-label">种子</span>
             </div>
             <input class="bbi-input" type="number" v-model.number="settings.latent.seed" min="0" />
+          </div>
+          <div class="bbi-field">
+            <div class="bbi-field-head">
+              <span class="bbi-field-label">同时出图数</span>
+            </div>
+            <input
+              class="bbi-input"
+              type="number"
+              v-model.number="settings.latent.concurrency"
+              min="1"
+              max="4"
+            />
           </div>
         </div>
         <p class="bbi-field-hint">尺寸为站点固定两档(竖 920×1536 / 横 1536×920),按 tag 判向自动选择,无输入项。</p>
@@ -263,7 +289,7 @@ const samplerOptions = computed(() => naiSamplers(settings.latent.model));
   margin-bottom: 0;
 }
 .be-row--nums {
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
 }
 @media (max-width: 640px) {
   .be-row {
