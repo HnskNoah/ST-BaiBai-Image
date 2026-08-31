@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   applyVibes,
@@ -6,6 +6,7 @@ import {
   BUILTIN_NAI_ARTISTS,
   fullNegativePrompt,
   fullPositivePrompt,
+  generateNaiImage,
   isBuiltinNaiArtist,
   naiArtistPrompt,
   naiDefaultQualityTags,
@@ -340,6 +341,47 @@ describe('NAI V5 support', () => {
       seed: 42,
     });
     expect(fallback.sampler).toBe('k_euler_ancestral');
+  });
+
+  it('latentTagOnly:strips v4_prompt structures and drops nl from the prompt', async () => {
+    // 站长确认:站点不支持自然语言,必须用 tag。generateNaiImage 的降级块剥掉
+    // v4_prompt/v4_negative_prompt/characterPrompts 并重算纯 tag prompt。
+    // 这里直接对降级后的参数对象断言——通过 mock fetch 拦截 body。
+    const settings = nai({
+      model: 'nai-diffusion-4-5-full',
+      key: 'k',
+      url: 'https://image.example.com',
+    });
+    const bodies: unknown[] = [];
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      // 401 = 配置类错误,shouldRetryNai 不重试,立即抛出——测试只关心 body
+      return new Response('unauthorized', { status: 401 });
+    });
+    try {
+      await generateNaiImage(
+        settings,
+        { prompt: '1girl, smile', nl: 'A girl smiling by the window.', characters: [], seed: 1 },
+        undefined,
+        { latentTagOnly: true, latentResolution: 'portrait' },
+      ).catch(() => undefined); // 抛出即可,我们只要拦截到的 body
+    } finally {
+      vi.stubGlobal('fetch', realFetch);
+    }
+    const body0 = bodies[0];
+    if (!body0 || typeof body0 !== 'object' || !('parameters' in body0)) {
+      throw new Error('fetch 未被调用或 body 缺 parameters');
+    }
+    const params = body0.parameters as Record<string, unknown>;
+    expect(params.v4_prompt).toBeUndefined();
+    expect(params.v4_negative_prompt).toBeUndefined();
+    expect(params.characterPrompts).toBeUndefined();
+    // 纯 tag:nl 句子不进 prompt 串,质量词照常在
+    expect(params.prompt).toBe('1girl, smile, location, very aesthetic, masterpiece, no text');
+    expect(params.resolution).toBe('portrait');
+    expect(params.width).toBeUndefined();
+    expect(params.height).toBeUndefined();
   });
 
   it('maps Base Tag + NL and native Character Prompts into the V5 caption schema', () => {

@@ -303,6 +303,8 @@ async function generate(): Promise<void> {
             // 64 倍数,豁免协议校验(格式/范围检查仍生效)。
             noRetry429: latentActive.value,
             allowNon64Size: latentActive.value,
+            // 站长确认:站点不支持自然语言必须用 tag——纯 tag 载荷(去 nl/v4_prompt)
+            latentTagOnly: latentActive.value,
             // 站点原生面收分辨率枚举(portrait/landscape)而非宽高数字对
             latentResolution:
               latentActive.value ? (job.size === 'landscape' ? 'landscape' : 'portrait') : undefined,
