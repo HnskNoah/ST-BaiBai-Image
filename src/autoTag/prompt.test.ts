@@ -343,11 +343,17 @@ describe('auto tag prompt', () => {
         { backend: 'nai', model: 'nai-diffusion-4-full', want: 'NAI-CHECKLIST' },
         { backend: 'nai', model: 'nai-diffusion-4-5-full', want: 'NAIV5-CHECKLIST' },
         { backend: 'nai', model: 'nai-diffusion-5-full', want: 'NAIV5-CHECKLIST' },
+        // latent 与 NAI 共用规范族:思维链按 settings.latent.model 的 NAI 名口径分流。
+        // 单串分支的 latent 代表用 NAI3(NAI 默认模型是 V5,不能用 oldModel 占位)。
+        { backend: 'latent', model: 'nai-diffusion-3', want: 'NAI-CHECKLIST' },
+        { backend: 'latent', model: 'nai-diffusion-4-5-full', want: 'NAIV5-CHECKLIST' },
+        { backend: 'latent', model: 'nai-diffusion-5-full', want: 'NAIV5-CHECKLIST' },
       ] as const;
       const all = ['COMFY-CHECKLIST', 'NAI-CHECKLIST', 'NAIV5-CHECKLIST'];
       for (const { backend, model, want } of cases) {
         settings.defaultBackend = backend;
         settings.nai.model = model;
+        settings.latent.model = model;
         const messages = await buildAutoTagMessages(context(), 1, options, null);
         const text = messages.map(m => m.content).join('\n');
         for (const marker of all) {
@@ -528,6 +534,39 @@ describe('auto tag prompt', () => {
     } finally {
       settings.defaultBackend = oldBackend;
       settings.nai.model = oldModel;
+    }
+  });
+
+  // latent 与 NAI 共用规范族:V5 判据(景别/表情词表/横竖)原样下发给 latent 渠道,
+  // Character Prompts 按 settings.latent.model 的 NAI 名口径激活。
+  it('gives latent the NAI V5 doctrine and activates Character Prompts by its own model', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      minImages: 0,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      prompts: prompts(),
+    };
+    const oldBackend = settings.defaultBackend;
+    const oldModel = settings.latent.model;
+    try {
+      settings.defaultBackend = 'latent';
+      settings.latent.model = 'nai-diffusion-5-full';
+      const messages = await buildAutoTagMessages(context(), 1, options, null);
+      const text = messages.map(m => m.content).join('\n');
+
+      // V5 规范判据(与 NAI 渠道同一份)
+      expect(text).toContain('Write exactly one shot distance');
+      expect(text).toContain('When unsure, write portrait');
+      // Character Prompts 生效:Base + characters 双层结构出现在协议里
+      expect(text).toContain('Every image must include Base tag, English Base nl, and characters');
+      // 不允许串进 comfy 规范
+      expect(text).not.toContain('%negative_prompt%');
+    } finally {
+      settings.defaultBackend = oldBackend;
+      settings.latent.model = oldModel;
     }
   });
 

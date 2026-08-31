@@ -322,10 +322,12 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             settings.autoTag.minImages,
             settings.autoTag.maxImages,
           );
+          // latent 与 NAI 共用同一验收:兼容层的 Character Prompts 支持面按 NAI 名口径
           if (
-            settings.defaultBackend === 'nai' &&
-            naiSupportsCharacterPrompts(settings.nai.model) &&
-            candidate.changes.some(change => change.field === 'new' && !change.nl?.trim())
+            (settings.defaultBackend === 'nai' &&
+              naiSupportsCharacterPrompts(settings.nai.model)) ||
+            (settings.defaultBackend === 'latent' &&
+              naiSupportsCharacterPrompts(settings.latent.model))
           ) {
             throw new Error('NAI 4.5/V5 建档必须附带 nl 外貌描述');
           }
