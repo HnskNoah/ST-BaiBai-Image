@@ -33,10 +33,31 @@ import {
 } from '@/state/settings';
 
 /**
+ * 当前出图后端是否为 NAI 系(nai / latent)。latent 走站点的 NovelAI 兼容面,
+ * 出图侧的拼装(fullPositivePrompt/质量词/负面链)与 NAI 完全同构,
+ * 故 tag 书写规范与思维链也共用 NAI 族——ComfyUI 规范教的工作流占位符、
+ * 括号转义等知识对兼容层毫无意义,只会与本地追加的 NAI 质量词打架。
+ */
+function isNaiFamilyBackend(): boolean {
+  return settings.defaultBackend === 'nai' || settings.defaultBackend === 'latent';
+}
+
+/**
+ * Character Prompts 是否生效:NAI 看自身模型;latent 的 model 就是 NAI 名
+ * (兼容层渲染为站点 Anima,支持面跟随 NAI 名口径),直接用它判断。
+ */
+function characterPromptsOn(): boolean {
+  if (settings.defaultBackend === 'latent')
+    return naiSupportsCharacterPrompts(settings.latent.model);
+  return settings.defaultBackend === 'nai' && naiSupportsCharacterPrompts(settings.nai.model);
+}
+
+/**
  * 按默认后端取 tag 书写规范:
  * - comfyui → comfySpec(留空回落内置默认);{{nl}} 宏按自然语言开关展开/置空,
  *   自定义内容不含宏时开启开关会把自然语言规范追加在末尾(防止开关静默失效)。
- * - nai → naiSpec(留空回落内置默认 DEFAULT_NAI_SPEC)。
+ * - nai / latent → naiSpec(留空回落内置默认 DEFAULT_NAI_SPEC);latent 与 NAI 共用:
+ *   出图侧走同一套 fullPositivePrompt/质量词/负面链,tag 消费端完全相同。
  * - webui → 暂不附加。
  */
 function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromptsOn: boolean): string {
@@ -51,7 +72,7 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromp
     // 宏置空后可能留下连续空行,折叠掉
     return resolved.replace(/\n{3,}/g, '\n\n').trim();
   }
-  if (settings.defaultBackend === 'nai') {
+  if (isNaiFamilyBackend()) {
     return naiCharPromptsOn
       ? (options.prompts?.naiV5Spec ?? '').trim() || DEFAULT_NAI_V5_SPEC
       : (options.prompts?.naiSpec ?? '').trim() || DEFAULT_NAI_SPEC;
@@ -68,7 +89,7 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromp
  * webui 暂无专属规范,回落 comfy 那份(该后端尚未接入)。
  */
 function backendThinkingPrompt(options: AutoTagSettings, naiCharPromptsOn: boolean): string {
-  if (settings.defaultBackend === 'nai') {
+  if (isNaiFamilyBackend()) {
     return naiCharPromptsOn
       ? (options.prompts?.naiV5Thinking ?? '').trim() || DEFAULT_NAI_V5_THINKING
       : (options.prompts?.naiThinking ?? '').trim() || DEFAULT_NAI_THINKING;
@@ -136,8 +157,8 @@ export async function buildAutoTagMessages(
   // 开启后协议变为 tag/nl 两键——自然语言是配合短 tag 用的,不是替代。
   // 两项都取自同一个当前预设:切工作流即同时切走自然语言与动态负面词的口径。
   const comfyOn = settings.defaultBackend === 'comfyui';
-  const naiCharPromptsOn =
-    settings.defaultBackend === 'nai' && naiSupportsCharacterPrompts(settings.nai.model);
+  // latent 渠道:model 字段存的就是 NAI 名,Character Prompts 支持面按同一口径判断
+  const naiCharPromptsOn = characterPromptsOn();
   const comfyPreset = comfyOn ? activeComfyPreset() : null;
   const nlOn = !!comfyPreset?.naturalLanguage || naiCharPromptsOn;
   // 动态负面词门槛:custom 模式看工作流是否含 %negative_prompt%;
