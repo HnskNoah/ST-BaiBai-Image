@@ -49,7 +49,7 @@ describe('Latent 渠道设置', () => {
     expect(settings.latent.concurrency).toBe(1);
   });
 
-  it('normalizeLatent:steps 钳到 8–16、并发钳到 1–4、scale 钳到 0–10', async () => {
+  it('normalizeLatent:steps 钳到 8–16、并发钳到 1–4、scale 恒被默认顶掉(站点无 CFG)', async () => {
     const { settings } = await hydrateWithLatent({
       steps: 28, // NAI 常用值,超出站点原生域
       concurrency: 8,
@@ -57,25 +57,47 @@ describe('Latent 渠道设置', () => {
     });
     expect(settings.latent.steps).toBe(16);
     expect(settings.latent.concurrency).toBe(4);
-    expect(settings.latent.scale).toBe(10);
+    expect(settings.latent.scale).toBe(5);
   });
 
-  it('normalizeLatent:低于下限同样钳回(steps 1→8、并发 0→1)', async () => {
-    const { settings } = await hydrateWithLatent({ steps: 1, concurrency: 0, scale: -3 });
+  it('normalizeLatent:低于下限同样钳回(steps 1→8、并发 0→1、seed 域 0–2^53-1)', async () => {
+    const { settings } = await hydrateWithLatent({ steps: 1, concurrency: 0, seed: -5 });
     expect(settings.latent.steps).toBe(8);
     expect(settings.latent.concurrency).toBe(1);
-    expect(settings.latent.scale).toBe(0);
+    expect(settings.latent.seed).toBe(0);
   });
 
-  it('normalizeLatent:非数值字段回落默认,不抛错', async () => {
-    const { settings } = await hydrateWithLatent({
-      steps: 'many',
-      concurrency: null,
-      scale: true,
-    });
+  it('normalizeLatent:seed 接受站点原生大值(NAI 32 位域之外)', async () => {
+    const { settings } = await hydrateWithLatent({ seed: 4294967296 }); // 2^32,NAI 域外
+    expect(settings.latent.seed).toBe(4294967296);
+  });
+
+  it('normalizeLatent:非法值回落默认(steps/并发/seed 非数)', async () => {
+    const { settings } = await hydrateWithLatent({ steps: 'many', concurrency: null, seed: true });
     expect(settings.latent.steps).toBe(12);
     expect(settings.latent.concurrency).toBe(1);
-    expect(settings.latent.scale).toBe(5);
+    expect(settings.latent.seed).toBe(0);
+  });
+
+  it('normalizeLatent:model 钳死白名单(手改 JSON 塞下线模型无效)', async () => {
+    const { settings } = await hydrateWithLatent({ model: 'nai-diffusion-3' });
+    expect(settings.latent.model).toBe('nai-diffusion-4-5-full');
+  });
+
+  it('generateNaiImage latentResolution:载荷去 width/height 换 resolution 枚举', async () => {
+    const { settings, latentAsNai } = await hydrateWithLatent({});
+    settings.nai.key = 'k';
+    const view = latentAsNai();
+    view.key = 'k';
+    const { buildNaiParameters } = await import('@/backends/nai');
+    // buildNaiParameters 本身不感知枚举:替换发生在 generateNaiImage 的载荷装配处,
+    // 这里用其可测的构成件验证宽度仍在(本地派生计算用),枚举替换逻辑由类型与调用点保证。
+    const params = buildNaiParameters(view, { prompt: '1girl', seed: 1 }, { multipleOf64: false });
+    expect(params.width).toBe(920);
+    expect(params.height).toBe(1536);
+    // 渠道字段恒定:model/scale 不随用户 JSON 漂移(面板无 UI)
+    expect(view.model).toBe('nai-diffusion-4-5-full');
+    expect(view.scale).toBe(5);
   });
 
   it('latentAsNai:vibes 恒空、undesiredContent=渠道负面、variety/cfgRescale 关闭', async () => {

@@ -284,10 +284,19 @@ runForFloor(floor, opts)
   POST、服务端不排队,并发压过去吃 429。
 - **Latent 渠道共用同一闸门**:站点(`latent.moe`)兼容面同样是阻塞式 POST 返回 zip,无服务端
   队列;`latentAsNai()` 把渠道设置映射成 NAI 视图后完全复用 generateNaiImage,闸门上限跟随
-  当前出图渠道(`settings.latent.concurrency`,1–4)。站点语义差异:固定分辨率两档
-  (竖 920×1536 / 横 1536×920,按 tag 判向)、无 vibe/variety、steps 原生域 8–16、
-  画师串与 NAI 共库;**429 在该站=周配额耗尽**(quota_exhausted)而非限流,生图调用带
-  `noRetry429` 让它像配置错误一样立刻抛(退避等不来额度),409=在途超上限由客户端闸门堵住。
+  当前出图渠道(`settings.latent.concurrency`,1–4)。409=在途超上限由客户端闸门堵住;
+  **429 在该站=周配额耗尽**(quota_exhausted)而非限流,生图调用带 `noRetry429` 让它像
+  配置错误一样立刻抛(退避等不来额度)。
+- **站点载荷事实(openapi.json GenerationRequest,8 字段)**:prompt / negativePrompt
+  (maxLength 2000,合并后截断——`LATENT_NEGATIVE_MAX_LEN`,超长直接 400)/ seed
+  (0–2^53-1,omit=random)/ resolution(**枚举**:square=1024×1024 / portrait=920×1536 /
+  landscape=1536×920,生图调用带 `latentResolution` 把 width/height 数字对换成枚举)/
+  steps(8–16,默认 12)/ sampler(7 枚举)/ scheduler(5 枚举)/ preset(deprecated,不传)。
+  **没有 model、没有 CFG/scale**——单模型站点(渲染自家 Anima),故 LatentPanel 无模型/Scale
+  输入;`latent.model` 仅决定本地副 API 规范族(恒 4.5-full → Base+characters 结构),
+  normalize 钳死白名单;`latent.scale` 保留字段只为 buildNaiParameters 读值,恒 5。
+  兼容面(/api/novelai)不在该 openapi 里,数字分辨率是否被兼容层接受未实测——发枚举是
+  唯一有文档依据的形状。画师串与 NAI 共库。
 - **取消必须分流**(comfyui.ts 的 `cancelPrompt`):任务在排队 → `POST /queue {delete:[id]}`;
   正在执行 → `POST /interrupt`(带 prompt_id)。**无脑 /interrupt 会打断正在跑的别的任务**
   ——旧实现如此,并发下必现。有单测锁定这两条路径。

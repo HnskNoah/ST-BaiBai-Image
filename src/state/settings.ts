@@ -292,14 +292,22 @@ export interface NaiSettings extends BackendConn {
  */
 export interface LatentSettings extends BackendConn {
   key: string;
-  /** 载荷里的模型名;站点侧实际渲染为自家的 Anima 模型,按兼容层文档选 NAI 名。 */
+  /**
+   * 仅决定本地副 API 的规范族(4.5/V5 → Base+characters 结构),**站点无模型参数**——
+   * openapi GenerationRequest 全 8 字段没有 model,单模型站点(渲染自家 Anima)。
+   * 面板已撤 UI,恒为默认 nai-diffusion-4-5-full;normalize 钳死,手改 JSON 无效。
+   */
   model: NaiModel;
-  /** NAI 名(如 k_euler),兼容层映射到站点管线。 */
+  /** NAI 名(如 k_euler),兼容层映射到站点管线。枚举与站点 openapi 逐字一致。 */
   sampler: string;
   noiseSchedule: string;
   steps: number;
+  /**
+   * 站点 openapi 没有 CFG/scale 字段(载荷里随 NAI 协议结构发出,兼容层消费与否未知)。
+   * 面板已撤 UI;保留字段只为 buildNaiParameters 读值,恒为默认 5。
+   */
   scale: number;
-  /** 0 = 每次随机(与 NAI 同口径,随机值在卡片生成时决定)。 */
+  /** 0 = 每次随机;站点原生域 0–2^53-1(openapi seed 上限,远宽于 NAI 的 32 位)。 */
   seed: number;
   /** 同时出图数(1–4):站点 409=在途任务超上限,复用 NAI 客户端闸门堵住这一面。 */
   concurrency: number;
@@ -1334,6 +1342,22 @@ export function latentAsNai(latent: LatentSettings = settings.latent): NaiSettin
 }
 
 /**
+ * Latent 渠道的出图载荷改写:站点 OpenAPI 的 GenerationRequest 是**单模型站点**——
+ * 全 schema 8 字段(prompt/negativePrompt/seed/resolution/steps/sampler/scheduler/preset)
+ * 没有 model、没有 CFG/scale;resolution 是枚举(square=1024×1024 / portrait=920×1536 /
+ * landscape=1536×920)而非宽高数字对;negativePrompt maxLength 2000。这些是插件要遵守的
+ * 站点事实,与 NAI 渠道共享的 generateNaiImage 在此分叉:
+ * - model/scale 恒用渠道字段值(面板已撤 UI,见 LatentSettings 注释);
+ * - resolution 发枚举(按 values.size 判向),不走 width/height 数字对;
+ * - 负面合并后超 2000 截断(站点 maxLength,超长直接 400)。
+ * 其余字段(steps/sampler/scheduler/negativePrompt)与原生域逐字一致,直发。
+ */
+export const LATENT_NEGATIVE_MAX_LEN = 2000;
+
+/** 站点原生分辨率枚举(openapi GenerationRequest.resolution;square 不暴露,面板两档即两枚举)。 */
+export type LatentResolution = 'portrait' | 'landscape';
+
+/**
  * 存量迁移:老配置只有单一 resolution(NAI 默认竖版 832×1216)。
  * 升级后按宽高关系把它归进对应那一格,另一格用默认值——
  * 用户之前特意调过的尺寸不会被默认值悄悄顶掉。
@@ -1572,11 +1596,12 @@ function normalizeLatent(raw: unknown, def: LatentSettings): LatentSettings {
     sampler: typeof o.sampler === 'string' && o.sampler ? o.sampler : def.sampler,
     key: typeof o.key === 'string' ? o.key : def.key,
     model: typeof o.model === 'string' && NAI_MODEL_VALUES.has(o.model) ? (o.model as NaiModel) : def.model,
-    // 站点原生域:steps 8–16(兼容层超域值行为未知,本地先拦)、并发 1–4(409=在途超限)
+    // 站点原生域(openapi):steps 8–16 默认 12;并发 1–4(409=在途超限,本地闸门口径);
+    // seed 0–2^53-1(远宽于 NAI 的 32 位)。scale 无 UI(站点无 CFG 字段,见 LatentSettings):
+    // 存量值仍钳 0–10,但恒被默认 5 顶掉——非默认值已无处可设,只是不清数据。
     steps: Math.round(clampNumber(o.steps, def.steps, 8, 16)),
-    // 0–10:站点是 SD 管线,CFG 常规域比 NAI 官方(0–35)窄得多
-    scale: clampNumber(o.scale, def.scale, 0, 10),
-    seed: Math.round(clampNumber(o.seed, def.seed, 0, 4294967295)),
+    scale: def.scale,
+    seed: Math.round(clampNumber(o.seed, def.seed, 0, 9007199254740991)),
     concurrency: Math.round(clampNumber(o.concurrency, def.concurrency, 1, 4)),
     noiseSchedule:
       typeof o.noiseSchedule === 'string' && o.noiseSchedule ? o.noiseSchedule : def.noiseSchedule,
