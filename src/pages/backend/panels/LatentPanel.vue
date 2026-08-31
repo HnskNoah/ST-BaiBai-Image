@@ -170,7 +170,7 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
             <div class="bbi-field-head">
               <span class="bbi-field-label">采样器</span>
             </div>
-            <select class="bbi-input" v-model="settings.latent.sampler">
+            <select class="bbi-input bbi-select" v-model="settings.latent.sampler">
               <option v-for="s in samplerOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
             </select>
           </div>
@@ -178,7 +178,7 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
             <div class="bbi-field-head">
               <span class="bbi-field-label">噪声表</span>
             </div>
-            <select class="bbi-input" v-model="settings.latent.noiseSchedule">
+            <select class="bbi-input bbi-select" v-model="settings.latent.noiseSchedule">
               <option v-for="s in noiseOptions" :key="s.value" :value="s.value">
                 {{ s.label }}
               </option>
