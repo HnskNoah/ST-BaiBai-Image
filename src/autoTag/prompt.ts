@@ -34,21 +34,23 @@ import {
 
 /**
  * 当前出图后端是否为 NAI 系(nai / latent)。latent 走站点的 NovelAI 兼容面,
- * 出图侧的拼装(fullPositivePrompt/质量词/负面链)与 NAI 完全同构,
- * 故 tag 书写规范与思维链也共用 NAI 族——ComfyUI 规范教的工作流占位符、
- * 括号转义等知识对兼容层毫无意义,只会与本地追加的 NAI 质量词打架。
+ * 出图侧的拼装(fullPositivePrompt/质量词/负面链)与 NAI 同构,规范与思维链
+ * 也从 NAI 族取——ComfyUI 规范教的工作流占位符、括号转义等知识对兼容层毫无意义,
+ * 只会与本地追加的 NAI 质量词打架。至于取 NAI 族里的哪一份,见 characterPromptsOn。
  */
 function isNaiFamilyBackend(): boolean {
   return settings.defaultBackend === 'nai' || settings.defaultBackend === 'latent';
 }
 
 /**
- * Character Prompts 是否生效:NAI 看自身模型;latent 的 model 就是 NAI 名
- * (兼容层渲染为站点 Anima,支持面跟随 NAI 名口径),直接用它判断。
+ * Character Prompts(tag+nl 双键结构)是否生效:
+ * - NAI:看自身模型(4.5/V5 → 是);
+ * - latent:**恒否**。站长确认:站点不支持自然语言,必须用 tag——站点是 SD checkpoint
+ *   生态(Anima 跑 danbooru 短 tag),兼容层对 v4_prompt/nl 的消费没有文档依据。
+ *   故 latent 恒走 naiSpec/naiThinking(单串 tag + 区分性称谓邻接绑定,无 nl 键),
+ *   发送侧同步降级为纯 tag 载荷(见 generateNaiImage 的 latentTagOnly)。
  */
 function characterPromptsOn(): boolean {
-  if (settings.defaultBackend === 'latent')
-    return naiSupportsCharacterPrompts(settings.latent.model);
   return settings.defaultBackend === 'nai' && naiSupportsCharacterPrompts(settings.nai.model);
 }
 

@@ -343,11 +343,11 @@ describe('auto tag prompt', () => {
         { backend: 'nai', model: 'nai-diffusion-4-full', want: 'NAI-CHECKLIST' },
         { backend: 'nai', model: 'nai-diffusion-4-5-full', want: 'NAIV5-CHECKLIST' },
         { backend: 'nai', model: 'nai-diffusion-5-full', want: 'NAIV5-CHECKLIST' },
-        // latent 与 NAI 共用规范族:思维链按 settings.latent.model 的 NAI 名口径分流。
-        // 单串分支的 latent 代表用 NAI3(NAI 默认模型是 V5,不能用 oldModel 占位)。
+        // latent:站长确认站点不支持自然语言必须用 tag——恒走单串 naiSpec/naiThinking
+        // (邻接绑定口径),不看 settings.latent.model(4.5/V5 名也不例外)。
         { backend: 'latent', model: 'nai-diffusion-3', want: 'NAI-CHECKLIST' },
-        { backend: 'latent', model: 'nai-diffusion-4-5-full', want: 'NAIV5-CHECKLIST' },
-        { backend: 'latent', model: 'nai-diffusion-5-full', want: 'NAIV5-CHECKLIST' },
+        { backend: 'latent', model: 'nai-diffusion-4-5-full', want: 'NAI-CHECKLIST' },
+        { backend: 'latent', model: 'nai-diffusion-5-full', want: 'NAI-CHECKLIST' },
       ] as const;
       const all = ['COMFY-CHECKLIST', 'NAI-CHECKLIST', 'NAIV5-CHECKLIST'];
       for (const { backend, model, want } of cases) {
@@ -537,9 +537,9 @@ describe('auto tag prompt', () => {
     }
   });
 
-  // latent 与 NAI 共用规范族:V5 判据(景别/表情词表/横竖)原样下发给 latent 渠道,
-  // Character Prompts 按 settings.latent.model 的 NAI 名口径激活。
-  it('gives latent the NAI V5 doctrine and activates Character Prompts by its own model', async () => {
+  // latent:站点不支持自然语言,必须用 tag(站长确认)——恒走 naiSpec 单串口径
+  // (邻接绑定多人规则),不拿 V5 判据,不要求 Base+characters 双层结构。
+  it('gives latent the tag-only NAI doctrine with adjacency binding', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
@@ -553,16 +553,17 @@ describe('auto tag prompt', () => {
     const oldModel = settings.latent.model;
     try {
       settings.defaultBackend = 'latent';
-      settings.latent.model = 'nai-diffusion-5-full';
+      settings.latent.model = 'nai-diffusion-5-full'; // 即便挂着 V5 名也不走 V5 规范
       const messages = await buildAutoTagMessages(context(), 1, options, null);
       const text = messages.map(m => m.content).join('\n');
 
-      // V5 规范判据(与 NAI 渠道同一份)
-      expect(text).toContain('Write exactly one shot distance');
-      expect(text).toContain('When unsure, write portrait');
-      // Character Prompts 生效:Base + characters 双层结构出现在协议里
-      expect(text).toContain('Every image must include Base tag, English Base nl, and characters');
-      // 不允许串进 comfy 规范
+      // 单串 naiSpec 判据:多人邻接绑定规则与其示例在,身份 tag 转义口径在
+      expect(text).toContain('white dress on green hair girl');
+      expect(text).toContain('character name (copyright name)');
+      // V5 双层结构判据不得出现
+      expect(text).not.toContain('Write exactly one shot distance');
+      expect(text).not.toContain('Every image must include Base tag');
+      // 不串 comfy 规范
       expect(text).not.toContain('%negative_prompt%');
     } finally {
       settings.defaultBackend = oldBackend;

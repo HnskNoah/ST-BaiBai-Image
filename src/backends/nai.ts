@@ -621,6 +621,16 @@ export async function generateNaiImage(
      * square 档不暴露)。设了此键,width/height 从载荷移除、resolution 入替。
      */
     latentResolution?: 'portrait' | 'landscape';
+    /**
+     * Latent 渠道:纯 tag 载荷。站长确认站点不支持自然语言,必须用 tag——
+     * ①nl 不拼进 prompt(fullPositivePrompt 只拿 tag 串);
+     * ②丢弃 v4_prompt/v4_negative_prompt/characterPrompts 结构(那是 4.5/V5 的
+     *   Character Prompts 载荷,兼容层消费没有文档依据;characters[].tag 的内容
+     *   副 API 已按邻接绑定写进主 tag 串,这里丢弃的是冗余副本而非信息)。
+     * ③prompt 串顶层与 input 字段同源(fullPositivePrompt),站点的 prompt
+     *   上限 2000 字符由截断兜底。
+     */
+    latentTagOnly?: boolean;
   } = {},
 ): Promise<ComfyImageResult> {
   if (!nai.key.trim()) throw new NaiError('请先填写 NAI API Key');
@@ -629,6 +639,14 @@ export async function generateNaiImage(
   const params = buildNaiParameters(nai, values, {
     multipleOf64: !opts.allowNon64Size,
   });
+  if (opts.latentTagOnly) {
+    // 站点只吃 tag:扁平 prompt 串。fullPositivePrompt 重算一遍只拿 tag 部分
+    // (values.nl 不传入),v4_prompt 系结构整个剥掉,prompt/input 同源。
+    delete (params as Record<string, unknown>).v4_prompt;
+    delete (params as Record<string, unknown>).v4_negative_prompt;
+    delete (params as Record<string, unknown>).characterPrompts;
+    params.prompt = fullPositivePrompt(nai, values.prompt);
+  }
   if (opts.latentResolution) {
     // 站点原生面收枚举不收数字对;宽高在本地仍用于 skip_cfg 等派生计算,只从载荷移除。
     delete (params as Record<string, unknown>).width;

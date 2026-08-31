@@ -290,13 +290,18 @@ runForFloor(floor, opts)
 - **站点载荷事实(openapi.json GenerationRequest,8 字段)**:prompt / negativePrompt
   (maxLength 2000,合并后截断——`LATENT_NEGATIVE_MAX_LEN`,超长直接 400)/ seed
   (0–2^53-1,omit=random)/ resolution(**枚举**:square=1024×1024 / portrait=920×1536 /
-  landscape=1536×920,生图调用带 `latentResolution` 把 width/height 数字对换成枚举)/
+  landscape=1536×920;生图调用带 `latentResolution` 换掉 width/height 数字对)/
   steps(8–16,默认 12)/ sampler(7 枚举)/ scheduler(5 枚举)/ preset(deprecated,不传)。
   **没有 model、没有 CFG/scale**——单模型站点(渲染自家 Anima),故 LatentPanel 无模型/Scale
-  输入;`latent.model` 仅决定本地副 API 规范族(恒 4.5-full → Base+characters 结构),
-  normalize 钳死白名单;`latent.scale` 保留字段只为 buildNaiParameters 读值,恒 5。
-  兼容面(/api/novelai)不在该 openapi 里,数字分辨率是否被兼容层接受未实测——发枚举是
-  唯一有文档依据的形状。画师串与 NAI 共库。
+  输入;`latent.scale` 保留字段只为 buildNaiParameters 读值,恒 5。
+  **站长确认:站点不支持自然语言,必须用 tag**(SD checkpoint 生态,danbooru 短 tag)。
+  因此 Character Prompts 对 latent 恒关(characterPromptsOn 只认 nai 渠道),规范/思维链
+  恒走 naiSpec/naiThinking(**单串 tag + 区分性称谓邻接绑定**,非 V5 双层结构);
+  发送侧带 `latentTagOnly` 降级为纯 tag 载荷——nl 不拼 prompt、v4_prompt/v4_negative_prompt/
+  characterPrompts 整个剥掉(characters[].tag 的内容副 API 已按绑定写法写进主串,丢弃的是
+  冗余副本),prompt 顶层与 input 同源。
+  兼容面(/api/novelai)不在该 openapi 里;发 `resolution` 枚举是唯一有文档依据的画幅形状。
+  画师串与 NAI 共库。
 - **取消必须分流**(comfyui.ts 的 `cancelPrompt`):任务在排队 → `POST /queue {delete:[id]}`;
   正在执行 → `POST /interrupt`(带 prompt_id)。**无脑 /interrupt 会打断正在跑的别的任务**
   ——旧实现如此,并发下必现。有单测锁定这两条路径。

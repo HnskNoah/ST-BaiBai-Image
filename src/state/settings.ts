@@ -293,9 +293,11 @@ export interface NaiSettings extends BackendConn {
 export interface LatentSettings extends BackendConn {
   key: string;
   /**
-   * 仅决定本地副 API 的规范族(4.5/V5 → Base+characters 结构),**站点无模型参数**——
-   * openapi GenerationRequest 全 8 字段没有 model,单模型站点(渲染自家 Anima)。
-   * 面板已撤 UI,恒为默认 nai-diffusion-4-5-full;normalize 钳死,手改 JSON 无效。
+   * 仅作副 API 规范族的历史字段。**站点无模型参数且不支持自然语言**(站长确认:
+   * 必须用 tag——SD checkpoint 生态,danbooru 短 tag),面板无模型 UI;
+   * Character Prompts 对 latent 恒关(characterPromptsOn),规范恒走 naiSpec
+   * (单串 tag + 邻接绑定),发送侧恒纯 tag 载荷(latentTagOnly)。
+   * 字段保留只为 latentAsNai 映射成 NaiSettings 时形状完整,值恒默认 4.5-full。
    */
   model: NaiModel;
   /** NAI 名(如 k_euler),兼容层映射到站点管线。枚举与站点 openapi 逐字一致。 */
