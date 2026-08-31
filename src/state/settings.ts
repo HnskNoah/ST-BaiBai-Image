@@ -22,10 +22,11 @@ import { reactive, watch } from 'vue';
  */
 
 /** 生图后端 */
-export type BackendId = 'webui' | 'comfyui' | 'nai';
+export type BackendId = 'webui' | 'comfyui' | 'nai' | 'latent';
 // 顺序即展示顺序(渠道页页签 / 设置页出图后端下拉):NAI 用户最多,排最前;webui 隐藏但保留。
 export const BACKENDS: { value: BackendId; label: string }[] = [
   { value: 'nai', label: 'NAI' },
+  { value: 'latent', label: 'Latent' },
   { value: 'comfyui', label: 'ComfyUI' },
   { value: 'webui', label: 'WebUI' },
 ];
@@ -225,8 +226,7 @@ export interface NaiConnPreset {
   key: string;
 }
 
-/** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */
-export interface NaiSettings extends BackendConn {
+/** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */export interface NaiSettings extends BackendConn {
   /** API Key(与副 API 渠道同口径,随设置落盘)。 */
   key: string;
   model: NaiModel;
@@ -280,6 +280,26 @@ export interface NaiSettings extends BackendConn {
    * 第一条:静默换一个接口地址,比「画师串不使用」严重得多。
    */
   activeConnId: string;
+}
+
+/**
+ * Latent 渠道:第三方站点的 NovelAI 兼容面精简适配(见 LatentPanel)。
+ * 生成完全复用 NAI 机器(latentAsNai 映射成 NaiSettings 后走 generateNaiImage),
+ * 故字段与 NaiSettings 同名同义;面板只暴露站点需要的子集——
+ * 尺寸固定用站点的两档(portraitSize/landscapeSize 默认值,无 UI),
+ * 无 Vibe(生成时恒空)、无 cfg_rescale/variety。
+ */
+export interface LatentSettings extends BackendConn {
+  key: string;
+  /** 载荷里的模型名;站点侧实际渲染为自家的 Anima 模型,按兼容层文档选 NAI 名。 */
+  model: NaiModel;
+  /** NAI 名(如 k_euler),兼容层映射到站点管线。 */
+  sampler: string;
+  noiseSchedule: string;
+  steps: number;
+  scale: number;
+  /** 0 = 每次随机(与 NAI 同口径,随机值在卡片生成时决定)。 */
+  seed: number;
 }
 
 /** 界面偏好里要跨设备同步的部分;activePage 等纯本机临时态不在此。 */
@@ -950,6 +970,8 @@ export interface ImageSettings {
   webui: BackendConn;
   comfyui: ComfyUISettings;
   nai: NaiSettings;
+  /** Latent 渠道(第三方站 NovelAI 兼容面的精简适配)。 */
+  latent: LatentSettings;
   /** 副 API 渠道列表(镜像共享存储;真身在 extensionSettings['baibai_api_channels']) */
   channels: ApiChannel[];
   /** 任务指派的渠道 id。tagGen=生成画图 tag;空串=跟随主 API。 */
@@ -1077,6 +1099,30 @@ function naiDefaults(): NaiSettings {
   };
 }
 
+/** Latent 站点兼容前缀(NAI 协议);作为该渠道的默认接口地址。 */
+export const LATENT_DEFAULT_URL = 'https://latent.moe/api/novelai';
+/** 站点固定分辨率:竖/横两档,按 tag 判向映射(square 触发不了,无此档)。 */
+export const LATENT_PORTRAIT_SIZE = '920×1536';
+export const LATENT_LANDSCAPE_SIZE = '1536×920';
+
+function latentDefaults(): LatentSettings {
+  return {
+    ...backendDefaults(LATENT_DEFAULT_URL),
+    // 尺寸按站点固定档来(兼容层对尺寸的映射以此为准),无 UI 输入
+    resolution: LATENT_PORTRAIT_SIZE,
+    portraitSize: LATENT_PORTRAIT_SIZE,
+    landscapeSize: LATENT_LANDSCAPE_SIZE,
+    key: '',
+    model: 'nai-diffusion-4-5-full',
+    sampler: 'k_euler',
+    noiseSchedule: 'karras',
+    // 站点原生默认 steps 偏低(12),按动漫模型常用值给 28;用户可 1-50 调
+    steps: 28,
+    scale: 5,
+    seed: 0,
+  };
+}
+
 function defaults(): ImageSettings {
   return {
     enabled: true,
@@ -1097,6 +1143,7 @@ function defaults(): ImageSettings {
     defaultBackend: 'comfyui',
     webui: backendDefaults('http://127.0.0.1:7860'),
     comfyui: comfyDefaults(),
+    latent: latentDefaults(),
     nai: naiDefaults(),
     channels: [],
     assignments: { tagGen: '' },
@@ -1247,6 +1294,26 @@ export function activeNaiConn(): NaiConnPreset | null {
   const id = settings.nai.activeConnId;
   if (!id) return null;
   return settings.nai.connPresets.find(c => c.id === id) ?? null;
+}
+
+/**
+ * 把 Latent 渠道设置映射成 NaiSettings 视图,生成完全复用 NAI 机器
+ * (generateNaiImage/buildNaiParameters/unzip/限流重试一把抓):
+ * - 画师串库与激活项**与 NAI 渠道共用**(画师串库本就是跨模型设计);
+ * - vibes 恒空、variety/cfg_rescale 关闭:站点兼容层不消费这些参数;
+ * - 渠道级负面走 negativePrompt → undesiredContent 的改名映射。
+ * 返回的是普通对象快照(非 reactive 引用),调用方按需覆写后直接发给生成函数。
+ */
+export function latentAsNai(latent: LatentSettings = settings.latent): NaiSettings {
+  return {
+    ...settings.nai,
+    ...latent,
+    undesiredContent: latent.negativePrompt,
+    vibes: [],
+    varietyBoost: false,
+    cfgRescale: 0,
+    normalizeRefStrength: false,
+  };
 }
 
 /**
@@ -1479,6 +1546,23 @@ function normalizeConnPreset(raw: unknown, seq: number): NaiConnPreset {
   };
 }
 
+/** Latent 渠道清洗:与 normalizeNai 同款容错,字段集精简(无 vibe/尺寸输入/variety)。 */
+function normalizeLatent(raw: unknown, def: LatentSettings): LatentSettings {
+  const conn = normalizeBackend(raw, def);
+  const o = (raw ?? {}) as Partial<LatentSettings>;
+  return {
+    ...conn,
+    key: typeof o.key === 'string' ? o.key : def.key,
+    model: typeof o.model === 'string' && NAI_MODEL_VALUES.has(o.model) ? (o.model as NaiModel) : def.model,
+    sampler: typeof o.sampler === 'string' && o.sampler ? o.sampler : def.sampler,
+    noiseSchedule:
+      typeof o.noiseSchedule === 'string' && o.noiseSchedule ? o.noiseSchedule : def.noiseSchedule,
+    steps: Math.round(clampNumber(o.steps, def.steps, 1, 50)),
+    scale: clampNumber(o.scale, def.scale, 0, 10),
+    seed: Math.round(clampNumber(o.seed, def.seed, 0, 4294967295)),
+  };
+}
+
 function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   const conn = normalizeBackend(raw, def);
   const o = (raw ?? {}) as Partial<NaiSettings>;
@@ -1622,12 +1706,15 @@ function normalize(raw: unknown): ImageSettings {
   };
   // webui 已隐藏:存量数据里的 'webui' 一律迁移到默认后端(否则规范/出图口径会落空)
   merged.defaultBackend =
-    merged.defaultBackend === 'comfyui' || merged.defaultBackend === 'nai'
+    merged.defaultBackend === 'comfyui' ||
+    merged.defaultBackend === 'nai' ||
+    merged.defaultBackend === 'latent'
       ? merged.defaultBackend
       : d.defaultBackend;
   merged.webui = normalizeBackend(r.webui, d.webui);
   merged.comfyui = normalizeComfyUI(r.comfyui, d.comfyui);
   merged.nai = normalizeNai(r.nai, d.nai);
+  merged.latent = normalizeLatent(r.latent, d.latent);
   // 副 API 渠道:逐个补全字段并校验类型
   merged.channels = (Array.isArray(r.channels) ? r.channels : []).map(normalizeChannel);
   // 任务指派:嵌套对象,逐字段兜底(老数据没有 assignments 键时回退空串=跟随主 API)
@@ -1712,6 +1799,7 @@ function applyInto(target: ImageSettings, src: ImageSettings): void {
   target.webui = src.webui;
   target.comfyui = src.comfyui;
   target.nai = src.nai;
+  target.latent = src.latent;
   target.channels = src.channels;
   target.assignments = src.assignments;
   target.autoTag = src.autoTag;

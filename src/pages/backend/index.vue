@@ -2,6 +2,7 @@
 import { BACKENDS, settings, type BackendId } from '@/state/settings';
 import { computed, ref, watch, type Component } from 'vue';
 import ComfyUIPanel from './panels/ComfyUIPanel.vue';
+import LatentPanel from './panels/LatentPanel.vue';
 import NaiPanel from './panels/NaiPanel.vue';
 import WebUIPanel from './panels/WebUIPanel.vue';
 
@@ -44,6 +45,7 @@ const PANELS: Record<BackendId, Component> = {
   webui: WebUIPanel,
   comfyui: ComfyUIPanel,
   nai: NaiPanel,
+  latent: LatentPanel,
 };
 const activePanel = computed(() => PANELS[viewing.value]);
 </script>

@@ -34,7 +34,7 @@ import {
   saveImageResult,
   type BbiImageEntry,
 } from '@/floor/storage';
-import { activeComfyPreset, effectiveComfyConn, settings } from '@/state/settings';
+import { activeComfyPreset, effectiveComfyConn, latentAsNai, settings } from '@/state/settings';
 import { filterCharTagByName } from '@/state/charTags';
 import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
 import { copyText } from '@/st/clipboard';
@@ -129,6 +129,7 @@ const retryInfo = computed(() => record.value?.retry ?? null);
 
 const comfyActive = computed(() => settings.defaultBackend === 'comfyui');
 const naiActive = computed(() => settings.defaultBackend === 'nai');
+const latentActive = computed(() => settings.defaultBackend === 'latent');
 // ComfyUI 门槛按模式分:custom 要有工作流 JSON;simple 要模型/VAE/CLIP 选齐
  // (与出图组装同一口径 validateSimpleConfig,避免「卡片能点、出图才报错」)。
 const configured = computed(() => {
@@ -138,6 +139,7 @@ const configured = computed(() => {
     return preset.mode === 'simple' ? !validateSimpleConfig(preset.simple) : !!preset.workflow.trim();
   }
   if (naiActive.value) return !!settings.nai.url.trim() && !!settings.nai.key.trim();
+  if (latentActive.value) return !!settings.latent.url.trim() && !!settings.latent.key.trim();
   return false;
 });
 
@@ -231,19 +233,27 @@ async function generate(): Promise<void> {
       release = await acquireNaiSlot(signal);
       setGenPhase(slot, token, 'generating');
     }
-    // 发起时就确定种子并显式传入(NAI 面板种子 > 0 时用固定值;否则随机),
+    // 发起时就确定种子并显式传入(面板种子 > 0 时用固定值;否则随机),
     // 随结果落盘进 extra(entry.seed),历史翻页可查/可复用。
-    const seed = naiActive.value
-      ? settings.nai.seed > 0
-        ? settings.nai.seed
-        : naiRandomSeed()
-      : randomSeed();
+    const seed = latentActive.value
+      ? settings.latent.seed > 0
+        ? settings.latent.seed
+        : randomSeed()
+      : naiActive.value
+        ? settings.nai.seed > 0
+          ? settings.nai.seed
+          : naiRandomSeed()
+        : randomSeed();
     // 历史埋点:seed 已定、请求将发,此刻登记。图片本身不进 store(dataURL 会爆内存,
     // 且图随后就落盘进 ST 了)——只留元信息 + 楼层坐标,够回溯「这张图是怎么来的」。
     historyId = safeHistory(() =>
       beginImage({
-        backend: naiActive.value ? 'nai' : 'comfyui',
-        model: naiActive.value ? settings.nai.model : activeComfyPreset().name,
+        backend: latentActive.value ? 'latent' : naiActive.value ? 'nai' : 'comfyui',
+        model: latentActive.value
+          ? settings.latent.model
+          : naiActive.value
+            ? settings.nai.model
+            : activeComfyPreset().name,
         prompt: job.prompt,
         nl: job.nl,
         negative: job.negative,
@@ -254,18 +264,32 @@ async function generate(): Promise<void> {
         seq: job.seq,
       }),
     );
-    const result = naiActive.value
+    // Latent 渠道:渠道级负面(latentAsNai 映射)+ 本画面 <negative> 合并;
+    // NAI 渠道维持既有行为(只发渠道级负面)。此处再合并 history 已登记,互不影响。
+    const latentView = latentActive.value ? latentAsNai(settings.latent) : null;
+    if (latentView && job.negative.trim()) {
+      latentView.undesiredContent = [latentView.undesiredContent.trim(), job.negative.trim()]
+        .filter(Boolean)
+        .join(', ');
+    }
+    const result = latentView
       ? await generateNaiImage(
-          settings.nai,
+          latentView,
           { prompt: job.prompt, nl: job.nl, characters: job.characters, seed, size: job.size },
           signal,
-          {
-            onRetry: info =>
-              setGenRetry(slot, token, { attempt: info.attempt, max: info.max }),
-          },
         )
-      : await generateComfyImage(
-          effectiveComfyConn(),
+      : naiActive.value
+        ? await generateNaiImage(
+            settings.nai,
+            { prompt: job.prompt, nl: job.nl, characters: job.characters, seed, size: job.size },
+            signal,
+            {
+              onRetry: info =>
+                setGenRetry(slot, token, { attempt: info.attempt, max: info.max }),
+            },
+          )
+        : await generateComfyImage(
+            effectiveComfyConn(),
           {
             prompt: job.prompt,
             nl: job.nl,

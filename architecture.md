@@ -638,6 +638,7 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe / 智绘姬提示词预设导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
+| Latent 渠道(第三方站 NAI 兼容面精简适配) | state/settings.ts 的 `LatentSettings` + `latentAsNai`(面板 LatentPanel.vue;生成复用 generateNaiImage,画师串库共用) |
 | NAI 连接配置库(多套地址/密钥保存切换) | src/state/settings.ts 的 `NaiConnPreset` + `activeNaiConn`(UI 在 NaiPanel.vue 的「配置」区) |
 | 画师串显示名盖章(<artist> 展示元数据,不进提示词) | st/imageTagRegex.ts 的 `ImageTagContent.artist` + settings.activeNaiArtistName()(盖章位 runner/promptEditor;展示在 Card.vue promptText) |
 | NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
