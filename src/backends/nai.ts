@@ -596,6 +596,26 @@ export function unzipNaiImage(buffer: ArrayBuffer): { base64: string; filename: 
   return { base64: uint8ToBase64(files[name]), filename: name };
 }
 
+/** 站点 GenerationRequest 的 prompt/negativePrompt 上限(openapi maxLength)。 */
+export const LATENT_MAX_PROMPT_LENGTH = 2000;
+
+/**
+ * 按整条 tag 丢弃尾部,把逗号分隔串压到 maxLength 以内:保证留下的每条 tag 完整,
+ * 不产生「artist:matsunaga kou」这种半个 tag 的残缺串。头部优先级高(拼装顺序
+ * 画师串 → 画面 tag → 质量词),尾部丢的是质量词/边缘 tag,符合重要性排序。
+ * 单条超长(理论到不了)保留首条硬切兜底,绝不超过 maxLength。
+ */
+export function truncateTagsToLength(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  let kept = '';
+  for (const part of text.split(',')) {
+    const candidate = kept ? `${kept}, ${part.trim()}` : part.trim();
+    if (candidate.length > maxLength) break;
+    kept = candidate;
+  }
+  return kept || text.slice(0, maxLength);
+}
+
 /**
  * 生图。返回与 ComfyImageResult 同构的结果(dataURL 形式),楼层卡片/落盘层可直接复用。
  *
@@ -627,8 +647,8 @@ export async function generateNaiImage(
      * ②丢弃 v4_prompt/v4_negative_prompt/characterPrompts 结构(那是 4.5/V5 的
      *   Character Prompts 载荷,兼容层消费没有文档依据;characters[].tag 的内容
      *   副 API 已按邻接绑定写进主 tag 串,这里丢弃的是冗余副本而非信息)。
-     * ③prompt 串顶层与 input 字段同源(fullPositivePrompt),站点的 prompt
-     *   上限 2000 字符由截断兜底。
+     * ③prompt 串顶层与 input 字段同源(fullPositivePrompt),超站点 2000 上限时
+     *   按 tag 边界整条丢弃尾部(truncateTagsToLength)。
      */
     latentTagOnly?: boolean;
   } = {},
@@ -645,7 +665,13 @@ export async function generateNaiImage(
     delete (params as Record<string, unknown>).v4_prompt;
     delete (params as Record<string, unknown>).v4_negative_prompt;
     delete (params as Record<string, unknown>).characterPrompts;
-    params.prompt = fullPositivePrompt(nai, values.prompt);
+    // 站点 prompt 上限 2000(GenerationRequest.prompt maxLength)。正常拼装
+    // (40 tag 规范 + 画师串 + 质量词)远够不着;撞线 = 配置异常(画师串疯长等)。
+    // 用户决策:宁要出图不要 400 → 按 tag 边界整条丢弃尾部,不发残缺半个 tag。
+    params.prompt = truncateTagsToLength(
+      fullPositivePrompt(nai, values.prompt),
+      LATENT_MAX_PROMPT_LENGTH,
+    );
   }
   if (opts.latentResolution) {
     // 站点原生面收枚举不收数字对;宽高在本地仍用于 skip_cfg 等派生计算,只从载荷移除。

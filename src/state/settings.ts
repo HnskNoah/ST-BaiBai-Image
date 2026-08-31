@@ -1343,19 +1343,6 @@ export function latentAsNai(latent: LatentSettings = settings.latent): NaiSettin
   };
 }
 
-/**
- * Latent 渠道的出图载荷改写:站点 OpenAPI 的 GenerationRequest 是**单模型站点**——
- * 全 schema 8 字段(prompt/negativePrompt/seed/resolution/steps/sampler/scheduler/preset)
- * 没有 model、没有 CFG/scale;resolution 是枚举(square=1024×1024 / portrait=920×1536 /
- * landscape=1536×920)而非宽高数字对;negativePrompt maxLength 2000。这些是插件要遵守的
- * 站点事实,与 NAI 渠道共享的 generateNaiImage 在此分叉:
- * - model/scale 恒用渠道字段值(面板已撤 UI,见 LatentSettings 注释);
- * - resolution 发枚举(按 values.size 判向),不走 width/height 数字对;
- * - 负面合并后超 2000 截断(站点 maxLength,超长直接 400)。
- * 其余字段(steps/sampler/scheduler/negativePrompt)与原生域逐字一致,直发。
- */
-export const LATENT_NEGATIVE_MAX_LEN = 2000;
-
 /** 站点原生分辨率枚举(openapi GenerationRequest.resolution;square 不暴露,面板两档即两枚举)。 */
 export type LatentResolution = 'portrait' | 'landscape';
 
