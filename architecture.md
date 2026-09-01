@@ -305,7 +305,10 @@ NAI 渠道:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 → 那两份
   characterPrompts 整个剥掉(characters[].tag 的内容副 API 已按绑定写法写进主串,丢弃的是
   冗余副本),prompt 顶层与 input 同源。
   兼容面(/api/novelai)不在该 openapi 里;发 `resolution` 枚举是唯一有文档依据的画幅形状。
-  画师串与 NAI 共库。
+  画师串与 NAI 共库,**激活项分渠道记忆**:`settings.latent.activeArtistId` 独立保存
+  (默认 '' = 不使用;内置 bi_default 是 NAI 官方模型配方,不默认塞给 Anima),
+  `latentAsNai` 用它覆盖视图的 activeArtistId,盖章(`activeNaiArtistName`)按当前渠道取——
+  两渠道各选各的画风,互不影响;清洗不变式同 normalizeNai(悬空 id 清空,查找域含内置库)。
 - **取消必须分流**(comfyui.ts 的 `cancelPrompt`):任务在排队 → `POST /queue {delete:[id]}`;
   正在执行 → `POST /interrupt`(带 prompt_id)。**无脑 /interrupt 会打断正在跑的别的任务**
   ——旧实现如此,并发下必现。有单测锁定这两条路径。
@@ -662,8 +665,7 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe / 智绘姬提示词预设导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
-| Latent 渠道(第三方站 NAI 兼容面精简适配) | state/settings.ts 的 `LatentSettings` + `latentAsNai`(面板 LatentPanel.vue;生成复用 generateNaiImage,画师串库共用) |
-| NAI 连接配置库(多套地址/密钥保存切换) | src/state/settings.ts 的 `NaiConnPreset` + `activeNaiConn`(UI 在 NaiPanel.vue 的「配置」区) |
+| Latent 渠道(第三方站 NAI 兼容面精简适配) | state/settings.ts 的 `LatentSettings` + `latentAsNai`(面板 LatentPanel.vue;生成复用 generateNaiImage,画师串库共用、激活项分渠道) |
 | 画师串显示名盖章(<artist> 展示元数据,不进提示词) | st/imageTagRegex.ts 的 `ImageTagContent.artist` + settings.activeNaiArtistName()(盖章位 runner/promptEditor;展示在 Card.vue promptText) |
 | NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
 | 画师串库管理器(搜索/预览图/批量删除) | src/pages/backend/panels/NaiArtistManager.vue(纯逻辑在 backends/naiArtistLib.ts;内置只读库在 backends/nai.ts 的 `BUILTIN_NAI_ARTISTS`) |

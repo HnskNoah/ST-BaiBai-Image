@@ -313,6 +313,12 @@ export interface LatentSettings extends BackendConn {
   seed: number;
   /** 同时出图数(1–4):站点 409=在途任务超上限,复用 NAI 客户端闸门堵住这一面。 */
   concurrency: number;
+  /**
+   * 本渠道激活的画师串 id(库与 NAI 共用,激活项分渠道记忆):'' = 不使用。
+   * 合法值 ∈ {'', 内置库 id, settings.nai.artistPresets 的 id}——normalizeLatent
+   * 按 normalizeNai 同款不变式清洗悬空 id,面板无需再判。
+   */
+  activeArtistId: string;
 }
 
 /** 界面偏好里要跨设备同步的部分;activePage 等纯本机临时态不在此。 */
@@ -1146,6 +1152,9 @@ function latentDefaults(): LatentSettings {
     scale: 5,
     seed: 0,
     concurrency: 1,
+    // 库与 NAI 共用但激活项分渠道:默认不使用——内置第一条(bi_default)是 NAI 官方
+    // 模型的画风配方,对 Anima checkpoint 未必合适,交给用户自己选。
+    activeArtistId: '',
   };
 }
 
@@ -1288,9 +1297,11 @@ export function effectiveComfyConn(): ComfyRunConn {
  * settings.ts 已 import 本模块的 naiDefaultUndesired,反向加值依赖会成运行时环。
  */
 export function activeNaiArtist(): NaiArtistPreset | null {
-  const id = settings.nai.activeArtistId;
+  // 激活项分渠道记忆:库共用,latent 渠道读 settings.latent.activeArtistId。
+  // 查找域 = 用户库 ∪ 内置库(与 nai.ts 的 naiActivePreset 同口径)。
+  const id =
+    settings.defaultBackend === 'latent' ? settings.latent.activeArtistId : settings.nai.activeArtistId;
   if (!id) return null;
-  // 查找域 = 用户库 ∪ 内置库(与 nai.ts 的 naiActivePreset 同口径)
   return (
     settings.nai.artistPresets.find(a => a.id === id) ??
     BUILTIN_NAI_ARTISTS.find(a => a.id === id) ??
@@ -1300,7 +1311,8 @@ export function activeNaiArtist(): NaiArtistPreset | null {
 
 /**
  * 当前出图后端为 NAI 系(nai / latent)时,生效画师串的显示名;其它后端 / 未选画师串返回空串
- * = 不盖章。latent 与 NAI 共用同一画师串库(latentAsNai 映射原样携带),盖章口径一致。
+ * = 不盖章。latent 与 NAI 共用同一画师串库,激活项分渠道记忆(activeNaiArtist 按
+ * 当前渠道取各自的 activeArtistId),盖章口径一致。
  * 专供「把画师串名写进 bbi_image 正文」的盖章位使用(runner 注入 + 手动编辑写回)——
  * 拼真正发给 NAI 的画师串走 backends/nai.ts 的 naiArtistPrompt,与本函数无关。
  * 消毒:画师串名是自由文本,剥掉尖括号并折叠空白,防止名字里的字符伪造 <artist> 子标签
@@ -1326,7 +1338,8 @@ export function activeNaiConn(): NaiConnPreset | null {
 /**
  * 把 Latent 渠道设置映射成 NaiSettings 视图,生成完全复用 NAI 机器
  * (generateNaiImage/buildNaiParameters/unzip/限流重试一把抓):
- * - 画师串库与激活项**与 NAI 渠道共用**(画师串库本就是跨模型设计);
+ * - 画师串库与 NAI 共用(artistPresets 本就是跨模型设计),**激活项分渠道记忆**:
+ *   activeArtistId 覆盖成 latent 自己的选择,naiArtistPrompt/naiQualityTags 据此取本渠道画风;
  * - vibes 恒空、variety/cfg_rescale 关闭:站点兼容层不消费这些参数;
  * - 渠道级负面走 negativePrompt → undesiredContent 的改名映射。
  * 返回的是普通对象快照(非 reactive 引用),调用方按需覆写后直接发给生成函数。
@@ -1336,6 +1349,7 @@ export function latentAsNai(latent: LatentSettings = settings.latent): NaiSettin
     ...settings.nai,
     ...latent,
     undesiredContent: latent.negativePrompt,
+    activeArtistId: latent.activeArtistId,
     vibes: [],
     varietyBoost: false,
     cfgRescale: 0,
@@ -1576,8 +1590,12 @@ function normalizeConnPreset(raw: unknown, seq: number): NaiConnPreset {
   };
 }
 
-/** Latent 渠道清洗:与 normalizeNai 同款容错,字段集精简(无 vibe/尺寸输入/variety)。 */
-function normalizeLatent(raw: unknown, def: LatentSettings): LatentSettings {
+function normalizeLatent(
+  raw: unknown,
+  def: LatentSettings,
+  naiPresets: readonly NaiArtistPreset[],
+  naiActiveId: string,
+): LatentSettings {
   const conn = normalizeBackend(raw, def);
   const o = (raw ?? {}) as Partial<LatentSettings>;
   return {
@@ -1594,6 +1612,22 @@ function normalizeLatent(raw: unknown, def: LatentSettings): LatentSettings {
     concurrency: Math.round(clampNumber(o.concurrency, def.concurrency, 1, 4)),
     noiseSchedule:
       typeof o.noiseSchedule === 'string' && o.noiseSchedule ? o.noiseSchedule : def.noiseSchedule,
+    // 激活项分渠道记忆(库与 NAI 共用):悬空 id 一律清成空串 = 不使用,与 normalizeNai
+    // 同款不变式。查找域 = NAI 共享库 ∪ 内置库;库经 naiPresets 参数传入(调用方在
+    // normalizeNai 之后取 merged.nai.artistPresets),避免「首装首次 hydrate」时
+    // settings.nai 还是空对象导致用户库 id 被误判悬空。
+    // 一次性迁移:老数据(共用期)没有 latent.activeArtistId 键 → 回落 NAI 当时的激活项,
+    // 升级前后生效值零变化;键一旦落盘(哪怕 ''),以 latent 自己的值为准,不再跟随。
+    activeArtistId: (() => {
+      if (typeof o.activeArtistId === 'string') {
+        return (naiPresets.some(a => a.id === o.activeArtistId) ||
+          isBuiltinNaiArtist(o.activeArtistId))
+          ? o.activeArtistId
+          : '';
+      }
+      // 键不存在 = 老数据:继承 NAI 激活项(合法值已由 normalizeNai 清洗过)
+      return typeof naiActiveId === 'string' ? naiActiveId : '';
+    })(),
   };
 }
 
@@ -1748,7 +1782,7 @@ function normalize(raw: unknown): ImageSettings {
   merged.webui = normalizeBackend(r.webui, d.webui);
   merged.comfyui = normalizeComfyUI(r.comfyui, d.comfyui);
   merged.nai = normalizeNai(r.nai, d.nai);
-  merged.latent = normalizeLatent(r.latent, d.latent);
+  merged.latent = normalizeLatent(r.latent, d.latent, merged.nai.artistPresets, merged.nai.activeArtistId);
   // 副 API 渠道:逐个补全字段并校验类型
   merged.channels = (Array.isArray(r.channels) ? r.channels : []).map(normalizeChannel);
   // 任务指派:嵌套对象,逐字段兜底(老数据没有 assignments 键时回退空串=跟随主 API)
