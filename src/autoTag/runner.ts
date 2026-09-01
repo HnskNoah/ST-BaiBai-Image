@@ -8,7 +8,7 @@ import {
 } from '@/autoTag/charAnchors';
 import { prepareTargetText } from '@/autoTag/clean';
 import { beginGeneration, clearGeneration, consumeGeneration } from '@/autoTag/generationGate';
-import { buildAutoTagMessages, isNaiFamilyBackend } from '@/autoTag/prompt';
+import { buildAutoTagMessages } from '@/autoTag/prompt';
 import { rebaseImagePositions, type RebaseReport } from '@/autoTag/rebase';
 import {
   BBI_CHAR_EXTRA_KEY,
@@ -322,11 +322,14 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             settings.autoTag.minImages,
             settings.autoTag.maxImages,
           );
-          // NAI 4.5/V5 建档:field:"new" 的新档必须带 nl 外貌描述。
+          // NAI 官方 4.5/V5 的 Character Prompts 协议要求 new 建档必须带 nl 外貌描述。
           // 有建档缺失才拦(无 changes/已带 nl 的完美输出放行);0.3.2 扩 latent 分支时
-          // 曾误删 changes.some 子条件导致两渠道自动 tag 无条件抛错,本次修复。
+          // 曾误删 changes.some 子条件导致两渠道自动 tag 无条件抛错,已修复。
+          // latent 不在此列:站长确认站点不支持自然语言(见 prompt.ts characterPromptsOn
+          // 注释),nl 在其档案中只是可选记录,不强制——否则每条建档都被这里拒绝,
+          // 自动 tag 必然失败。
           if (
-            isNaiFamilyBackend() &&
+            settings.defaultBackend === 'nai' &&
             candidate.changes.some(change => change.field === 'new' && !change.nl?.trim())
           ) {
             throw new Error('NAI 4.5/V5 建档必须附带 nl 外貌描述');

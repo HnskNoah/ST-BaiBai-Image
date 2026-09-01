@@ -40,7 +40,6 @@ import {
   latentAsNai,
   settings,
 } from '@/state/settings';
-import { LATENT_MAX_PROMPT_LENGTH, truncateTagsToLength } from '@/backends/nai';
 import { filterCharTagByName } from '@/state/charTags';
 import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
 import { copyText } from '@/st/clipboard';
@@ -287,12 +286,12 @@ async function generate(): Promise<void> {
     );
     // Latent 渠道:渠道级负面(latentAsNai 映射)+ 本画面 <negative> 合并;
     // 合并用 naiUndesiredContent 取值,渠道留空时官方负面基线照常回落,不被画面负面顶掉。
-    // 站点 negativePrompt 上限 2000,按 tag 边界整条丢弃尾部(backends/nai.ts)。
+    // 无本地长度上限(站长确认站点支持超 2000 字符)。
     // NAI 渠道维持既有行为(只发渠道级负面)。两条 NAI 系分支共用同一调用,退避进度一致可见。
     const latentView = latentActive.value ? latentAsNai(settings.latent) : null;
     if (latentView) {
       const merged = [naiUndesiredContent(latentView), job.negative.trim()].filter(Boolean);
-      latentView.undesiredContent = truncateTagsToLength(merged.join(', '), LATENT_MAX_PROMPT_LENGTH);
+      latentView.undesiredContent = merged.join(', ');
     }
     const naiView = latentView ?? (naiActive.value ? settings.nai : null);
     const result = naiView

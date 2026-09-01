@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAutoTagMessages } from '@/autoTag/prompt';
+import { buildAutoTagMessages, characterPromptsOn } from '@/autoTag/prompt';
 import {
   activeComfyPreset,
   settings,
@@ -560,14 +560,40 @@ describe('auto tag prompt', () => {
       // 单串 naiSpec 判据:多人邻接绑定规则与其示例在,身份 tag 转义口径在
       expect(text).toContain('white dress on green hair girl');
       expect(text).toContain('character name (copyright name)');
-      // V5 双层结构判据不得出现
+      // V5 双层结构判据不得出现(nl 要求不下发)
       expect(text).not.toContain('Write exactly one shot distance');
       expect(text).not.toContain('Every image must include Base tag');
+      expect(text).not.toContain('NAI V5 profile requirement');
+      // ComfyUI 的 fandom 口径(不照抄身份 tag)不得泄入 latent——latent 的
+      // @占位符替换会把 fandom 拼进 tag 串首位,规范必须与行为一致
+      expect(text).not.toContain('ComfyUI 画图时不照抄它');
+      expect(text).toContain('照抄在 tag 串首位');
       // 不串 comfy 规范
       expect(text).not.toContain('%negative_prompt%');
     } finally {
       settings.defaultBackend = oldBackend;
       settings.latent.model = oldModel;
+    }
+  });
+
+  // 验收门判据(runner.ts 引用):Character Prompts 只对 NAI 官方渠道生效,
+  // latent 恒关——站长确认站点不支持自然语言,与模型名无关。
+  it('characterPromptsOn: true only for NAI 4.5/V5 models, always false for latent', () => {
+    const oldBackend = settings.defaultBackend;
+    const oldNaiModel = settings.nai.model;
+    try {
+      settings.defaultBackend = 'latent';
+      settings.latent.model = 'nai-diffusion-4-5-full';
+      expect(characterPromptsOn()).toBe(false);
+
+      settings.defaultBackend = 'nai';
+      settings.nai.model = 'nai-diffusion-4-5-full';
+      expect(characterPromptsOn()).toBe(true);
+      settings.nai.model = 'nai-diffusion-3';
+      expect(characterPromptsOn()).toBe(false);
+    } finally {
+      settings.defaultBackend = oldBackend;
+      settings.nai.model = oldNaiModel;
     }
   });
 

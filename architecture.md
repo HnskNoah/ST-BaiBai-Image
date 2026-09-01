@@ -290,14 +290,16 @@ NAI 渠道:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 → 那两份
   **429 在该站=周配额耗尽**(quota_exhausted)而非限流,生图调用带 `noRetry429` 让它像
   配置错误一样立刻抛(退避等不来额度)。
 - **站点载荷事实(openapi.json GenerationRequest,8 字段)**:prompt / negativePrompt
-  (maxLength 2000,prompt/negative 均按 tag 边界整条截断——`LATENT_MAX_PROMPT_LENGTH`)/ seed
+  (无本地长度上限——站长确认站点支持超 2000 字符,openapi 的 maxLength 2000 与实际不符,
+  以站长为准)/ seed
   (0–2^53-1,omit=random)/ resolution(**枚举**:square=1024×1024 / portrait=920×1536 /
   landscape=1536×920;生图调用带 `latentResolution` 换掉 width/height 数字对)/
   steps(8–16,默认 12)/ sampler(7 枚举)/ scheduler(5 枚举)/ preset(deprecated,不传)。
   **没有 model、没有 CFG/scale**——单模型站点(渲染自家 Anima),故 LatentPanel 无模型/Scale
   输入;`latent.scale` 保留字段只为 buildNaiParameters 读值,恒 5。
   **站长确认:站点不支持自然语言,必须用 tag**(SD checkpoint 生态,danbooru 短 tag)。
-  因此 Character Prompts 对 latent 恒关(characterPromptsOn 只认 nai 渠道),规范/思维链
+  因此副 API 的 new 建档验收(强制 nl)只对 NAI 渠道生效,latent 建档不要求 nl
+  (档案 nl 字段保持可选记录,NAI 建的带 nl 档案切到 latent 时 nl 不发送但档案无损)。
   恒走 naiSpec/naiThinking(**单串 tag + 区分性称谓邻接绑定**,非 V5 双层结构);
   发送侧带 `latentTagOnly` 降级为纯 tag 载荷——nl 不拼 prompt、v4_prompt/v4_negative_prompt/
   characterPrompts 整个剥掉(characters[].tag 的内容副 API 已按绑定写法写进主串,丢弃的是
