@@ -141,6 +141,22 @@ describe('applyCharRefs', () => {
     const { text } = applyCharRefs('@小雪 sits by the window', entries, 'nl');
     expect(text).toBe('1girl, long black hair, red eyes sits by the window');
   });
+
+  // 跨渠道场景:NAI 4.5/V5 建的档案带 nl 句,切到 latent(站点不支持自然语言)生图。
+  // tag 模式替换(@占位符 → tag 串)不得混入 nl 句;库文本保留 nl= 行供 NAI 渠道复用——
+  // 档案跨渠道无损,nl 对 latent 无害。
+  it('NAI-built entry with nl: tag replacement stays pure tags, library text keeps nl line', () => {
+    const naiEntry = entry('小雪', { sex: '1girl', hair: 'long black hair', eyes: 'blue eyes', fandom: 'kasumi (blue archive)' });
+    naiEntry.nl = 'A girl with long black hair and blue eyes.';
+
+    const { text } = applyCharRefs('@小雪, smile', [naiEntry]);
+    expect(text).toBe('kasumi (blue archive), 1girl, long black hair, blue eyes, smile');
+    expect(text).not.toContain('A girl with');
+
+    const lib = formatEntryForPrompt(naiEntry);
+    expect(lib).toContain('nl=A girl with long black hair and blue eyes.');
+    expect(lib).toContain('同人身份 tag=kasumi (blue archive)');
+  });
 });
 
 describe('parseConvertedTags', () => {

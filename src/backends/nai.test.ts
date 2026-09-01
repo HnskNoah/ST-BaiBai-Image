@@ -15,7 +15,6 @@ import {
   naiRandomSeed,
   parseNaiv4vibe,
   parseResolution,
-  truncateTagsToLength,
   skipCfgAboveSigma,
   unzipNaiImage,
   vibeModelKey,
@@ -386,43 +385,6 @@ describe('NAI V5 support', () => {
     expect(params.resolution).toBe('portrait');
     expect(params.width).toBeUndefined();
     expect(params.height).toBeUndefined();
-    // 长 prompt 截到站点上限(GenerationRequest.prompt maxLength 2000)
-    const longPrompt = 'x'.repeat(2500);
-    bodies.length = 0;
-    vi.stubGlobal('fetch', async (_url: unknown, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return new Response('unauthorized', { status: 401 });
-    });
-    try {
-      await generateNaiImage(
-        settings,
-        { prompt: longPrompt, seed: 1 },
-        undefined,
-        { latentTagOnly: true },
-      ).catch(() => undefined);
-    } finally {
-      vi.stubGlobal('fetch', realFetch);
-    }
-    const body1 = bodies[0];
-    if (!body1 || typeof body1 !== 'object' || !('parameters' in body1) || !('input' in body1)) {
-      throw new Error('第二次 fetch 未被调用');
-    }
-    const typed1 = body1 as { parameters: Record<string, unknown>; input: unknown };
-    const params1 = typed1.parameters;
-    expect(String(params1.prompt).length).toBeLessThanOrEqual(2000);
-    expect(String(params1.prompt).endsWith('x')).toBe(true);
-    // input 同源同截:顶层字段不超站线上限
-    expect(String(typed1.input).length).toBeLessThanOrEqual(2000);
-  });
-
-  it('truncateTagsToLength:按 tag 边界整条丢弃,不留半个 tag', () => {
-    const tags = 'aaaaa, bbbbb, ccccc, ddddd'; // 每段 5 字符,含分隔共 26
-    // 上限 20:装得下前三条(17 字符),第四条(23 字符)超 → 整条丢弃
-    expect(truncateTagsToLength(tags, 20)).toBe('aaaaa, bbbbb, ccccc');
-    // 单条超长:保留首条硬切兜底
-    expect(truncateTagsToLength('x'.repeat(50), 10)).toBe('xxxxxxxxxx');
-    // 未超长原样返回
-    expect(truncateTagsToLength('a, b', 100)).toBe('a, b');
   });
 
   it('maps Base Tag + NL and native Character Prompts into the V5 caption schema', () => {

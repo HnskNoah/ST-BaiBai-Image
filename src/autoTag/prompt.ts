@@ -50,7 +50,7 @@ export function isNaiFamilyBackend(): boolean {
  *   故 latent 恒走 naiSpec/naiThinking(单串 tag + 区分性称谓邻接绑定,无 nl 键),
  *   发送侧同步降级为纯 tag 载荷(见 generateNaiImage 的 latentTagOnly)。
  */
-function characterPromptsOn(): boolean {
+export function characterPromptsOn(): boolean {
   return settings.defaultBackend === 'nai' && naiSupportsCharacterPrompts(settings.nai.model);
 }
 
@@ -228,6 +228,8 @@ export async function buildAutoTagMessages(
 
   const libraryReferenceRule = naiCharPromptsOn
     ? '- If a visible character exists in the fixed appearance library or is created in this changes array, copy the fixed fields into that character own characters[].tag; keep appearance wording verbatim but convert 1girl/1boy to girl/boy. The fandom identity tag (fields.fandom) goes first, verbatim. Do not put them in Base or assign them to another character. Library natural-language notes may inform that character nl. Use the library entry name verbatim for characters[].name and for any name inside tag/nl — never transliterate, translate, or vary it.'
+    : settings.defaultBackend === 'latent'
+    ? '- 画面中的角色只要已在【角色固定外貌库】，或在本次 changes 中建了档，tag 就必须照抄库中/刚建档的字段值，用词一字不改，不得自行改写或增删其固定外貌。同人角色的 fandom 身份 tag（如 kasumi (blue archive)）照抄在 tag 串首位——生图模型按它识别角色归属。\n   - 同一角色的固定外貌在一张图里只写一遍：同一图内再次提到他时用简短指代（the boy、the silver-haired girl）承接，禁止把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成互不相连的几块。'
     : '- 画面中的角色只要已在【角色固定外貌库】，或在本次 changes 中建了档，tag 与 nl 就必须照抄库中/刚建档的字段值，用词一字不改，不得自行改写或增删其固定外貌。fandom 字段只作档案记录，ComfyUI 画图时不照抄它，同人身份 tag 按下发的 ComfyUI 规范现场判定并按规范转义括号。\n   - 同一角色的固定外貌在一张图里只写一遍：同一图内再次提到他时用简短指代（the boy、the silver-haired girl）承接，禁止把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成互不相连的几块。';
   const newCharacterNlRule = naiCharPromptsOn
     ? '\n   - NAI V5 profile requirement: every field:"new" change must include a non-empty nl containing a concise English natural-language description of the character fixed appearance. The name must be the character exact name from the card/lorebook/story — a Chinese name stays Chinese (小雪), never pinyin or translation. Fandom characters must also include their identity tag in fields.fandom, e.g. {"name":"冬海","field":"new","fields":{"sex":"1girl","hair":"long black hair","eyes":"blue eyes","fandom":"kasumi (blue archive)"},"nl":"A girl with long black hair and blue eyes.","position":"P2","reason":"first appearance"}; original characters omit fandom. If an existing library entry lacks fandom but the character is fandom, report a changes item with field:"fandom". Describe only fixed appearance: no current outfit, pose, or location — temporary states never enter the profile.'
