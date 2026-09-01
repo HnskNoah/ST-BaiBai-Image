@@ -15,7 +15,7 @@ import {
  * 生成完全复用 NAI 机器(latentAsNai 映射后走 generateNaiImage),面板只暴露
  * 站点 openapi 真实存在的参数:无模型下拉(单模型站点,GenerationRequest 无 model 字段)、
  * 无 Scale(无 CFG 字段)、无尺寸输入(resolution 是枚举,按 tag 判向发 portrait/landscape)、
- * 无 Vibe、无 rescale/variety。画师串库与 NAI 渠道共用同一份(settings.nai.artistPresets)。
+ * 无 Vibe、无 rescale/variety。画师串库与 NAI 共用,激活项分渠道记忆(settings.latent.activeArtistId)。
  */
 
 const inUse = computed(() => settings.defaultBackend === 'latent');
@@ -40,7 +40,7 @@ async function onTestConnection() {
   }
 }
 
-/* —— 画师串(与 NAI 渠道共用同一份库与激活项;内置只读) —— */
+/* —— 画师串(库与 NAI 渠道共用,激活项分渠道记忆;内置只读) —— */
 const artist = computed(() => activeNaiArtist());
 const NO_ARTIST = '';
 const artistOptions = computed(() => [
@@ -49,8 +49,8 @@ const artistOptions = computed(() => [
   ...settings.nai.artistPresets.map(a => ({ value: a.id, label: a.name || '未命名画师串' })),
 ]);
 const activeArtistId = computed<string>({
-  get: () => artist.value?.id ?? NO_ARTIST,
-  set: id => (settings.nai.activeArtistId = id),
+  get: () => settings.latent.activeArtistId || NO_ARTIST,
+  set: id => (settings.latent.activeArtistId = id),
 });
 const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value.id) : false));
 
@@ -121,10 +121,10 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
       </Collapsible>
 
       <Collapsible title="提示词" :open="false">
-        <!-- 画师串与 NAI 渠道共用同一份库与激活项;跨渠道切换即全局切换 -->
+        <!-- 画师串库与 NAI 渠道共用(内置只读);激活项分渠道记忆,互不影响 -->
         <div class="bbi-field">
           <div class="bbi-field-head">
-            <span class="bbi-field-label">画师串(与 NAI 渠道共用)</span>
+            <span class="bbi-field-label">画师串(Latent 渠道)</span>
           </div>
           <select class="bbi-input bbi-select" v-model="activeArtistId">
             <option v-for="o in artistOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
