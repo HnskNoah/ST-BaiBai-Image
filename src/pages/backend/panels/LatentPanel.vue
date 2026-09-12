@@ -4,11 +4,14 @@ import Collapsible from '@/components/Collapsible.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Icon from '@/components/Icon.vue';
 import { activeNaiArtist, LATENT_SAMPLERS, LATENT_SCHEDULERS, settings } from '@/state/settings';
+import { BUILTIN_NAI_ARTISTS, isBuiltinNaiArtist } from '@/backends/nai';
 import {
-  BUILTIN_NAI_ARTISTS,
-  isBuiltinNaiArtist,
-  testNaiConnection,
-} from '@/backends/nai';
+  fetchLatentCaps,
+  readLatentCaps,
+  testLatentConnection,
+  writeLatentCaps,
+  type LatentCaps,
+} from '@/backends/latentCaps';
 
 /**
  * Latent 渠道:第三方站点 NovelAI 兼容面的精简适配。
@@ -16,6 +19,9 @@ import {
  * 站点 openapi 真实存在的参数:无模型下拉(单模型站点,GenerationRequest 无 model 字段)、
  * 无 Scale(无 CFG 字段)、无尺寸输入(resolution 是枚举,按 tag 判向发 portrait/landscape)、
  * 无 Vibe、无 rescale/variety。画师串库与 NAI 共用,激活项分渠道记忆(settings.latent.activeArtistId)。
+ *
+ * 采样器/噪声表枚举 = 参数域快照(latent.caps.v1,点「同步参数域」或测试连接时拉
+ * 站点 /openapi.json 解析)→ 内置回落列表;**打开面板不拉取**(高频操作),新旧见状态行。
  */
 
 const inUse = computed(() => settings.defaultBackend === 'latent');
@@ -31,7 +37,9 @@ async function onTestConnection() {
   if (testing.value) return;
   testing.value = true;
   try {
-    const result = await testNaiConnection(settings.latent);
+    const result = await testLatentConnection(settings.latent);
+    // 测试连接里可能完成了参数域同步,就地刷新下拉数据源与状态行
+    caps.value = readLatentCaps(settings.latent.url);
     toastr.success(result.message, 'Latent 连接');
   } catch (error) {
     toastr.error(errorMessage(error), 'Latent 连接失败');
@@ -39,6 +47,61 @@ async function onTestConnection() {
     testing.value = false;
   }
 }
+
+/* —— 参数域(采样器/噪声表)同步:手动触发,无任何自动拉取 —— */
+const caps = ref<LatentCaps | null>(readLatentCaps(settings.latent.url));
+const syncing = ref(false);
+
+async function onSyncCaps() {
+  if (syncing.value) return;
+  syncing.value = true;
+  try {
+    const result = await fetchLatentCaps(settings.latent.url);
+    writeLatentCaps(settings.latent.url, result);
+    caps.value = result;
+    toastr.success(
+      `采样器 ${result.samplers.length} 个 / 噪声表 ${result.schedulers.length} 个`,
+      '参数域已同步',
+    );
+  } catch (error) {
+    toastr.error(errorMessage(error), '参数域同步失败');
+  } finally {
+    syncing.value = false;
+  }
+}
+
+/** 上次同步的相对时间;从未同步给出指引。 */
+const capsStatus = computed(() => {
+  const c = caps.value;
+  if (!c) return '未同步,使用内置参数域';
+  const seconds = Math.max(0, Math.floor((Date.now() - c.fetchedAt) / 1000));
+  const ago =
+    seconds < 60
+      ? '刚刚'
+      : seconds < 3600
+        ? `${Math.floor(seconds / 60)} 分钟前`
+        : seconds < 86400
+          ? `${Math.floor(seconds / 3600)} 小时前`
+          : seconds < 86400 * 30
+            ? `${Math.floor(seconds / 86400)} 天前`
+            : new Date(c.fetchedAt).toLocaleDateString();
+  return `上次同步:${ago}`;
+});
+
+/** 下拉枚举:快照优先,内置回落;当前保存值不在列表时补一条选项,不静默丢弃。 */
+function optionsWithCurrent(list: string[], current: string): { value: string; label: string }[] {
+  const options = list.map(v => ({ value: v, label: v }));
+  if (current && !list.includes(current)) {
+    options.push({ value: current, label: `${current}(已保存,站点列表外)` });
+  }
+  return options;
+}
+const samplerOptions = computed(() =>
+  optionsWithCurrent(caps.value?.samplers ?? LATENT_SAMPLERS, settings.latent.sampler),
+);
+const noiseOptions = computed(() =>
+  optionsWithCurrent(caps.value?.schedulers ?? LATENT_SCHEDULERS, settings.latent.noiseSchedule),
+);
 
 /* —— 画师串(库与 NAI 渠道共用,激活项分渠道记忆;内置只读) —— */
 const artist = computed(() => activeNaiArtist());
@@ -53,10 +116,6 @@ const activeArtistId = computed<string>({
   set: id => (settings.latent.activeArtistId = id),
 });
 const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value.id) : false));
-
-/** 站点原生枚举(openapi 逐字一致),select 下拉;无自由输入——站点只认枚举值,填别的也是白填。 */
-const samplerOptions = computed(() => LATENT_SAMPLERS.map(s => ({ value: s, label: s })));
-const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, label: s })));
 </script>
 
 <template>
@@ -168,6 +227,16 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
       </Collapsible>
 
       <Collapsible title="默认参数" :open="false">
+        <div class="caps-row">
+          <span class="bbi-field-hint caps-status">{{ capsStatus }}</span>
+          <button class="bbi-btn" type="button" :disabled="syncing" @click="onSyncCaps">
+            <Icon name="refresh" :size="14" />
+            {{ syncing ? '同步中…' : '同步参数域' }}
+          </button>
+        </div>
+        <p class="bbi-field-hint">
+          从站点 /openapi.json 拉取当前采样器/噪声表枚举——站点换模型后点一下即可跟上,不自动拉取、生图不发请求。
+        </p>
 
         <div class="be-row">
           <div class="bbi-field">
@@ -260,6 +329,16 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
   grid-template-columns: repeat(2, 1fr);
   gap: 0 12px;
   margin-bottom: 18px;
+}
+.caps-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.caps-status {
+  margin-right: auto;
 }
 .be-row .bbi-field {
   margin-bottom: 0;

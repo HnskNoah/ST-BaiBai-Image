@@ -219,14 +219,15 @@ runForFloor(floor, opts)
 全部可编辑提示词(破限/规范/思维链/预填充)在 `state/settings.ts` 有内置默认常量
 (`DEFAULT_*_PROMPT`/`DEFAULT_*_SPEC`),留空回落默认 —— 改默认提示词内容先看这里。
 
-⚠ **设置页只暴露两对规范/思维链:ComfyUI 与 NAI**,后者存在 `naiV5Spec` / `naiV5Thinking`
-(键名带 V5 是历史命名,内容对 4.5 同样适用,面板标签已改成不提代数的「NAI 规范/思维链」)。
-另有 `naiSpec` / `naiThinking` 是 4.5 以下的单串 tag 版本(含多人邻接绑定口径)。
-NAI 渠道:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 → 那两份对 NAI 走不到,
-键与常量刻意保留(不动存量 settings、不动旧模型标识的协议分支与回归锁);
-**Latent 渠道恒走这两份**(站长确认站点不支持自然语言必须用 tag,characterPromptsOn
-对 latent 恒 false)——所以**两对都要维护**:改 NAI 规范改 `DEFAULT_NAI_V5_*`,
-改 Latent 规范改 `DEFAULT_NAI_SPEC/THINKING`,别按名字猜。
+⚠ **设置页暴露三对规范/思维链:ComfyUI、NAI、Latent**。NAI 对存在 `naiV5Spec` / `naiV5Thinking`
+(键名带 V5 是历史命名,内容对 4.5 同样适用,面板标签已改成不提代数的「NAI 规范/思维链」);
+Latent 对是 `latentSpec` / `latentThinking`(设置页「Latent 规范/思维链」,2026-09 新增——
+此前 latent 实际在用的提示词没有任何编辑入口)。另有 `naiSpec` / `naiThinking` 是 4.5 以下的
+单串 tag 版本(含多人邻接绑定口径),NAI 渠道:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 →
+那两份对 NAI 走不到;**Latent 渠道恒走单串口径**(站长确认站点不支持自然语言必须用 tag,
+characterPromptsOn 对 latent 恒 false)——取值链 `latentSpec → naiSpec(旧键,存量自定义不失效)
+→ DEFAULT_NAI_SPEC/THINKING`,分流按 defaultBackend==='latent' 精确判定,NAI 渠道
+(含遗留单串分支)不读 latent 键。别按键名猜归属。
 
 ## 6. 链路 B:楼层卡片与出图(floor/ + backends/)
 
@@ -331,14 +332,25 @@ tag 原文被 DOMPurify 剥壳后当正文显示出来(用户直接看见一串 
   (无本地长度上限——站长确认站点支持超 2000 字符,openapi 的 maxLength 2000 与实际不符,
   以站长为准)/ seed
   (0–2^53-1,omit=random)/ resolution(**枚举**:square=1024×1024 / portrait=920×1536 /
-  landscape=1536×920;生图调用带 `latentResolution` 换掉 width/height 数字对)/
-  steps(8–16,默认 12)/ sampler(7 枚举)/ scheduler(5 枚举)/ preset(deprecated,不传)。
+  landscape=1536×920;生图调用带 `latentResolution` 换掉 width/height 数字对;square 档
+  本轮未接入尺寸决策)/ steps(8–16,默认 12)/ sampler / scheduler / preset(deprecated,不传)。
   **没有 model、没有 CFG/scale**——单模型站点(渲染自家 Anima),故 LatentPanel 无模型/Scale
   输入;`latent.scale` 保留字段只为 buildNaiParameters 读值,恒 5。
+  **sampler/scheduler 是动态的**:站点换底层模型时枚举整体迁移过一轮(旧域
+  euler_ancestral/dpmpp_*/karras/normal/simple/exponential 已不存在)。现状以
+  `backends/latentCaps.ts` 为准——拉源站 `/openapi.json`(公开、CORS `*`,浏览器可直取)
+  解析 GenerationRequest 的三组 enum 写 localStorage 快照(latent.caps.v1,按 origin 分键),
+  面板下拉快照优先、内置 `LATENT_SAMPLERS/SCHEDULERS` 只作离线回落;**仅两个手动入口触发**
+  (面板「同步参数域」按钮、测试连接),打开面板/启动/生图路径一律不发请求。normalizeLatent
+  的枚举合法域 = 内置 ∪ 快照,本地值不在域内回落默认并 console.warn(发旧值就是 400)。
+  测试连接换 `testLatentConnection`:兼容面没有订阅端点(404),Key 从来验不了——消息如实报
+  「地址可达;参数域已同步:…(Key 未验证,以实际生图为准)」;原生 API 无 CORS,浏览器侧
+  无法用 /api/v1/* 验 Key。
   **站长确认:站点不支持自然语言,必须用 tag**(SD checkpoint 生态,danbooru 短 tag)。
   因此副 API 的 new 建档验收(强制 nl)只对 NAI 渠道生效,latent 建档不要求 nl
   (档案 nl 字段保持可选记录,NAI 建的带 nl 档案切到 latent 时 nl 不发送但档案无损)。
-  恒走 naiSpec/naiThinking(**单串 tag + 区分性称谓邻接绑定**,非 V5 双层结构);
+  恒走单串口径(latentSpec/latentThinking 可编辑,回落旧 naiSpec/naiThinking 再回落内置;
+  **单串 tag + 区分性称谓邻接绑定**,非 V5 双层结构);
   发送侧带 `latentTagOnly` 降级为纯 tag 载荷——nl 不拼 prompt、v4_prompt/v4_negative_prompt/
   characterPrompts 整个剥掉(characters[].tag 的内容副 API 已按绑定写法写进主串,丢弃的是
   冗余副本),prompt 顶层与 input 同源。

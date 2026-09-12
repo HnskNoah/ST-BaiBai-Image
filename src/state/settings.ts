@@ -5,6 +5,7 @@ import {
   type ComfySimpleConfig,
 } from '@/backends/comfyTemplates';
 import { BUILTIN_NAI_ARTISTS, isBuiltinNaiArtist, naiDefaultUndesired } from '@/backends/nai';
+import { readLatentCaps } from '@/backends/latentCaps';
 import { parseSize, type SizePair } from '@/backends/size';
 import {
   clampVibeStrength,
@@ -303,7 +304,9 @@ export interface LatentSettings extends BackendConn {
    * 字段保留只为 latentAsNai 映射成 NaiSettings 时形状完整,值恒默认 4.5-full。
    */
   model: NaiModel;
-  /** NAI 名(如 k_euler),兼容层映射到站点管线。枚举与站点 openapi 逐字一致。 */
+  /** 站点原生采样器名(openapi 枚举,如 euler/res_multistep),兼容层映射到站点管线。
+   *  面板可经「同步参数域」跟随站点实时枚举(见 backends/latentCaps.ts),内置
+   *  LATENT_SAMPLERS 只是离线回落;不在当前域内的本地值由 normalizeLatent 回落默认。 */
   sampler: string;
   noiseSchedule: string;
   steps: number;
@@ -1149,17 +1152,14 @@ export const LATENT_DEFAULT_URL = 'https://latent.moe/api/novelai';
 /** 站点固定分辨率:竖/横两档,按 tag 判向映射(square 触发不了,无此档)。 */
 export const LATENT_PORTRAIT_SIZE = '920×1536';
 export const LATENT_LANDSCAPE_SIZE = '1536×920';
-/** 站点原生采样器/调度器枚举(来自其 OpenAPI;无动态拉取端点,枚举变更需跟版本)。 */
-export const LATENT_SAMPLERS = [
-  'euler',
-  'euler_ancestral',
-  'dpmpp_2s_ancestral',
-  'dpmpp_2m',
-  'dpmpp_sde',
-  'dpmpp_2m_sde',
-  'ddim',
-];
-export const LATENT_SCHEDULERS = ['karras', 'beta', 'normal', 'simple', 'exponential'];
+/**
+ * 站点原生采样器/调度器枚举——**离线回落值**,对齐站点 openapi 当前域(2026-09 拉取)。
+ * 真正的实时域走运行时同步:面板「同步参数域」按钮/测试连接会拉源站 /openapi.json
+ * 解析 GenerationRequest 枚举(见 backends/latentCaps.ts),站点再换模型/参数域时
+ * 无需等插件发版。用户本地值不在枚举内时由 normalizeLatent 回落默认并 console.warn。
+ */
+export const LATENT_SAMPLERS = ['euler', 'res_multistep', 'er_sde'];
+export const LATENT_SCHEDULERS = ['sgm_uniform', 'beta', 'beta57', 'linear_quadratic'];
 
 function latentDefaults(): LatentSettings {
   return {
@@ -1170,9 +1170,10 @@ function latentDefaults(): LatentSettings {
     landscapeSize: LATENT_LANDSCAPE_SIZE,
     key: '',
     model: 'nai-diffusion-4-5-full',
-    // 站点原生枚举默认项(sampler 7 种 / scheduler 5 种,见 LATENT_SAMPLERS/LATENT_SCHEDULERS)
+    // 站点原生枚举默认项(openapi 当前端,见 LATENT_SAMPLERS/LATENT_SCHEDULERS;
+    // scheduler 'normal' 是旧域值,旧默认已不存在,改 sgm_uniform——站点默认即列表首)
     sampler: 'euler',
-    noiseSchedule: 'normal',
+    noiseSchedule: 'sgm_uniform',
     // 站点原生域 steps 8–16,默认 12;不沿用 NAI 的 28(超出站点域,发了也会被兼容层打回)
     steps: 12,
     scale: 5,
@@ -1618,6 +1619,27 @@ function normalizeConnPreset(raw: unknown, seq: number): NaiConnPreset {
   };
 }
 
+/**
+ * Latent 枚举合法域 = 内置回落列表 ∪ 站点参数域快照——动态同步可能带来内置列表之外的
+ * 新值(站点换参数域先行、插件未发版),用户选了就不能被 normalize 误回落。
+ */
+function latentEnumDomain(
+  url: string,
+  builtin: readonly string[],
+  pick: (caps: { samplers: string[]; schedulers: string[] }) => string[],
+): string[] {
+  const caps = readLatentCaps(url);
+  return caps ? [...builtin, ...pick(caps).filter(v => !builtin.includes(v))] : [...builtin];
+}
+
+/** 本地值不在当前参数域内 → 回落默认并 warn(发旧值就是 400,静默保留只是推迟报错)。 */
+function pickLatentEnum(raw: unknown, domain: readonly string[], fallback: string, label: string): string {
+  if (typeof raw !== 'string' || !raw) return fallback;
+  if (domain.includes(raw)) return raw;
+  console.warn(`[柏宝绘] latent ${label}「${raw}」不在站点当前参数域内,回落 ${fallback}`);
+  return fallback;
+}
+
 function normalizeLatent(
   raw: unknown,
   def: LatentSettings,
@@ -1626,9 +1648,11 @@ function normalizeLatent(
 ): LatentSettings {
   const conn = normalizeBackend(raw, def);
   const o = (raw ?? {}) as Partial<LatentSettings>;
+  const samplerDomain = latentEnumDomain(conn.url, LATENT_SAMPLERS, caps => caps.samplers);
+  const schedulerDomain = latentEnumDomain(conn.url, LATENT_SCHEDULERS, caps => caps.schedulers);
   return {
     ...conn,
-    sampler: typeof o.sampler === 'string' && o.sampler ? o.sampler : def.sampler,
+    sampler: pickLatentEnum(o.sampler, samplerDomain, def.sampler, '采样器'),
     key: typeof o.key === 'string' ? o.key : def.key,
     model: typeof o.model === 'string' && NAI_MODEL_VALUES.has(o.model) ? (o.model as NaiModel) : def.model,
     // 站点原生域(openapi):steps 8–16 默认 12;并发 1–4(409=在途超限,本地闸门口径);
@@ -1638,8 +1662,7 @@ function normalizeLatent(
     scale: def.scale,
     seed: Math.round(clampNumber(o.seed, def.seed, 0, 9007199254740991)),
     concurrency: Math.round(clampNumber(o.concurrency, def.concurrency, 1, 4)),
-    noiseSchedule:
-      typeof o.noiseSchedule === 'string' && o.noiseSchedule ? o.noiseSchedule : def.noiseSchedule,
+    noiseSchedule: pickLatentEnum(o.noiseSchedule, schedulerDomain, def.noiseSchedule, '噪声表'),
     // 激活项分渠道记忆(库与 NAI 共用):悬空 id 一律清成空串 = 不使用,与 normalizeNai
     // 同款不变式。查找域 = NAI 共享库 ∪ 内置库;库经 naiPresets 参数传入(调用方在
     // normalizeNai 之后取 merged.nai.artistPresets),避免「首装首次 hydrate」时

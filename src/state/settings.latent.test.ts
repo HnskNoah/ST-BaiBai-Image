@@ -44,9 +44,74 @@ describe('Latent 渠道设置', () => {
     expect(settings.latent.portraitSize).toBe(LATENT_PORTRAIT_SIZE);
     expect(settings.latent.landscapeSize).toBe(LATENT_LANDSCAPE_SIZE);
     expect(settings.latent.sampler).toBe('euler');
-    expect(settings.latent.noiseSchedule).toBe('normal');
+    expect(settings.latent.noiseSchedule).toBe('sgm_uniform');
     expect(settings.latent.steps).toBe(12);
     expect(settings.latent.concurrency).toBe(1);
+  });
+
+  it('normalizeLatent:存量旧枚举值(站点已换参数域)回落默认并 warn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { settings } = await hydrateWithLatent({
+        sampler: 'euler_ancestral', // 旧域值,新 openapi 已无
+        noiseSchedule: 'karras', // 旧域值
+      });
+      expect(settings.latent.sampler).toBe('euler');
+      expect(settings.latent.noiseSchedule).toBe('sgm_uniform');
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('normalizeLatent:两列表都还在的值(euler/beta)原样保留', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { settings } = await hydrateWithLatent({
+        sampler: 'euler',
+        noiseSchedule: 'beta',
+      });
+      expect(settings.latent.sampler).toBe('euler');
+      expect(settings.latent.noiseSchedule).toBe('beta');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('normalizeLatent:站点快照并入合法域——快照里的新值不被误回落', async () => {
+    // 「同步参数域」可能带来内置列表之外的新枚举:合法域 = 内置 ∪ 快照,
+    // 用户选了快照值,重开 ST 也不能被 normalize 悄悄改掉。
+    const store: Record<string, string> = {};
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store[k] ?? null,
+      setItem: (k: string, v: string) => {
+        store[k] = v;
+      },
+      removeItem: (k: string) => {
+        delete store[k];
+      },
+    });
+    store['latent.caps.v1'] = JSON.stringify({
+      'https://latent.moe': {
+        samplers: ['euler', 'site_new_sampler'],
+        schedulers: ['sgm_uniform'],
+        resolutions: ['portrait'],
+        fetchedAt: 1,
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { settings } = await hydrateWithLatent({
+        sampler: 'site_new_sampler',
+        noiseSchedule: 'karras',
+      });
+      expect(settings.latent.sampler).toBe('site_new_sampler');
+      expect(settings.latent.noiseSchedule).toBe('sgm_uniform');
+      expect(warn).toHaveBeenCalledTimes(1); // 只有旧噪声表值回落
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('normalizeLatent:steps 钳到 8–16、并发钳到 1–4、scale 恒被默认顶掉(站点无 CFG)', async () => {
@@ -121,7 +186,7 @@ describe('Latent 渠道设置', () => {
 
   it('latentAsNai:画师串库与 NAI 共用,激活项分渠道记忆(latent.activeArtistId 覆盖视图)', async () => {
     const { settings, latentAsNai } = await hydrateWithLatent({
-      sampler: 'dpmpp_2m',
+      sampler: 'res_multistep', // 站点当前域值(旧用例的 dpmpp_2m 属旧域,会被 normalize 回落)
       steps: 10,
     });
     settings.nai.artistPresets = [
@@ -138,7 +203,7 @@ describe('Latent 渠道设置', () => {
     // 库本体仍共享(同一条目)
     expect(view.artistPresets).toEqual(settings.nai.artistPresets);
     // 渠道自有字段覆盖 NAI 同名值
-    expect(view.sampler).toBe('dpmpp_2m');
+    expect(view.sampler).toBe('res_multistep');
     expect(view.steps).toBe(10);
   });
 

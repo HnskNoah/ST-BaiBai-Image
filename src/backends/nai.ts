@@ -519,7 +519,7 @@ export function applyVibes(
 
 /* ============ 网络请求 ============ */
 
-async function naiHttpError(
+export async function naiHttpError(
   resp: Response,
   label: string,
   opts: { quota429?: boolean } = {},
