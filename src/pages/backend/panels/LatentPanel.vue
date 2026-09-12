@@ -153,7 +153,7 @@ const artistBoundTargets = computed<LatentPromptTarget[]>(() => {
       readonly,
       hint: readonly
         ? '内置条随插件版本更新不可改;复制一条自己的再绑。留空 = 用下方渠道级设置。'
-        : '这份质量词随当前画师串一起切换。留空 = 用下方渠道级设置(渠道级也留空则用 Anima 推荐默认)。',
+        : '这份质量词随当前画师串一起切换。留空 = 用下方渠道级设置（渠道级也留空则用 Anima 推荐默认）。',
       fallback: () => settings.latent.qualityTags.trim() || LATENT_DEFAULT_QUALITY_TAGS,
       read: () => a.quality,
       write: v => (a.quality = v),
@@ -164,7 +164,7 @@ const artistBoundTargets = computed<LatentPromptTarget[]>(() => {
       readonly,
       hint: readonly
         ? '内置条随插件版本更新不可改;复制一条自己的再绑。留空 = 用下方渠道级设置。'
-        : '这份负面词随当前画师串一起切换。留空 = 用下方渠道级设置(渠道级也留空则用 Anima 推荐默认)。',
+        : '这份负面词随当前画师串一起切换。留空 = 用下方渠道级设置（渠道级也留空则用 Anima 推荐默认）。',
       fallback: () =>
         settings.latent.negativePrompt.trim() || latentDefaultUndesired(latentAsNai()),
       read: () => a.negative,
@@ -172,6 +172,36 @@ const artistBoundTargets = computed<LatentPromptTarget[]>(() => {
     },
   ];
 });
+
+/**
+ * 渠道级质量词/负面词(与 NAI 面板的 CHANNEL_PROMPT_TARGETS 同构):只读列表行,
+ * 点行进弹窗编辑;画师串绑定了对应字段时,渠道值被覆盖(列表行显示警示徽标)。
+ */
+const channelPromptTargets = computed<LatentPromptTarget[]>(() => [
+  {
+    key: 'quality',
+    label: '正面质量词',
+    hint: '拼在画面 tag 之前（整体顺序：质量词 → 画师串 → 画面 tag）。画师串里设置了质量词时,会用画师串那份,这里的不生效。',
+    fallback: () => LATENT_DEFAULT_QUALITY_TAGS,
+    read: () => settings.latent.qualityTags,
+    write: v => (settings.latent.qualityTags = v),
+  },
+  {
+    key: 'negative',
+    label: '负面提示词',
+    hint: '留空 = 用 Anima 推荐默认（启用画师串时自动剔除 artist name）;画面级负面在楼层 tag 里,会与本条合并。画师串里设置了负面词时,会用画师串那份,这里的不生效。',
+    fallback: () => latentDefaultUndesired(latentAsNai()),
+    read: () => settings.latent.negativePrompt,
+    write: v => (settings.latent.negativePrompt = v),
+  },
+]);
+
+/** 当前画师串是否绑定了该字段——绑定时渠道值被覆盖,渠道行要说出这件事(与 NAI 同口径)。 */
+function isShadowedByArtist(key: LatentPromptTarget['key']): boolean {
+  const a = artist.value;
+  if (!a) return false;
+  return key === 'quality' ? !!a.quality.trim() : !!a.negative.trim();
+}
 
 function isTargetCustom(target: LatentPromptTarget): boolean {
   return target.read().trim().length > 0;
@@ -282,7 +312,7 @@ function resetPromptDraft() {
             Latent 底层是 Anima 系模型:画师 tag 用 <code>@名字</code> 格式(NAI 的 <code>artist:xxx</code> 写法无效),本渠道的画师串请按 @ 格式填写。
           </p>
 
-          <!-- 随画师串一起切换的正/负面词(与 NAI 面板同机制):设置了覆盖下面渠道级 -->
+          <!-- 随画师串一起切换的正/负面词（与 NAI 面板同机制）：设置了覆盖下面渠道级 -->
           <ul class="bbi-prompt-list">
             <li v-for="t in artistBoundTargets" :key="t.key" class="bbi-prompt-item">
               <button class="bbi-prompt-open" type="button" @click="openPrompt(t)">
@@ -294,26 +324,27 @@ function resetPromptDraft() {
               </button>
             </li>
           </ul>
-          <p class="bbi-field-hint">这里设置的提示词会覆盖下面的,随画师串一起切换;这里没设置,就会用下面的。</p>
+          <p class="bbi-field-hint">这里设置的提示词会覆盖下面的，随画师串一起切换;这里没设置，就会用下面的。</p>
         </template>
 
-        <hr class="bbi-rule" />
+        <hr class="art-divider" />
 
-        <div class="bbi-field">
-          <div class="bbi-field-head">
-            <span class="bbi-field-label">正面质量词(可留空)</span>
-          </div>
-          <BbiTextarea v-model="settings.latent.qualityTags" :rows="2" :max-rows="6" mono />
-          <p class="bbi-field-hint">留空自动带 Anima 推荐质量词(masterpiece, best quality, score_7, safe),拼在画面 tag 之前。</p>
-        </div>
-
-        <div class="bbi-field">
-          <div class="bbi-field-head">
-            <span class="bbi-field-label">负面提示词(可留空)</span>
-          </div>
-          <BbiTextarea v-model="settings.latent.negativePrompt" :rows="2" :max-rows="6" mono />
-          <p class="bbi-field-hint">留空自动带 Anima 推荐负面(启用画师串时自动剔除其中的 artist name);画面级负面在楼层 tag 里,会与本条合并。</p>
-        </div>
+        <!-- 渠道级质量词/负面词：只读列表行，点行进弹窗编辑（与 NAI 面板同款） -->
+        <ul class="bbi-prompt-list">
+          <li v-for="t in channelPromptTargets" :key="t.key" class="bbi-prompt-item">
+            <button class="bbi-prompt-open" type="button" @click="openPrompt(t)">
+              <span class="bbi-prompt-name">{{ t.label }}</span>
+              <span v-if="isShadowedByArtist(t.key)" class="bbi-prompt-state is-shadowed">
+                已被画师串覆盖
+              </span>
+              <span v-else class="bbi-prompt-state" :class="{ 'is-custom': isTargetCustom(t) }">
+                {{ isTargetCustom(t) ? '已自定义' : '默认' }}
+              </span>
+              <Icon name="edit" class="bbi-prompt-edit" />
+            </button>
+          </li>
+        </ul>
+        <p class="bbi-field-hint">画师串里没设置正/负面词时，就会用这里的;这里也留空，则用 Anima 推荐默认。</p>
 
         <p class="bbi-field-hint">
           自动出图时教 AI 写 tag 的「规范/思维链」在 设置页 → 自定义提示词 → 「Latent 规范 / Latent 思维链」,留空走内置默认。
@@ -438,6 +469,12 @@ function resetPromptDraft() {
 </template>
 
 <style scoped>
+/* 渠道级与画师串编辑区的分界(与 NaiPanel 同款虚线) */
+.art-divider {
+  border: 0;
+  border-top: 1px dashed var(--bbi-line);
+  margin: 12px 0;
+}
 /* 绑定正/负面词列表(与 NaiPanel 同款,scoped 需各抄一份;状态药丸在 base.css 全局) */
 .bbi-prompt-list {
   list-style: none;
@@ -474,6 +511,11 @@ function resetPromptDraft() {
 }
 .bbi-prompt-open:hover .bbi-prompt-edit {
   color: var(--bbi-accent);
+}
+/* 「已被画师串覆盖」警示药丸(与 NaiPanel 同款;base.css 只有 is-custom,此态各页自带) */
+.bbi-prompt-state.is-shadowed {
+  color: var(--bbi-warning);
+  background: transparent;
 }
 .bbi-modal-wide {
   max-width: 680px;
