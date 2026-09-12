@@ -328,6 +328,68 @@ export async function prepareImageForStorage(result: ComfyImageResult): Promise<
 }
 
 /**
+ * 图片二进制 + 侧写 json 落盘。**存图的唯一物理路径**,楼层与公开接口共用。
+ *
+ * 不碰聊天记录:楼层侧随后自己写 extra 指针,公开接口侧压根没有指针要写
+ * (第三方自己决定图显示在哪,图不进任何楼层正文)。
+ *
+ * 文件名与目录必须走这里,不能各自另起一套:
+ * - 目录 `柏宝绘_<角色名>` 是图库的**唯一**分组依据(index.vue 只列 FOLDER_PREFIX 开头的目录),
+ *   名字换个前缀,图存下去了但图库里看不见;
+ * - 文件名 `bbi_…-<genId>.<ext>` 要能被 sidecarPathFor 的正则认出来,否则它返回空串、
+ *   图库压根不去请求侧写 —— 症状是图在、提示词空白、**且没有任何报错**。
+ */
+async function uploadImageWithSidecar(
+  characterName: string,
+  swipeId: number,
+  hash: string,
+  tag: string,
+  seed: number,
+  result: ComfyImageResult,
+): Promise<{ path: string; genId: string; createdAt: number; imageFile: string }> {
+  const genId = generationId();
+  // 先按设置决定落盘格式(开关开启时重编码为 JPG),文件名后缀跟随实际格式
+  const { base64, format } = await prepareImageForStorage(result);
+  const imageFile = imageFileName(characterName, swipeId, hash, genId, format);
+  const path = await uploadUserImage(`柏宝绘_${characterName}`, imageFile, base64, format);
+  const createdAt = Date.now();
+
+  // 侧写:图库跨聊天浏览时,提示词只能从这里拿。
+  // **失败只警告不抛** —— 图已经存好了,绝不能因为一个附属 json 让整次存图失败;
+  // 用户宁可少看一段提示词,也不能丢图。
+  const sidecar: BbiImageSidecar = { v: 1, character: characterName, prompt: tag, seed, createdAt };
+  try {
+    await uploadBase64File(sidecarFileName(imageFile), utf8ToBase64(JSON.stringify(sidecar)));
+  } catch (error) {
+    console.warn('[柏宝绘] 侧写元数据写入失败（不影响图片）', error);
+  }
+
+  return { path, genId, createdAt, imageFile };
+}
+
+/**
+ * 存一张**不属于任何楼层**的图(公开接口 STBaiBaiImage.generate 的 save 路径)。
+ *
+ * 与 saveImageResult 的分工:那个存完还要写 extra 指针、触发重水合,让楼层卡片显示它;
+ * 这个只把文件放进图库就收工 —— 第三方插件自己决定图显示在哪(这正是公开接口的意义),
+ * 柏宝绘不替它往聊天记录里塞任何东西。
+ *
+ * swipeId 固定 0:文件名里那一格本是「同一楼的第几个 swipe」,外部图没有楼层坐标,
+ * 取 0 只为让文件名保持同一格式(图库与 sidecarPathFor 都靠格式认图)。
+ * 唯一性由 genId 保证,不靠这一格。
+ */
+export async function saveExternalImage(
+  characterName: string,
+  tag: string,
+  seed: number,
+  result: ComfyImageResult,
+): Promise<string> {
+  const name = characterName.trim() || '未命名角色';
+  const { path } = await uploadImageWithSidecar(name, 0, promptHash(tag), tag, seed, result);
+  return path;
+}
+
+/**
  * 完整保存流程（DESIGN-FLOOR-UI.md §7.6）：
  * 图片二进制落盘 → extra 写指针（先文件后指针，避免孤儿指针）；
  * 指针写失败则文件留作孤儿，由后续清理兜底。
@@ -346,12 +408,15 @@ export async function saveImageResult(
   if (!chatId) throw new Error('当前聊天不可用');
 
   const hash = promptHash(tag);
-  const genId = generationId();
   const characterName = ctx.chat[messageId]?.name?.trim() || ctx.name2?.trim() || '未命名角色';
-  // 先按设置决定落盘格式(开关开启时重编码为 JPG)，文件名后缀跟随实际格式
-  const { base64, format } = await prepareImageForStorage(result);
-  const name = imageFileName(characterName, swipeId, hash, genId, format);
-  const path = await uploadUserImage(`柏宝绘_${characterName}`, name, base64, format);
+  const { path, genId, createdAt } = await uploadImageWithSidecar(
+    characterName,
+    swipeId,
+    hash,
+    tag,
+    seed,
+    result,
+  );
 
   const entry: BbiImageEntry = {
     generationId: genId,
@@ -360,25 +425,9 @@ export async function saveImageResult(
     // 本次生成实际使用的种子（调用方生成后传入；-1 不在支持范围）
     seed,
     status: 'ready',
-    createdAt: Date.now(),
+    createdAt,
     slotSeq: seq,
   };
-
-  // 侧写:图库跨聊天浏览时，提示词只能从这里拿。
-  // **失败只警告不抛** —— 图已经存好了，绝不能因为一个附属 json 让整次存图失败;
-  // 用户宁可少看一段提示词，也不能丢图。
-  const sidecar: BbiImageSidecar = {
-    v: 1,
-    character: characterName,
-    prompt: tag,
-    seed,
-    createdAt: entry.createdAt,
-  };
-  try {
-    await uploadBase64File(sidecarFileName(name), utf8ToBase64(JSON.stringify(sidecar)));
-  } catch (error) {
-    console.warn('[柏宝绘] 侧写元数据写入失败（不影响图片）', error);
-  }
 
   const saved = await mutateStore(ctx, messageId, store => appendEntry(store, swipeId, hash, entry));
   if (!saved) {
@@ -386,6 +435,29 @@ export async function saveImageResult(
     throw new Error('图片已上传，但聊天记录保存失败');
   }
   return entry;
+}
+
+/**
+ * 删除一张图的**文件本体**(连同它的侧写 json),不碰任何聊天记录。供图库批量删除使用。
+ *
+ * 与 deleteImageResult 的分工:那个是「从楼层删一条结果」,先摘 extra 指针再删文件;
+ * 这个是「从图库删一个文件」,**没有指针可摘**——图库按目录列图,而指针散在各个聊天的
+ * extra 里,两者之间没有反向索引,扫全库反查不可行(实测 chats 目录 7 GB / 1243 个 jsonl,
+ * 且 /api/chats/get 无分页)。故这里必然留下破指针,由楼层卡片侧运行时降级兜底
+ * (floor/missingImages.ts + Card.vue 的 @error)。
+ *
+ * 侧写删失败只警告:老图本来就没有侧写,404 属预期常态(deleteUploadedFile 对 404 返回
+ * false 不抛);真失败了也只是多个几 KB 的孤儿 json,不值得让整次删除报错。
+ */
+export async function deleteImageFileOnly(path: string): Promise<void> {
+  await deleteUserImage(path);
+  const sidecar = sidecarPathFor(path);
+  if (!sidecar) return;
+  try {
+    await deleteUploadedFile(sidecar);
+  } catch (error) {
+    console.warn('[柏宝绘] 删除侧写元数据失败（留作孤儿）', error);
+  }
 }
 
 /**

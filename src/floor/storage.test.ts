@@ -13,6 +13,7 @@ import {
   prepareImageForStorage,
   promptHash,
   readStore,
+  saveExternalImage,
   saveImageResult,
   sidecarFileName,
   sidecarPathFor,
@@ -404,6 +405,83 @@ describe('saveImageResult', () => {
     expect(message.extra[BBI_IMAGE_EXTRA_KEY]).toBe(originalStore);
     expect(saveChat).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('saveExternalImage', () => {
+  beforeEach(() => {
+    settings.storage.saveAsJpeg = false;
+  });
+
+  it('lands in the gallery: 柏宝绘_ folder + a name sidecarPathFor can recognize', async () => {
+    const tag = '<bbi_image>1girl<size>portrait</size></bbi_image>';
+    const storedPath = '/user/images/柏宝绘_小雪/bbi_seeded.png';
+    const fetchMock = vi.fn(async (url: string) =>
+      url === '/api/files/upload'
+        ? new Response('{}', { status: 200 })
+        : new Response(JSON.stringify({ path: storedPath }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', {
+      SillyTavern: { getContext: () => ({ getRequestHeaders: () => ({}) }) },
+    });
+
+    const result = { url: 'data:image/png;base64,AAAA', filename: 'x.png', format: 'png', revoke() {} };
+    expect(await saveExternalImage(' 小雪 ', tag, 123, result)).toBe(storedPath);
+
+    const upload = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as {
+      ch_name: string;
+      filename: string;
+    };
+    // 目录前缀是图库列图的唯一依据:换个前缀,图存下去了但图库里看不见
+    expect(upload.ch_name).toBe('柏宝绘_小雪');
+    // 文件名必须过 sidecarPathFor 的正则,否则图库压根不去请求侧写——
+    // 症状是图在、提示词空白、且没有任何报错
+    expect(sidecarPathFor(`/user/images/柏宝绘_小雪/${upload.filename}`)).toBe(
+      `/user/files/${sidecarFileName(upload.filename)}`,
+    );
+
+    const [sidecarUrl, sidecarInit] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(sidecarUrl).toBe('/api/files/upload');
+    const sidecar = JSON.parse(String(sidecarInit.body)) as { name: string; data: string };
+    expect(sidecar.name).toBe(sidecarFileName(upload.filename));
+    expect(
+      JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(sidecar.data), c => c.charCodeAt(0)))),
+    ).toMatchObject({ v: 1, character: '小雪', prompt: tag, seed: 123 });
+  });
+
+  it('falls back to 未命名角色 rather than writing a 柏宝绘_ folder with an empty name', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ path: '/user/images/柏宝绘_未命名角色/bbi_x.png' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', {
+      SillyTavern: { getContext: () => ({ getRequestHeaders: () => ({}) }) },
+    });
+
+    const result = { url: 'data:image/png;base64,AAAA', filename: 'x.png', format: 'png', revoke() {} };
+    await saveExternalImage('   ', '<bbi_image>a</bbi_image>', 1, result);
+
+    const upload = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as {
+      ch_name: string;
+    };
+    expect(upload.ch_name).toBe('柏宝绘_未命名角色');
+  });
+
+  it('does not write any chat record (the image belongs to no floor)', async () => {
+    const saveChat = vi.fn(async () => undefined);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ path: '/user/images/柏宝绘_c/bbi_x.png' }), { status: 200 }),
+    ));
+    vi.stubGlobal('window', {
+      SillyTavern: {
+        getContext: () => ({ chat: [fakeMessage()], saveChat, getRequestHeaders: () => ({}) }),
+      },
+    });
+
+    const result = { url: 'data:image/png;base64,AAAA', filename: 'x.png', format: 'png', revoke() {} };
+    await saveExternalImage('c', '<bbi_image>a</bbi_image>', 1, result);
+    expect(saveChat).not.toHaveBeenCalled();
   });
 });
 
