@@ -298,4 +298,20 @@ async function confirmRemove() {
   color: var(--bbi-danger);
   background: var(--bbi-danger-soft);
 }
+
+/* 窄屏(与 NaiPanel 原媒体查询同款,抽取时须随行带走):
+   标签独占首行,下拉与操作组同行分据两端;解除桌面的 320px 宽度上限,
+   否则较长的画师串名字在手机上显示不全。 */
+@media (max-width: 640px) {
+  .art-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 8px;
+  }
+  .art-row > .bbi-field-label:first-child {
+    grid-column: 1 / -1;
+  }
+  .art-row > .art-select {
+    max-width: none;
+  }
+}
 </style>
