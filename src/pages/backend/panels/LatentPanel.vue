@@ -189,7 +189,7 @@ const channelPromptTargets = computed<LatentPromptTarget[]>(() => [
   {
     key: 'negative',
     label: '负面提示词',
-    hint: '留空 = 用 Anima 推荐默认（启用画师串时自动剔除 artist name）;画面级负面在楼层 tag 里,会与本条合并。画师串里设置了负面词时,会用画师串那份,这里的不生效。',
+    hint: '留空 = 用 Anima 推荐默认（启用画师串时自动剔除 artist name）。AI 会按画面生成画面级负面（仅排除画面相关项,通用质量词仍由这里/默认兜底）,与本条合并。画师串里设置了负面词时,会用画师串那份,这里的不生效。',
     fallback: () => latentDefaultUndesired(latentAsNai()),
     read: () => settings.latent.negativePrompt,
     write: v => (settings.latent.negativePrompt = v),

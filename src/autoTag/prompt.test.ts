@@ -768,6 +768,13 @@ describe('auto tag prompt', () => {
       expect(text).toContain('照抄在人数/构图之后、普通外貌之前');
       expect(text).not.toContain('照抄在 tag 串首位');
       expect(text).toContain('没有混入画师/画风 tag');
+      // 画面级负面:站点有原生 negativePrompt 字段,任务规则下发 negative 写法,
+      // 样例 JSON 带 negative 键;但 comfy 的 %negative_prompt% 宏不得泄入
+      expect(text).toContain('negative 是本画面专用的 danbooru 负面短 tag');
+      expect(text).toContain('extra people, duplicate character');
+      expect(text).not.toContain('%negative_prompt%');
+      // 规范(Latent 终端)的禁写条款已改条件式,不再与任务规则打架
+      expect(text).toContain('任务规则要求输出 negative 键时');
       // V5 双层结构判据不得出现(nl 要求不下发)
       expect(text).not.toContain('Write exactly one shot distance');
       expect(text).not.toContain('Every image must include Base tag');

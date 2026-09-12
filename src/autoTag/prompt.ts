@@ -196,6 +196,11 @@ export async function buildAutoTagMessages(
         // 工作流无效时由渠道面板负责提示；自动 tag 降级为不请求动态负面词。
       }
     }
+  } else if (settings.defaultBackend === 'latent') {
+    // 站点原生 negativePrompt 字段,画面级负面随每张图下发:AI 只写与画面相关的
+    // 排除项(教学见 negativeRule,通用质量词明令禁止),通用兜底仍由渠道级
+    // (Anima 分册默认)负责——两层合并,谁也不顶掉谁。
+    negativeOn = true;
   }
   // 示例一律写实际外貌串:@占位符已撤回(见 charAnchors.ts 文件头),
   // 有库/无库的差别只在「照抄库中字段」还是「自行补基础特征」,示例形态相同。
