@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { naiArtistPrompt } from '@/backends/nai';
+import {
+  LATENT_DEFAULT_QUALITY_TAGS,
+  latentDefaultUndesired,
+  naiArtistPrompt,
+} from '@/backends/nai';
 
 /**
  * Latent 渠道(站点 NovelAI 兼容面)的设置清洗与 NAI 视图映射:
@@ -257,6 +261,34 @@ describe('Latent 渠道设置', () => {
     // 内置表按渠道分册:bi_default 是 NAI 配方,不在 Latent 的合法域里
     const { settings } = await hydrateWithLatent({ activeArtistId: 'bi_default' });
     expect(settings.latent.activeArtistId).toBe('');
+  });
+
+  it('端到端:绑定词/画师串经独立库进生成视图——bound 优先于渠道级与 Anima 默认', async () => {
+    // 本功能的核心承诺:Latent 面板里给画师串绑的负面词,要真的走到生成装配链上
+    // (Card.vue 的合并点 naiUndesiredContent(view, latentDefaultUndesired(view)))。
+    const { settings, latentAsNai } = await hydrateWithLatent({
+      artistPresets: [
+        { id: 'l1', name: '厚涂', prompt: '@test', quality: 'my quality', negative: 'my negative' },
+      ],
+      activeArtistId: 'l1',
+      negativePrompt: '', // 渠道级留空
+    });
+    const { naiUndesiredContent, naiQualityTags, latentDefaultUndesired } = await import(
+      '@/backends/nai'
+    );
+    const view = latentAsNai();
+    // 绑定值最优先
+    expect(naiQualityTags(view, LATENT_DEFAULT_QUALITY_TAGS)).toBe('my quality');
+    expect(naiUndesiredContent(view, latentDefaultUndesired(view))).toBe('my negative');
+    // 绑定清空后:渠道级(留空)→ Anima 分册默认;画师串启用中故无 artist name
+    settings.latent.artistPresets[0].quality = '';
+    settings.latent.artistPresets[0].negative = '';
+    expect(naiQualityTags(view, LATENT_DEFAULT_QUALITY_TAGS)).toBe(
+      'masterpiece, best quality, score_7, safe',
+    );
+    const negative = naiUndesiredContent(view, latentDefaultUndesired(view));
+    expect(negative).toContain('score_1');
+    expect(negative).not.toContain('artist name');
   });
 
   it('activeNaiArtistName:两渠道库独立,盖章各取各库的激活条目', async () => {
