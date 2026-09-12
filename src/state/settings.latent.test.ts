@@ -210,7 +210,7 @@ describe('Latent 渠道设置', () => {
     expect(view.cfgRescale).toBe(0);
   });
 
-  it('latentAsNai:渠道级负面留空时undesiredContent 为空串,合并方据此回落官方基线', async () => {
+  it('latentAsNai:渠道级负面留空时 undesiredContent 为空串,合并方据此回落 Anima 分册默认', async () => {
     const { latentAsNai } = await hydrateWithLatent({});
     expect(latentAsNai().undesiredContent).toBe('');
   });

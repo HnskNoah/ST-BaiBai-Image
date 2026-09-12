@@ -736,7 +736,8 @@ describe('auto tag prompt', () => {
     }
   });
 
-  // latent:站点不支持自然语言,必须用 tag(站长确认)——恒走 naiSpec 单串口径
+  // latent:站点不支持自然语言,必须用 tag(站长确认)——恒走单串口径
+  // (latentSpec → 旧 naiSpec 存量值 → 内置 DEFAULT_NAI_SPEC,见 Latent 键优先级用例)
   // (邻接绑定多人规则),不拿 V5 判据,不要求 Base+characters 双层结构。
   it('gives latent the tag-only NAI doctrine with adjacency binding', async () => {
     const options: AutoTagSettings = {
