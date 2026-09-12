@@ -35,8 +35,10 @@ import {
 /**
  * 当前出图后端是否为 NAI 系(nai / latent)。latent 走站点的 NovelAI 兼容面,
  * 出图侧的拼装(fullPositivePrompt/质量词/负面链)与 NAI 同构,规范与思维链
- * 也从 NAI 族取——ComfyUI 规范教的工作流占位符、括号转义等知识对兼容层毫无意义,
- * 只会与本地追加的 NAI 质量词打架。至于取 NAI 族里的哪一份,见 characterPromptsOn。
+ * 取同族的单串口径(不是 comfy 的)——ComfyUI 规范教的工作流占位符、括号转义
+ * 等知识对兼容层毫无意义,只会与本地追加的 NAI 质量词打架。
+ * 取哪一份:latent 有自己的键(latentSpec/latentThinking,回落旧 naiSpec/naiThinking
+ * 再回落内置),NAI 按 characterPromptsOn 走 V5 或遗留单串。
  */
 export function isNaiFamilyBackend(): boolean {
   return settings.defaultBackend === 'nai' || settings.defaultBackend === 'latent';
@@ -47,8 +49,8 @@ export function isNaiFamilyBackend(): boolean {
  * - NAI:看自身模型(4.5/V5 → 是);
  * - latent:**恒否**。站长确认:站点不支持自然语言,必须用 tag——站点是 SD checkpoint
  *   生态(Anima 跑 danbooru 短 tag),兼容层对 v4_prompt/nl 的消费没有文档依据。
- *   故 latent 恒走 naiSpec/naiThinking(单串 tag + 区分性称谓邻接绑定,无 nl 键),
- *   发送侧同步降级为纯 tag 载荷(见 generateNaiImage 的 latentTagOnly)。
+ *   故 latent 恒走单串 tag 口径(latentSpec/latentThinking,单串 + 区分性称谓邻接
+ *   绑定,无 nl 键),发送侧同步降级为纯 tag 载荷(见 generateNaiImage 的 latentTagOnly)。
  */
 export function characterPromptsOn(): boolean {
   return settings.defaultBackend === 'nai' && naiSupportsCharacterPrompts(settings.nai.model);
@@ -58,8 +60,10 @@ export function characterPromptsOn(): boolean {
  * 按默认后端取 tag 书写规范:
  * - comfyui → comfySpec(留空回落内置默认);{{nl}} 宏按自然语言开关展开/置空,
  *   自定义内容不含宏时开启开关会把自然语言规范追加在末尾(防止开关静默失效)。
- * - nai / latent → naiSpec(留空回落内置默认 DEFAULT_NAI_SPEC);latent 与 NAI 共用:
- *   出图侧走同一套 fullPositivePrompt/质量词/负面链,tag 消费端完全相同。
+ * - latent → 恒走单串 tag 口径(站点不支持自然语言):latentSpec(设置页「Latent 规范」)
+ *   → naiSpec(旧 4.5 键,存量自定义不失效)→ 内置 DEFAULT_NAI_SPEC。
+ * - nai → naiCharPromptsOn 恒真(可选模型只剩 4.5/V5),走 naiV5Spec;单串 naiSpec
+ *   分支仅为已下线模型保留作回归锁,latent 不经此分支(上面已分流)。
  * - webui → 暂不附加。
  */
 function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromptsOn: boolean): string {
@@ -74,6 +78,13 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromp
     // 宏置空后可能留下连续空行,折叠掉
     return resolved.replace(/\n{3,}/g, '\n\n').trim();
   }
+  if (settings.defaultBackend === 'latent') {
+    return (
+      (options.prompts?.latentSpec ?? '').trim() ||
+      (options.prompts?.naiSpec ?? '').trim() ||
+      DEFAULT_NAI_SPEC
+    );
+  }
   if (isNaiFamilyBackend()) {
     return naiCharPromptsOn
       ? (options.prompts?.naiV5Spec ?? '').trim() || DEFAULT_NAI_V5_SPEC
@@ -85,12 +96,21 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromp
 /**
  * 按默认后端取思维链,与 backendPromptSpec 一一配对。
  *
- * 拆成三份是因为思维链的槽位块要求填的每个字段,都得在同后端规范里有判据和词表:
+ * 拆成多份是因为思维链的槽位块要求填的每个字段,都得在同后端规范里有判据和词表:
  * V5 的规范讲的是 Base + Character Prompts,没有景别词表、没有横竖判据,也明令禁止
  * 邻接绑定——共用一份 ComfyUI 口径的思维链会让它被要求填规范从未教过的东西。
+ * latent 与 NAI 单串同形态但独立成键(latentThinking,设置页「Latent 思维链」),
+ * 留空回落 naiThinking(旧 4.5 键,存量自定义不失效)再回落内置。
  * webui 暂无专属规范,回落 comfy 那份(该后端尚未接入)。
  */
 function backendThinkingPrompt(options: AutoTagSettings, naiCharPromptsOn: boolean): string {
+  if (settings.defaultBackend === 'latent') {
+    return (
+      (options.prompts?.latentThinking ?? '').trim() ||
+      (options.prompts?.naiThinking ?? '').trim() ||
+      DEFAULT_NAI_THINKING
+    );
+  }
   if (isNaiFamilyBackend()) {
     return naiCharPromptsOn
       ? (options.prompts?.naiV5Thinking ?? '').trim() || DEFAULT_NAI_V5_THINKING

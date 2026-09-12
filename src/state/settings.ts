@@ -116,8 +116,11 @@ export type NaiModel =
 
 /**
  * 可选模型:只留 4.5 与 V5。两代共用同一套「Base + 原生 Character Prompts + 英文自然
- * 语言」协议,收窄后 naiSupportsCharacterPrompts 对全部可选模型恒真 —— 单串 tag 那套
- * DEFAULT_NAI_SPEC / DEFAULT_NAI_THINKING 因此不再可达,设置页也相应撤掉了入口。
+ * 语言」协议,收窄后 naiSupportsCharacterPrompts 对全部可选模型恒真 —— NAI 渠道自身
+ * 不再走单串 tag 的 DEFAULT_NAI_SPEC / DEFAULT_NAI_THINKING,设置页相应撤掉了入口。
+ * 但 **latent 渠道恒走单串口径**(站点不支持自然语言,见 autoTag/prompt.ts 的
+ * characterPromptsOn),回落链 latentSpec → naiSpec(存量旧值)→ DEFAULT_NAI_SPEC,
+ * 那两份内置模板经此仍然可达,并作为「Latent 规范/思维链」重新有了编辑入口。
  *
  * ⚠ 存量选着已下线模型的配置会被 normalizeNai 回落到 naiDefaults().model:画风、Anlas
  * 消耗与 vibe 编码 key 都会随之改变。这是有意接受的代价(4.5 以下已基本无人使用),
@@ -963,13 +966,20 @@ export const DEFAULT_PREFILL_PROMPT = '<thinking>';
  *
  * ⚠ 键名与设置页标签不是一一对应的:设置页里的「NAI 规范 / NAI 思维链」实际存在
  * naiV5Spec / naiV5Thinking(历史命名),而同名的 naiSpec / naiThinking 是 4.5 以下
- * 那套单串 tag 版本 —— 已随模型列表收窄下线,无 UI 入口。键一律保留,免得动存量设置。
+ * 那套单串 tag 版本 —— NAI 渠道自身已随模型列表收窄不走它,但 **latent 渠道恒走
+ * 单串口径**,故这对键作为 latent 的回落层保留(先于内置模板),且有了「Latent
+ * 规范 / Latent 思维链」这个新 UI 入口盖在它上面。
  */
 export interface AutoTagPrompts {
   /** 破限词:置顶 system,降低副 API 拒答率。 */
   jailbreak: string;
-  /** 【已下线,无 UI 入口】NAI 4 系及以下的单串 tag 规范;回落 DEFAULT_NAI_SPEC。 */
+  /** 【NAI 渠道无 UI 入口】NAI 4 系及以下的单串 tag 规范;现在作为 Latent 规范的
+   *  回落层(latentSpec 留空时生效,更旧版本在此键里的自定义因此不失效)。
+   *  留空回落 DEFAULT_NAI_SPEC。 */
   naiSpec: string;
+  /** Latent 渠道 tag 书写规范(tag-only 单串口径,站点不支持自然语言);
+   *  设置页显示为「Latent 规范」。留空回落 naiSpec(存量旧值)再回落 DEFAULT_NAI_SPEC。 */
+  latentSpec: string;
   /** NAI 规范(4.5/V5 的 Base Prompt + 原生 Character Prompts);设置页显示为「NAI 规范」。 */
   naiV5Spec: string;
   /** ComfyUI 后端 tag 书写规范,拼在任务提示词里;留空回落内置默认(DEFAULT_COMFY_SPEC)。
@@ -980,8 +990,12 @@ export interface AutoTagPrompts {
    *  思维链按后端各存一份:槽位块要求填的字段必须在同后端规范里有判据和词表,
    *  共用一份会让某个后端被要求填它的规范从未教过的东西。 */
   comfyThinking: string;
-  /** 【已下线,无 UI 入口】NAI 4 系及以下的思考清单;回落 DEFAULT_NAI_THINKING。 */
+  /** 【NAI 渠道无 UI 入口】NAI 4 系及以下的思考清单;现在作为 Latent 思维链的
+   *  回落层(同 naiSpec 的道理)。留空回落 DEFAULT_NAI_THINKING。 */
   naiThinking: string;
+  /** Latent 渠道思考清单(tag-only 单串形态);设置页显示为「Latent 思维链」。
+   *  留空回落 naiThinking(存量旧值)再回落 DEFAULT_NAI_THINKING。 */
+  latentThinking: string;
   /** NAI 思维链(4.5/V5);留空回落内置默认(DEFAULT_NAI_V5_THINKING)。
    *  槽位块是 Base + 每角色块,与 comfy 那份的单串形态不同,不可互换。 */
   naiV5Thinking: string;
@@ -1204,10 +1218,12 @@ function defaults(): ImageSettings {
       prompts: {
         jailbreak: '',
         naiSpec: '',
+        latentSpec: '',
         naiV5Spec: '',
         comfySpec: '',
         comfyThinking: '',
         naiThinking: '',
+        latentThinking: '',
         naiV5Thinking: '',
         prefill: '',
       },
@@ -1840,10 +1856,12 @@ function normalize(raw: unknown): ImageSettings {
       return {
         jailbreak: typeof rp.jailbreak === 'string' ? rp.jailbreak : legacyJailbreak,
         naiSpec: typeof rp.naiSpec === 'string' ? rp.naiSpec : '',
+        latentSpec: typeof rp.latentSpec === 'string' ? rp.latentSpec : '',
         naiV5Spec: typeof rp.naiV5Spec === 'string' ? rp.naiV5Spec : '',
         comfySpec: typeof rp.comfySpec === 'string' ? rp.comfySpec : '',
         comfyThinking: typeof rp.comfyThinking === 'string' ? rp.comfyThinking : legacyThinking,
         naiThinking: typeof rp.naiThinking === 'string' ? rp.naiThinking : legacyThinking,
+        latentThinking: typeof rp.latentThinking === 'string' ? rp.latentThinking : '',
         naiV5Thinking: typeof rp.naiV5Thinking === 'string' ? rp.naiV5Thinking : '',
         prefill: typeof rp.prefill === 'string' ? rp.prefill : '',
       };

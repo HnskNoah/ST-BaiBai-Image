@@ -161,6 +161,10 @@ const noiseOptions = computed(() => LATENT_SCHEDULERS.map(s => ({ value: s, labe
           <BbiTextarea v-model="settings.latent.negativePrompt" :rows="2" :max-rows="6" mono />
           <p class="bbi-field-hint">留空自动带 NAI 官方负面基线;画面级负面在楼层 tag 里,会与本条合并。</p>
         </div>
+
+        <p class="bbi-field-hint">
+          自动出图时教 AI 写 tag 的「规范/思维链」在 设置页 → 自定义提示词 → 「Latent 规范 / Latent 思维链」,留空走内置默认。
+        </p>
       </Collapsible>
 
       <Collapsible title="默认参数" :open="false">

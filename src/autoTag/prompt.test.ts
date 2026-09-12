@@ -17,10 +17,12 @@ function prompts(overrides: Partial<AutoTagPrompts> = {}): AutoTagPrompts {
   return {
     jailbreak: '',
     naiSpec: '',
+    latentSpec: '',
     naiV5Spec: '',
     comfySpec: '',
     comfyThinking: '',
     naiThinking: '',
+    latentThinking: '',
     naiV5Thinking: '',
     prefill: '',
     ...overrides,
@@ -343,8 +345,9 @@ describe('auto tag prompt', () => {
         { backend: 'nai', model: 'nai-diffusion-4-full', want: 'NAI-CHECKLIST' },
         { backend: 'nai', model: 'nai-diffusion-4-5-full', want: 'NAIV5-CHECKLIST' },
         { backend: 'nai', model: 'nai-diffusion-5-full', want: 'NAIV5-CHECKLIST' },
-        // latent:站长确认站点不支持自然语言必须用 tag——恒走单串 naiSpec/naiThinking
-        // (邻接绑定口径),不看 settings.latent.model(4.5/V5 名也不例外)。
+        // latent:站长确认站点不支持自然语言必须用 tag——恒走单串口径,不看
+        // settings.latent.model(4.5/V5 名也不例外)。这里的 latent 行全部没填
+        // latentThinking,恰好同时锁住回落层:留空 → 旧 naiThinking 键仍生效。
         { backend: 'latent', model: 'nai-diffusion-3', want: 'NAI-CHECKLIST' },
         { backend: 'latent', model: 'nai-diffusion-4-5-full', want: 'NAI-CHECKLIST' },
         { backend: 'latent', model: 'nai-diffusion-5-full', want: 'NAI-CHECKLIST' },
@@ -368,6 +371,76 @@ describe('auto tag prompt', () => {
     } finally {
       settings.defaultBackend = oldBackend;
       settings.nai.model = oldModel;
+    }
+  });
+
+  // Latent 提示词键的优先级:latentSpec/latentThinking(设置页「Latent 规范/思维链」)
+  // > 旧 naiSpec/naiThinking(存量自定义的回落层)> 内置模板。分流按 defaultBackend
+  // 精确判定:NAI 渠道(含遗留单串分支)不读 latent 键,latent 也不读 NAI 的 V5 键。
+  it('lets latent override the tag spec/thinking, legacy NAI keys as fallback', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      minImages: 0,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      prompts: prompts({
+        latentSpec: 'LATENT-SPEC',
+        naiSpec: 'NAI-SPEC',
+        naiV5Spec: 'NAIV5-SPEC',
+        latentThinking: 'LATENT-CHECKLIST',
+        naiThinking: 'NAI-CHECKLIST',
+        naiV5Thinking: 'NAIV5-CHECKLIST',
+      }),
+    };
+    const oldBackend = settings.defaultBackend;
+    const oldModel = settings.nai.model;
+    const oldLatentModel = settings.latent.model;
+    try {
+      settings.defaultBackend = 'latent';
+      settings.latent.model = 'nai-diffusion-5-full'; // 挂 V5 名也不走 V5 键
+      const messages = await buildAutoTagMessages(context(), 1, options, null);
+      const text = messages.map(m => m.content).join('\n');
+      expect(text).toContain('LATENT-SPEC');
+      expect(text).toContain('LATENT-CHECKLIST');
+      expect(text).not.toContain('NAI-SPEC');
+      expect(text).not.toContain('NAIV5-SPEC');
+      expect(text).not.toContain('NAI-CHECKLIST');
+      expect(text).not.toContain('NAIV5-CHECKLIST');
+
+      // 回落层:latent 两键留空 → 旧 naiSpec/naiThinking 生效(更旧版本的存量自定义不失效)
+      const legacy: AutoTagSettings = {
+        ...options,
+        prompts: prompts({ naiSpec: 'NAI-SPEC', naiThinking: 'NAI-CHECKLIST' }),
+      };
+      const legacyMessages = await buildAutoTagMessages(context(), 1, legacy, null);
+      const legacyText = legacyMessages.map(m => m.content).join('\n');
+      expect(legacyText).toContain('NAI-SPEC');
+      expect(legacyText).toContain('NAI-CHECKLIST');
+      expect(legacyText).not.toContain('LATENT-SPEC');
+
+      // NAI 渠道(4.5/V5)不受 latent 键影响,走自己的 V5 对
+      settings.defaultBackend = 'nai';
+      const naiMessages = await buildAutoTagMessages(context(), 1, options, null);
+      const naiText = naiMessages.map(m => m.content).join('\n');
+      expect(naiText).toContain('NAIV5-SPEC');
+      expect(naiText).toContain('NAIV5-CHECKLIST');
+      expect(naiText).not.toContain('LATENT-SPEC');
+      expect(naiText).not.toContain('LATENT-CHECKLIST');
+
+      // NAI 遗留单串分支(已下线模型)读 naiSpec/naiThinking,不读 latent 键
+      settings.nai.model = 'nai-diffusion-4-full';
+      const legacyNai = await buildAutoTagMessages(context(), 1, options, null);
+      const legacyNaiText = legacyNai.map(m => m.content).join('\n');
+      expect(legacyNaiText).toContain('NAI-SPEC');
+      expect(legacyNaiText).toContain('NAI-CHECKLIST');
+      expect(legacyNaiText).not.toContain('LATENT-SPEC');
+      expect(legacyNaiText).not.toContain('LATENT-CHECKLIST');
+    } finally {
+      settings.defaultBackend = oldBackend;
+      settings.nai.model = oldModel;
+      settings.latent.model = oldLatentModel;
     }
   });
 

@@ -11,6 +11,8 @@ import {
   DEFAULT_COMFY_SPEC,
   DEFAULT_COMFY_THINKING,
   DEFAULT_JAILBREAK_PROMPT,
+  DEFAULT_NAI_SPEC,
+  DEFAULT_NAI_THINKING,
   DEFAULT_NAI_V5_SPEC,
   DEFAULT_NAI_V5_THINKING,
   DEFAULT_PREFILL_PROMPT,
@@ -113,6 +115,9 @@ interface TagPromptMeta {
   hint: string;
   builtin: string;
   macros: { token: string; desc: string }[];
+  /** 生效回落链的终点前的预览值:弹窗对「默认」条目预填它而非内置模板,方便在其上改。
+   *  (如 Latent 规范的回落链是 latentSpec → naiSpec 旧值 → 内置,预填第一层非空值。) */
+  fallback?: () => string;
 }
 
 // 规范与思维链按后端成对排列:两者必须配对使用(思维链槽位要填的字段,
@@ -120,8 +125,9 @@ interface TagPromptMeta {
 // 不按当前后端过滤——过滤会让「现在用的是哪份」变成隐式状态,反而更难排查。
 //
 // ⚠ NAI 只列一对,存的是 naiV5Spec / naiV5Thinking(键名带 V5 是历史包袱,见 settings.ts)。
-// 4.5 以下那套单串 tag 的 naiSpec / naiThinking 已随模型列表收窄一起下线,不再列出:
-// 可选模型只剩 4.5/V5,那两份永远走不到,列出来只会让人以为还有第二种口径要维护。
+// 4.5 以下那套单串 tag 的 naiSpec / naiThinking 不再单列:NAI 渠道自身走不到,但它们
+// 是「Latent 规范 / Latent 思维链」的回落层(latentSpec 留空时生效,旧版本存量自定义
+// 因此不失效),作为回落值预填在 Latent 弹窗里,不再暴露第二个可编辑面。
 const TAG_PROMPT_METAS: TagPromptMeta[] = [
   {
     key: 'jailbreak',
@@ -142,6 +148,22 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
     label: 'NAI 思维链',
     hint: '默认后端为 NAI 时使用的输出前思考清单，作为 system 压在任务消息之后（解析时会自动剥掉思考块）。槽位块是「Base 块 + 每角色一块」，对应 characters[] 协议，与 ComfyUI 那份的单串形态不通用。与「NAI 规范」配套。留空用内置默认。',
     builtin: DEFAULT_NAI_V5_THINKING,
+    macros: [],
+  },
+  {
+    key: 'latentSpec',
+    label: 'Latent \u89c4\u8303',
+    hint: 'Latent 渠道(第三方站点兼容面)拼进自动 tag 请求的 tag 书写规范。站点不支持自然语言,恒走单串 tag 口径(区分性称谓邻接绑定),与 NAI 那份 V5 规范互不相干。留空回落旧 4.5 键 naiSpec(更旧版本的存量自定义,弹窗里已预填生效值)再回落内置默认;改这份不影响 NAI 渠道。',
+    fallback: () => settings.autoTag.prompts.naiSpec.trim() || DEFAULT_NAI_SPEC,
+    builtin: DEFAULT_NAI_SPEC,
+    macros: [],
+  },
+  {
+    key: 'latentThinking',
+    label: 'Latent 思维链',
+    hint: 'Latent 渠道使用的输出前思考清单,作为 system 压在任务消息之后(解析时会自动剥掉思考块)。单串形态,与「Latent 规范」配套,槽位块与 comfy 那份同形。留空回落旧 4.5 键 naiThinking 再回落内置默认;改这份不影响 NAI 渠道。',
+    fallback: () => settings.autoTag.prompts.naiThinking.trim() || DEFAULT_NAI_THINKING,
+    builtin: DEFAULT_NAI_THINKING,
     macros: [],
   },
   {
@@ -184,8 +206,8 @@ function isTagPromptCustom(key: keyof AutoTagPrompts): boolean {
 
 function openTagPrompt(meta: TagPromptMeta) {
   editingTagPrompt.value = meta;
-  // 已自定义→载入用户内容;未自定义→预填内置模板,方便直接在其上改
-  tagPromptDraft.value = settings.autoTag.prompts[meta.key].trim() || meta.builtin;
+  // 已自定义→载入用户内容;未自定义→预填生效回落值(无回落链则内置模板),方便直接在其上改
+  tagPromptDraft.value = settings.autoTag.prompts[meta.key].trim() || meta.fallback?.() || meta.builtin;
 }
 function closeTagPrompt() {
   editingTagPrompt.value = null;
