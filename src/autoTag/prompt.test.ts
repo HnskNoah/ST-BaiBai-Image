@@ -763,15 +763,21 @@ describe('auto tag prompt', () => {
       // Anima 口径:画师 tag 由用户画师串附加,AI 禁写;绑定写法对 Anima 有效的背书在
       expect(text).toContain('不得写任何画师/画风 tag');
       expect(text).toContain('对 Anima 系模型同样有效');
+      // fandom 身份 tag 的位置口径三份文档必须一致:任务规则不得再与规范/思维链的
+      // 「人数/构图之后」打架(旧文案「照抄在 tag 串首位」是自相矛盾指令)
+      expect(text).toContain('照抄在人数/构图之后、普通外貌之前');
+      expect(text).not.toContain('照抄在 tag 串首位');
       expect(text).toContain('没有混入画师/画风 tag');
       // V5 双层结构判据不得出现(nl 要求不下发)
       expect(text).not.toContain('Write exactly one shot distance');
       expect(text).not.toContain('Every image must include Base tag');
       expect(text).not.toContain('NAI V5 profile requirement');
-      // ComfyUI 的 fandom 口径(不照抄身份 tag)不得泄入 latent——latent 的
-      // @占位符替换会把 fandom 拼进 tag 串首位,规范必须与行为一致
+      // ComfyUI 的 fandom 口径(不照抄身份 tag)不得泄入 latent——latent 的 @占位符
+      // 替换段以 fandom 开头(joinEntryTag 按 CHAR_TAG_FIELDS 序,fandom 排首位),
+      // 规则把整段定位在人数/构图之后:最终顺序与规范/思维链/Anima 官方顺序一致
       expect(text).not.toContain('ComfyUI 画图时不照抄它');
-      expect(text).toContain('照抄在 tag 串首位');
+      expect(text).toContain('fandom 身份 tag');
+      expect(text).toContain('照抄在人数/构图之后、普通外貌之前');
       // 不串 comfy 规范
       expect(text).not.toContain('%negative_prompt%');
     } finally {
