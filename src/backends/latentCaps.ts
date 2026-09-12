@@ -75,13 +75,40 @@ export async function fetchLatentCaps(url: string, signal?: AbortSignal): Promis
 
 /* ============ localStorage 快照(node 测试环境无 localStorage,一律静默降级) ============ */
 
+/** 快照形状校验:条目可能被手改/旧版结构/写坏,非法一律弃用——
+ *  normalizeLatent 会直接消费这里的字段(.filter),坏形状进启动路径就是炸插件。 */
+function isValidCaps(v: unknown): v is LatentCaps {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const c = v as Partial<LatentCaps>;
+  return (
+    isStringArray(c.samplers) &&
+    c.samplers.length > 0 &&
+    isStringArray(c.schedulers) &&
+    c.schedulers.length > 0 &&
+    isStringArray(c.resolutions) &&
+    typeof c.fetchedAt === 'number' &&
+    Number.isFinite(c.fetchedAt)
+  );
+}
+
 function readStore(): Record<string, LatentCaps> {
+  let raw: unknown;
   try {
-    const raw = localStorage.getItem(CAPS_STORE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, LatentCaps>) : {};
+    const text = localStorage.getItem(CAPS_STORE_KEY);
+    raw = text ? JSON.parse(text) : {};
   } catch {
     return {};
   }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const cleaned: Record<string, LatentCaps> = {};
+  let dropped = false;
+  for (const [origin, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (isValidCaps(entry)) cleaned[origin] = entry;
+    else dropped = true;
+  }
+  // 坏条目顺手清掉:避免每次读取都重复踩一遍
+  if (dropped) writeStore(cleaned);
+  return cleaned;
 }
 
 function writeStore(store: Record<string, LatentCaps>): void {

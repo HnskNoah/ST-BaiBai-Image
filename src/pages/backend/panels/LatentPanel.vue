@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import Collapsible from '@/components/Collapsible.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Icon from '@/components/Icon.vue';
@@ -51,6 +51,14 @@ async function onTestConnection() {
 /* —— 参数域(采样器/噪声表)同步:手动触发,无任何自动拉取 —— */
 const caps = ref<LatentCaps | null>(readLatentCaps(settings.latent.url));
 const syncing = ref(false);
+// 快照按 origin 分键:地址改了,状态行与下拉要立刻切到新源站的快照(没有则回落内置),
+// 否则会拿旧站快照冒充新地址的同步状态
+watch(
+  () => settings.latent.url,
+  url => {
+    caps.value = readLatentCaps(url);
+  },
+);
 
 async function onSyncCaps() {
   if (syncing.value) return;

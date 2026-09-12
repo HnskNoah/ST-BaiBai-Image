@@ -114,6 +114,31 @@ describe('Latent 渠道设置', () => {
     }
   });
 
+  it('normalizeLatent:损坏的快照条目不炸启动——形状非法按无快照处理', async () => {
+    // 回归锁:readLatentCaps 必须校验快照形状。localStorage 里的条目可能被手改/
+    // 旧版结构/写坏,latentEnumDomain 直接 .filter 快照字段会把启动路径(hydrate)
+    // 打崩——形状非法一律当无快照回落内置,坏条目顺手清掉。
+    const store: Record<string, string> = {};
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store[k] ?? null,
+      setItem: (k: string, v: string) => {
+        store[k] = v;
+      },
+      removeItem: (k: string) => {
+        delete store[k];
+      },
+    });
+    store['latent.caps.v1'] = JSON.stringify({
+      'https://latent.moe': { samplers: 'oops' }, // 形状非法:非字符串数组
+      'https://other.example.com': 'garbage', // 整条非对象
+    });
+    const { settings } = await hydrateWithLatent({ sampler: 'euler_ancestral' });
+    expect(settings.latent.sampler).toBe('euler'); // 回落默认而非崩溃
+    // 坏条目被清理,好数据不受影响
+    const cleaned = JSON.parse(store['latent.caps.v1']) as Record<string, unknown>;
+    expect(cleaned).toEqual({});
+  });
+
   it('normalizeLatent:steps 钳到 8–16、并发钳到 1–4、scale 恒被默认顶掉(站点无 CFG)', async () => {
     const { settings } = await hydrateWithLatent({
       steps: 28, // NAI 常用值,超出站点原生域
