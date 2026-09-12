@@ -12,7 +12,6 @@ import {
 } from '@/backends/chatu8Vibe';
 import {
   buildNaiv4vibe,
-  BUILTIN_NAI_ARTISTS,
   encodeVibeImage,
   isBuiltinNaiArtist,
   isNai5,
@@ -33,10 +32,9 @@ import {
   vibeFingerprint,
   vibeMetaFromData,
 } from '@/backends/vibeStore';
-import NaiArtistManager from '@/pages/backend/panels/NaiArtistManager.vue';
+import ArtistLibraryRow from '@/pages/backend/panels/ArtistLibraryRow.vue';
 import { acquireNaiSlot } from '@/floor/genQueue';
 import { makeJpegThumbnail } from '@/st/imageFile';
-import { deleteUserImage } from '@/st/images';
 import {
   groupKey,
   groupVibes,
@@ -55,9 +53,8 @@ import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { getContext } from '@/st/context';
 import {
-  activeNaiArtist,
   activeNaiConn,
-  newNaiArtist,
+  artistForTarget,
   newNaiConn,
   NAI_MODELS,
   settings,
@@ -201,110 +198,21 @@ function confirmRemoveConn() {
   if (id && settings.nai.activeConnId === id) settings.nai.activeConnId = '';
 }
 
-/* ============ 画师串库(形制照搬 ComfyUI 工作流库) ============ */
+/* ============ 画师串库(行内工具条与库管理弹窗在 ArtistLibraryRow 共享组件里) ============ */
 
 /**
- * 当前选中的画师串;null = 不使用(库为空、用户主动选了「不使用」、或 id 悬空)。
- * settings 是 reactive,直接把它的字段绑 v-model 即可就地编辑。
+ * 当前选中的画师串(NAI 库,与出图后端无关):供下方内容编辑区与绑定正/负面词列表使用。
+ * 行内的下拉/改名/新建/复制/删除都在 ArtistLibraryRow 内聚。
  */
-const artist = computed<NaiArtistPreset | null>(() => activeNaiArtist());
+const artist = computed<NaiArtistPreset | null>(() => artistForTarget('nai'));
 
 /** 当前是否 V5 模型:控制画师串编辑区的 V5 差异提醒。 */
 const isV5Model = computed(() => isNai5(settings.nai.model));
 
-/** 「不使用」的下拉值。preset id 恒为 art_* / bi_* 形状,空串不会与任何一条相撞,无需装箱。 */
-const NO_ARTIST = '';
-
-const artistOptions = computed(() => [
-  { value: NO_ARTIST, label: '不使用' },
-  // 内置配方排用户库前面:新用户默认选中的是内置条,放在「不使用」旁边最顺;
-  // 名称后括注内置,与用户自建的同名条目区分开
-  ...BUILTIN_NAI_ARTISTS.map(a => ({ value: a.id, label: `${a.name}(内置)` })),
-  ...settings.nai.artistPresets.map(a => ({ value: a.id, label: a.name || '未命名画师串' })),
-]);
-
-/**
- * 下拉的值取「实际生效的那一条」而非存的 id:存的 id 悬空时 activeNaiArtist 返回 null,
- * 下拉也该跟着显示「不使用」,不能显示空白。
- */
-const activeArtistId = computed<string>({
-  get: () => artist.value?.id ?? NO_ARTIST,
-  set: id => {
-    settings.nai.activeArtistId = id;
-  },
-});
-
-/** 改名/复制/删除都只对「真的选中了一条」有意义;选「不使用」时一律禁用。 */
-const hasArtist = computed(() => artist.value !== null);
-
-/** 当前选中的是内置配方:只读(改名/删除/内容编辑禁用),「复制」是自定义的唯一入口。 */
+/** 当前选中的是内置配方:内容编辑区只读;「复制」入口在上方工具条里。 */
 const isBuiltinArtist = computed(() =>
   artist.value ? isBuiltinNaiArtist(artist.value.id) : false,
 );
-
-/** 改名是低频操作:平时只显示下拉,点「改名」才把选择器原地换成输入框。 */
-const renamingArtist = ref(false);
-const artistNameDraft = ref('');
-const artistNameInput = ref<HTMLInputElement | null>(null);
-const artistDeleteOpen = ref(false);
-/** 管理器弹窗:搜索/预览图/勾选批量删除都在那边,下拉这里只留高频切换。 */
-const artistManagerOpen = ref(false);
-
-function startRenameArtist() {
-  if (!artist.value || isBuiltinArtist.value) return; // 内置只读(按钮已禁用,双保险)
-  artistNameDraft.value = artist.value.name;
-  renamingArtist.value = true;
-  nextTick(() => artistNameInput.value?.focus());
-}
-
-/** Enter / 失焦都算确认;Esc 直接置 renamingArtist=false 不经过这里,即为取消。 */
-function commitRenameArtist() {
-  if (renamingArtist.value && artist.value) artist.value.name = artistNameDraft.value.trim();
-  renamingArtist.value = false;
-}
-
-function addArtist() {
-  const preset = newNaiArtist(`画师串 ${settings.nai.artistPresets.length + 1}`);
-  settings.nai.artistPresets.push(preset);
-  settings.nai.activeArtistId = preset.id;
-}
-
-function duplicateArtist() {
-  const src = artist.value;
-  if (!src) return;
-  // 只换 id 与名字;id 生成仍由 settings 统一口径。
-  // 内置配方也走这里:复制出来的副本是普通用户条目,随便改——这是内置条唯一的自定义路径。
-  // 显式逐字段拷贝,不带 previewPath:预览文件随原条目删除,共指一个路径会让副本日后破图。
-  const preset: NaiArtistPreset = {
-    id: newNaiArtist().id,
-    name: `${src.name} 副本`,
-    prompt: src.prompt,
-    quality: src.quality,
-    negative: src.negative,
-  };
-  settings.nai.artistPresets.push(preset);
-  settings.nai.activeArtistId = preset.id;
-}
-
-async function confirmRemoveArtist() {
-  artistDeleteOpen.value = false;
-  const list = settings.nai.artistPresets;
-  const index = list.findIndex(a => a.id === artist.value?.id);
-  if (index < 0) return;
-  // 预览图文件 best-effort 连带清理(与管理器删除同口径:文件删不掉不阻塞删条目)
-  const previewPath = list[index].previewPath;
-  if (previewPath) {
-    try {
-      await deleteUserImage(previewPath);
-    } catch (error) {
-      toastr.warning(`条目已删除,但预览图文件清理失败：${errorMessage(error)}`, '画师串');
-    }
-  }
-  list.splice(index, 1);
-  // 接位到原位置那一条(已是最后一条则退一格);删空了就回「不使用」——
-  // `?? ''` 正是画师串库与工作流库的分水岭(那边恒非空、回落 [0]),不能省。
-  settings.nai.activeArtistId = list[Math.min(index, list.length - 1)]?.id ?? '';
-}
 
 /* ============ 从智绘姬迁移提示词预设 ============ */
 
@@ -953,97 +861,7 @@ async function removeVibe(vibe: NaiVibe) {
 
       <Collapsible title="提示词" :open="false">
         <!-- 画师串库:形制与 ComfyUI 工作流库一致,多一个「不使用」选项 -->
-        <div class="art-row">
-          <span class="bbi-field-label">画师串</span>
-          <input
-            v-if="renamingArtist"
-            ref="artistNameInput"
-            class="bbi-input"
-            type="text"
-            v-model="artistNameDraft"
-            placeholder="画师串名称"
-            spellcheck="false"
-            title="Enter 确认，Esc 取消"
-            @keydown.enter.prevent="commitRenameArtist"
-            @keydown.esc.stop.prevent="renamingArtist = false"
-            @blur="commitRenameArtist"
-          />
-          <BbiSelect
-            v-else
-            class="art-select"
-            v-model="activeArtistId"
-            :options="artistOptions"
-            aria-label="当前画师串"
-          />
-          <span v-if="!renamingArtist" class="art-ops">
-            <button
-              class="bbi-icon-btn art-op"
-              type="button"
-              title="管理画师串库:搜索、预览图、批量删除"
-              aria-label="管理画师串库"
-              @click="artistManagerOpen = true"
-            >
-              <Icon name="grid" :size="14" />
-            </button>
-            <button
-              class="bbi-icon-btn art-op"
-              type="button"
-              :disabled="!hasArtist || isBuiltinArtist"
-              :title="
-                !hasArtist
-                  ? '未选中画师串'
-                  : isBuiltinArtist
-                    ? '内置画师串不可改名,点复制建一条自己的'
-                    : '重命名当前画师串'
-              "
-              aria-label="重命名当前画师串"
-              @click="startRenameArtist"
-            >
-              <Icon name="edit" :size="14" />
-            </button>
-            <button
-              class="bbi-icon-btn art-op"
-              type="button"
-              title="新建一条空画师串"
-              aria-label="新建一条空画师串"
-              @click="addArtist"
-            >
-              <Icon name="plus" :size="14" />
-            </button>
-            <button
-              class="bbi-icon-btn art-op"
-              type="button"
-              :disabled="!hasArtist"
-              :title="
-                !hasArtist
-                  ? '未选中画师串'
-                  : isBuiltinArtist
-                    ? '复制为我的画师串,复制出来的可以随便改'
-                    : '复制当前画师串'
-              "
-              aria-label="复制当前画师串"
-              @click="duplicateArtist"
-            >
-              <Icon name="copy" :size="14" />
-            </button>
-            <button
-              class="bbi-icon-btn art-op art-remove"
-              type="button"
-              :disabled="!hasArtist || isBuiltinArtist"
-              :title="
-                !hasArtist
-                  ? '未选中画师串'
-                  : isBuiltinArtist
-                    ? '内置画师串不可删除,它会随插件版本更新'
-                    : '删除当前画师串'
-              "
-              aria-label="删除当前画师串"
-              @click="artistDeleteOpen = true"
-            >
-              <Icon name="trash" :size="14" />
-            </button>
-          </span>
-        </div>
+        <ArtistLibraryRow target="nai" />
 
         <!-- 从智绘姬导入提示词预设的入口在下方「从智绘姬迁移」折叠区,这里不做常驻提示 -->
 
@@ -1582,19 +1400,7 @@ async function removeVibe(vibe: NaiVibe) {
       </div>
     </ModalMask>
 
-    <!-- ===== 画师串库管理器:搜索/预览图/勾选批量删除 ===== -->
-    <NaiArtistManager v-model:open="artistManagerOpen" />
 
-    <ConfirmDialog
-      v-model:open="artistDeleteOpen"
-      title="删除画师串"
-      confirm-text="删除"
-      confirm-icon="trash"
-      tone="danger"
-      @confirm="confirmRemoveArtist"
-    >
-      确定删除画师串「{{ artist?.name || '未命名画师串' }}」？删除后无法恢复。
-    </ConfirmDialog>
 
     <ConfirmDialog
       v-model:open="connDeleteOpen"

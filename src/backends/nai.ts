@@ -301,6 +301,32 @@ export function isBuiltinNaiArtist(id: string): boolean {
   return BUILTIN_NAI_ARTISTS.some(a => a.id === id);
 }
 
+/**
+ * Latent 渠道(Anima 系)的内置画师串:格式模板——Anima 的画师 tag 是 @ 前缀
+ * (NAI 的 artist: 写法无效),这条只示范格式,**prompt 是占位符**,默认激活恒
+ * 「不使用」(占位词进了每张图就是污染);角色与 bi_default 相同:随插件版本
+ * 更新、只读、复制是唯一自定义入口。与 NAI 内置表 id 前缀同为 bi_,内容互不重叠。
+ */
+export const BUILTIN_LATENT_ARTISTS: readonly NaiArtistPreset[] = [
+  {
+    id: 'bi_anima_default',
+    name: 'Anima 画师串模板',
+    prompt: '@artist_name',
+    quality: '',
+    negative: '',
+  },
+];
+
+/** 该 id 是否是 Latent 渠道的内置配方。 */
+export function isBuiltinLatentArtist(id: string): boolean {
+  return BUILTIN_LATENT_ARTISTS.some(a => a.id === id);
+}
+
+/** 两渠道内置表合并查找:条目 id 全局不相交,按 id 找到哪张表算哪张。 */
+function findBuiltinArtist(id: string): NaiArtistPreset | undefined {
+  return BUILTIN_NAI_ARTISTS.find(a => a.id === id) ?? BUILTIN_LATENT_ARTISTS.find(a => a.id === id);
+}
+
 type JsonObject = Record<string, unknown>;
 
 /**
@@ -316,7 +342,7 @@ function naiActivePreset(nai: NaiSettings): NaiArtistPreset | null {
   if (!nai.activeArtistId) return null;
   return (
     nai.artistPresets.find(a => a.id === nai.activeArtistId) ??
-    BUILTIN_NAI_ARTISTS.find(a => a.id === nai.activeArtistId) ??
+    findBuiltinArtist(nai.activeArtistId) ??
     null
   );
 }

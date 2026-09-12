@@ -407,6 +407,18 @@ describe('NAI V5 support', () => {
     expect(prompt).toBe('my quality words, @some_artist, 1girl, smile');
   });
 
+  it('naiActivePreset 双内置表:latent 视图激活 bi_anima_default 能解析,NAI 视图 bi_default 不受影响', () => {
+    // 内置表按渠道分册但查找合并(id 全局不相交):视图带哪张表的 id 就解析到哪条
+    const latentView = nai({ model: 'nai-diffusion-4-5-full' });
+    latentView.artistPresets = [];
+    latentView.activeArtistId = 'bi_anima_default';
+    expect(naiArtistPrompt(latentView)).toBe('@artist_name');
+    const naiView = nai({ model: 'nai-diffusion-4-5-full' });
+    naiView.artistPresets = [];
+    naiView.activeArtistId = 'bi_default';
+    expect(naiArtistPrompt(naiView)).toContain('artist:yalmyu');
+  });
+
   it('latentDefaultUndesired:未启用画师串含 artist name,启用后剔除', () => {
     const base = latentDefaultUndesired(
       nai({ model: 'nai-diffusion-4-5-full', activeArtistId: '' }),

@@ -362,10 +362,16 @@ tag 原文被 DOMPurify 剥壳后当正文显示出来(用户直接看见一串 
   署名水印,会连用户的画风一起压);NAI 特训词(very aesthetic/location)对 Anima 无效,
   是分册存在的理由。
   兼容面(/api/novelai)不在该 openapi 里;发 `resolution` 枚举是唯一有文档依据的画幅形状。
-  画师串与 NAI 共库,**激活项分渠道记忆**:`settings.latent.activeArtistId` 独立保存
-  (默认 '' = 不使用;内置 bi_default 是 NAI 官方模型配方,不默认塞给 Anima),
-  `latentAsNai` 用它覆盖视图的 activeArtistId,盖章(`activeNaiArtistName`)按当前渠道取——
-  两渠道各选各的画风,互不影响;清洗不变式同 normalizeNai(悬空 id 清空,查找域含内置库)。
+  画师串为 **Latent 独立库**(`settings.latent.artistPresets`,与 NAI 渠道的
+  `settings.nai.artistPresets` 互不相通,无存量迁移——共用期设计整体废弃):条目同构
+  (NaiArtistPreset),激活项在自有库内解析;`latentAsNai` 显式映射库与激活项,
+  画师串拼装/绑定词/盖章(`activeNaiArtistName`,按渠道取——面板与共享组件走
+  `artistForTarget`,不看出图后端)全链经视图自动生效。内置表分册:
+  NAI = `BUILTIN_NAI_ARTISTS`(bi_default 官方配方),Latent = `BUILTIN_LATENT_ARTISTS`
+  (bi_anima_default 是 **@ 格式模板**,prompt 为占位词,默认激活恒「不使用」);
+  `naiActivePreset` 的内置查找双表合并(id 全局不相交)。
+  管理 UI 与 NAI 渠道同形:`ArtistLibraryRow`(行内工具条:下拉/管理/改名/新建/复制/删除,
+  删除确认与管理弹窗内聚)+ `NaiArtistManager` 的 `target` 化(nai/latent 各管各的库)。
   **画师 tag 格式两渠道不同**:Anima 用 `@名字`(面板 hint 有说明),NAI 用 `artist:xxx`,
   内容由用户按渠道自管,不做发送侧转换。
 - **取消必须分流**(comfyui.ts 的 `cancelPrompt`):任务在排队 → `POST /queue {delete:[id]}`;

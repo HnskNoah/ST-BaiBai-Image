@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { naiArtistPrompt } from '@/backends/nai';
+
 /**
  * Latent 渠道(站点 NovelAI 兼容面)的设置清洗与 NAI 视图映射:
  * 1. normalizeLatent 钳制到站点原生域:steps 8–16、并发 1–4;scale/seed 域见用例;
@@ -209,24 +211,31 @@ describe('Latent 渠道设置', () => {
     expect(latentAsNai().undesiredContent).toBe('');
   });
 
-  it('latentAsNai:画师串库与 NAI 共用,激活项分渠道记忆(latent.activeArtistId 覆盖视图)', async () => {
+  it('latentAsNai:独立画师串库——视图指向 latent 自己的库与激活项,NAI 库不受影响', async () => {
     const { settings, latentAsNai } = await hydrateWithLatent({
       sampler: 'res_multistep', // 站点当前域值(旧用例的 dpmpp_2m 属旧域,会被 normalize 回落)
       steps: 10,
     });
+    // 两渠道库各自独立:同 id 不共用,内容互不可见
     settings.nai.artistPresets = [
-      { id: 'a1', name: '测试画师串', prompt: 'artist:test', quality: '', negative: '' },
+      { id: 'n1', name: 'NAI 画师串', prompt: 'artist:test', quality: '', negative: '' },
     ];
-    // 运行期赋值(UI setter 同路径):NAI 选 a2,latent 选 a1,互不影响
-    settings.nai.activeArtistId = 'a2';
-    settings.latent.activeArtistId = 'a1';
+    settings.latent.artistPresets = [
+      { id: 'l1', name: 'Anima 画师串', prompt: '@test', quality: '', negative: '' },
+    ];
+    // 运行期赋值(UI setter 同路径):NAI 选 n1,latent 选 l1,互不影响
+    settings.nai.activeArtistId = 'n1';
+    settings.latent.activeArtistId = 'l1';
     settings.nai.steps = 28;
     const view = latentAsNai();
-    // 激活项分渠道:视图取 latent 自己的选择,而非 NAI 的
-    expect(view.activeArtistId).toBe('a1');
-    expect(settings.nai.activeArtistId).toBe('a2');
-    // 库本体仍共享(同一条目)
-    expect(view.artistPresets).toEqual(settings.nai.artistPresets);
+    // 视图指向 latent 自己的库与激活项,画师串拼装(naiArtistPrompt 等)据此生效
+    expect(view.activeArtistId).toBe('l1');
+    expect(view.artistPresets).toEqual(settings.latent.artistPresets);
+    expect(view.artistPresets).not.toEqual(settings.nai.artistPresets);
+    expect(naiArtistPrompt(view)).toBe('@test');
+    // NAI 库与激活项零变化
+    expect(settings.nai.activeArtistId).toBe('n1');
+    expect(settings.nai.artistPresets).toHaveLength(1);
     // 渠道自有字段覆盖 NAI 同名值
     expect(view.sampler).toBe('res_multistep');
     expect(view.steps).toBe(10);
@@ -239,24 +248,32 @@ describe('Latent 渠道设置', () => {
     expect(settings.latent.activeArtistId).toBe('');
   });
 
-  it('normalizeLatent:内置库 id(bi_default)原样保留', async () => {
-    const { settings } = await hydrateWithLatent({ activeArtistId: 'bi_default' });
-    expect(settings.latent.activeArtistId).toBe('bi_default');
+  it('normalizeLatent:Latent 内置 id(bi_anima_default)合法保留', async () => {
+    const { settings } = await hydrateWithLatent({ activeArtistId: 'bi_anima_default' });
+    expect(settings.latent.activeArtistId).toBe('bi_anima_default');
   });
 
-  it('activeNaiArtistName:latent 渠道按 latent.activeArtistId 盖章,与 NAI 的激活项互不影响', async () => {
+  it('normalizeLatent:NAI 内置 id(bi_default)对 latent 是悬空,清成不使用', async () => {
+    // 内置表按渠道分册:bi_default 是 NAI 配方,不在 Latent 的合法域里
+    const { settings } = await hydrateWithLatent({ activeArtistId: 'bi_default' });
+    expect(settings.latent.activeArtistId).toBe('');
+  });
+
+  it('activeNaiArtistName:两渠道库独立,盖章各取各库的激活条目', async () => {
     const { settings, activeNaiArtistName } = await hydrateWithLatent({});
+    // 两份独立库:NAI 库与 Latent 库各存各的(内容格式也按渠道惯例不同)
     settings.nai.artistPresets = [
-      { id: 'a1', name: '厚涂 <test>', prompt: 'artist:test', quality: '', negative: '' },
-      { id: 'a2', name: '水彩', prompt: 'artist:watercolor', quality: '', negative: '' },
+      { id: 'n1', name: '水彩', prompt: 'artist:watercolor', quality: '', negative: '' },
     ];
-    // 运行期赋值(UI setter 同路径):latent 选 a1,NAI 选 a2
-    settings.latent.activeArtistId = 'a1';
-    settings.nai.activeArtistId = 'a2';
+    settings.latent.artistPresets = [
+      { id: 'l1', name: '厚涂 <test>', prompt: '@test', quality: '', negative: '' },
+    ];
+    settings.latent.activeArtistId = 'l1';
+    settings.nai.activeArtistId = 'n1';
     settings.defaultBackend = 'latent';
-    // latent 盖的是自己激活的那条(a1 厚涂),不是 NAI 选的水彩
+    // latent 盖的是自己库里的激活条目(l1 厚涂),不是 NAI 库的水彩
     expect(activeNaiArtistName()).toBe('厚涂 test');
-    // 切到 NAI 渠道,盖章换成 NAI 的激活项
+    // 切到 NAI 渠道,盖章换成 NAI 库的激活条目
     settings.defaultBackend = 'nai';
     expect(activeNaiArtistName()).toBe('水彩');
     settings.defaultBackend = 'comfyui';

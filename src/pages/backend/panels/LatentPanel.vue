@@ -3,8 +3,20 @@ import { computed, ref, watch } from 'vue';
 import Collapsible from '@/components/Collapsible.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Icon from '@/components/Icon.vue';
-import { activeNaiArtist, LATENT_SAMPLERS, LATENT_SCHEDULERS, settings } from '@/state/settings';
-import { BUILTIN_NAI_ARTISTS, isBuiltinNaiArtist } from '@/backends/nai';
+import ModalMask from '@/components/ModalMask.vue';
+import {
+  artistForTarget,
+  LATENT_SAMPLERS,
+  LATENT_SCHEDULERS,
+  latentAsNai,
+  settings,
+} from '@/state/settings';
+import {
+  isBuiltinLatentArtist,
+  LATENT_DEFAULT_QUALITY_TAGS,
+  latentDefaultUndesired,
+} from '@/backends/nai';
+import ArtistLibraryRow from '@/pages/backend/panels/ArtistLibraryRow.vue';
 import {
   fetchLatentCaps,
   readLatentCaps,
@@ -18,7 +30,8 @@ import {
  * 生成完全复用 NAI 机器(latentAsNai 映射后走 generateNaiImage),面板只暴露
  * 站点 openapi 真实存在的参数:无模型下拉(单模型站点,GenerationRequest 无 model 字段)、
  * 无 Scale(无 CFG 字段)、无尺寸输入(resolution 是枚举,按 tag 判向发 portrait/landscape)、
- * 无 Vibe、无 rescale/variety。画师串库与 NAI 共用,激活项分渠道记忆(settings.latent.activeArtistId)。
+ * 无 Vibe、无 rescale/variety。画师串为**本渠道独立库**(settings.latent.artistPresets,
+ * 内容按 Anima 口径写 @ 格式),管理 UI 与 NAI 渠道同形(ArtistLibraryRow + 库管理弹窗)。
  *
  * 采样器/噪声表枚举 = 参数域快照(latent.caps.v1,点「同步参数域」或测试连接时拉
  * 站点 /openapi.json 解析)→ 内置回落列表;**打开面板不拉取**(高频操作),新旧见状态行。
@@ -111,19 +124,82 @@ const noiseOptions = computed(() =>
   optionsWithCurrent(caps.value?.schedulers ?? LATENT_SCHEDULERS, settings.latent.noiseSchedule),
 );
 
-/* —— 画师串(库与 NAI 渠道共用,激活项分渠道记忆;内置只读) —— */
-const artist = computed(() => activeNaiArtist());
-const NO_ARTIST = '';
-const artistOptions = computed(() => [
-  { value: NO_ARTIST, label: '不使用' },
-  ...BUILTIN_NAI_ARTISTS.map(a => ({ value: a.id, label: `${a.name}(内置)` })),
-  ...settings.nai.artistPresets.map(a => ({ value: a.id, label: a.name || '未命名画师串' })),
-]);
-const activeArtistId = computed<string>({
-  get: () => settings.latent.activeArtistId || NO_ARTIST,
-  set: id => (settings.latent.activeArtistId = id),
+/* —— 画师串(Latent 独立库,管理 UI 与 NAI 渠道同形;内置条只读) —— */
+const artist = computed(() => artistForTarget('latent'));
+const isBuiltin = computed(() => (artist.value ? isBuiltinLatentArtist(artist.value.id) : false));
+
+/**
+ * 绑定正/负面词(与 NAI 面板同机制):写入当前激活的 latent 条目,随画师串一起切换;
+ * 空串 = 跟随下方渠道级设置。弹窗预填生效回落值(与 NaiPanel 的 openNaiPrompt 同款)。
+ */
+interface LatentPromptTarget {
+  key: 'quality' | 'negative';
+  label: string;
+  hint: string;
+  readonly?: boolean;
+  fallback: () => string;
+  read: () => string;
+  write: (v: string) => void;
+}
+
+const artistBoundTargets = computed<LatentPromptTarget[]>(() => {
+  const a = artist.value;
+  if (!a) return [];
+  const readonly = isBuiltin.value;
+  return [
+    {
+      key: 'quality',
+      label: '正面质量词',
+      readonly,
+      hint: readonly
+        ? '内置条随插件版本更新不可改;复制一条自己的再绑。留空 = 用下方渠道级设置。'
+        : '这份质量词随当前画师串一起切换。留空 = 用下方渠道级设置(渠道级也留空则用 Anima 推荐默认)。',
+      fallback: () => settings.latent.qualityTags.trim() || LATENT_DEFAULT_QUALITY_TAGS,
+      read: () => a.quality,
+      write: v => (a.quality = v),
+    },
+    {
+      key: 'negative',
+      label: '负面提示词',
+      readonly,
+      hint: readonly
+        ? '内置条随插件版本更新不可改;复制一条自己的再绑。留空 = 用下方渠道级设置。'
+        : '这份负面词随当前画师串一起切换。留空 = 用下方渠道级设置(渠道级也留空则用 Anima 推荐默认)。',
+      fallback: () =>
+        settings.latent.negativePrompt.trim() || latentDefaultUndesired(latentAsNai()),
+      read: () => a.negative,
+      write: v => (a.negative = v),
+    },
+  ];
 });
-const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value.id) : false));
+
+function isTargetCustom(target: LatentPromptTarget): boolean {
+  return target.read().trim().length > 0;
+}
+
+// 正在编辑的那条;draft 是草稿,点「完成」才写回条目(取消则丢弃)。
+const editingPrompt = ref<LatentPromptTarget | null>(null);
+const promptDraft = ref('');
+
+function openPrompt(target: LatentPromptTarget) {
+  editingPrompt.value = target;
+  // 已自定义→载入用户内容;未自定义→预填下一级回落值,方便直接在其上改
+  promptDraft.value = target.read().trim() || target.fallback();
+}
+function closePrompt() {
+  editingPrompt.value = null;
+  promptDraft.value = '';
+}
+function savePrompt() {
+  const target = editingPrompt.value;
+  if (!target) return;
+  target.write(promptDraft.value);
+  closePrompt();
+}
+function resetPromptDraft() {
+  if (editingPrompt.value) promptDraft.value = editingPrompt.value.fallback();
+}
+
 </script>
 
 <template>
@@ -188,31 +264,38 @@ const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value
       </Collapsible>
 
       <Collapsible title="提示词" :open="false">
-        <!-- 画师串库与 NAI 渠道共用(内置只读);激活项分渠道记忆,互不影响 -->
-        <div class="bbi-field">
-          <div class="bbi-field-head">
-            <span class="bbi-field-label">画师串(Latent 渠道)</span>
-          </div>
-          <select class="bbi-input bbi-select" v-model="activeArtistId">
-            <option v-for="o in artistOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-          </select>
-        </div>
-        <BbiTextarea
-          v-if="artist"
-          v-model="artist.prompt"
-          :rows="3"
-          :max-rows="8"
-          mono
-          :readonly="isBuiltin"
-          placeholder="artist:xxx, artist:yyy"
-        />
-        <p v-if="artist && isBuiltin" class="bbi-field-hint">
-          内置画师串随插件版本更新,不可直接改;在 NAI 渠道页复制一条自己的再改。
-        </p>
-        <p v-if="artist" class="bbi-field-hint">
-          Latent 底层是 Anima 系模型:画师 tag 用 <code>@名字</code> 格式(NAI 的 <code>artist:xxx</code> 写法在它上面无效),本渠道激活的画师串请按 @ 格式填写。
-        </p>
-        <p class="bbi-field-hint">新增/改名/删除画师串请到 NAI 渠道页的画师串库管理。</p>
+        <!-- Latent 独立画师串库(与 NAI 渠道的库互不相通):管理工具条/弹窗与 NAI 渠道同形 -->
+        <ArtistLibraryRow target="latent" />
+        <template v-if="artist">
+          <BbiTextarea
+            v-model="artist.prompt"
+            :rows="3"
+            :max-rows="8"
+            mono
+            :readonly="isBuiltin"
+            placeholder="@artist_a, @artist_b"
+          />
+          <p v-if="isBuiltin" class="bbi-field-hint">
+            内置条是 @ 格式的模板(@artist_name 为占位词),随插件版本更新不可直接改;复制一条后把占位词换成真实画师名。
+          </p>
+          <p v-else class="bbi-field-hint">
+            Latent 底层是 Anima 系模型:画师 tag 用 <code>@名字</code> 格式(NAI 的 <code>artist:xxx</code> 写法无效),本渠道的画师串请按 @ 格式填写。
+          </p>
+
+          <!-- 随画师串一起切换的正/负面词(与 NAI 面板同机制):设置了覆盖下面渠道级 -->
+          <ul class="bbi-prompt-list">
+            <li v-for="t in artistBoundTargets" :key="t.key" class="bbi-prompt-item">
+              <button class="bbi-prompt-open" type="button" @click="openPrompt(t)">
+                <span class="bbi-prompt-name">{{ t.label }}</span>
+                <span class="bbi-prompt-state" :class="{ 'is-custom': isTargetCustom(t) }">
+                  {{ isTargetCustom(t) ? '已设置' : '未设置' }}
+                </span>
+                <Icon name="edit" class="bbi-prompt-edit" />
+              </button>
+            </li>
+          </ul>
+          <p class="bbi-field-hint">这里设置的提示词会覆盖下面的,随画师串一起切换;这里没设置,就会用下面的。</p>
+        </template>
 
         <hr class="bbi-rule" />
 
@@ -305,10 +388,103 @@ const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value
         <p class="bbi-field-hint">尺寸为站点固定两档(竖 920×1536 / 横 1536×920),按 tag 判向自动选择,无输入项。</p>
       </Collapsible>
     </div>
+
+    <!-- 绑定正/负面词编辑弹窗(与 NAI 面板的 openNaiPrompt 同款交互) -->
+    <ModalMask :open="!!editingPrompt" @close="closePrompt">
+      <div
+        v-if="editingPrompt"
+        class="bbi-modal bbi-modal-wide"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="`编辑${editingPrompt.label}`"
+      >
+        <header class="bbi-modal-head">
+          <span class="bbi-modal-title">
+            {{ editingPrompt.readonly ? '查看' : '编辑' }}{{ editingPrompt.label }}
+          </span>
+          <button class="bbi-icon-mini" type="button" title="关闭" @click="closePrompt">
+            <Icon name="close" />
+          </button>
+        </header>
+
+        <p class="bbi-modal-label">{{ editingPrompt.hint }}</p>
+
+        <BbiTextarea
+          v-model="promptDraft"
+          class="bbi-prompt-area"
+          :rows="10"
+          :max-rows="24"
+          mono
+          :readonly="editingPrompt.readonly"
+        />
+
+        <footer class="bbi-modal-foot">
+          <template v-if="!editingPrompt.readonly">
+            <button class="bbi-btn bbi-btn-danger" type="button" @click="resetPromptDraft">
+              <Icon name="refresh" /> 恢复默认
+            </button>
+            <span class="bbi-modal-foot-spacer"></span>
+            <button class="bbi-btn" type="button" @click="closePrompt">取消</button>
+            <button class="bbi-btn bbi-btn-primary" type="button" @click="savePrompt">完成</button>
+          </template>
+          <template v-else>
+            <span class="bbi-modal-foot-spacer"></span>
+            <button class="bbi-btn bbi-btn-primary" type="button" @click="closePrompt">关闭</button>
+          </template>
+        </footer>
+      </div>
+    </ModalMask>
   </div>
 </template>
 
 <style scoped>
+/* 绑定正/负面词列表(与 NaiPanel 同款,scoped 需各抄一份;状态药丸在 base.css 全局) */
+.bbi-prompt-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bbi-prompt-open {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--bbi-line);
+  border-radius: var(--bbi-radius);
+  background: var(--bbi-surface-2);
+}
+.bbi-prompt-open:hover {
+  border-color: var(--bbi-accent);
+  background: var(--bbi-surface);
+}
+.bbi-prompt-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.bbi-prompt-edit {
+  flex: 0 0 auto;
+  font-size: 16px;
+  color: var(--bbi-ink-muted);
+}
+.bbi-prompt-open:hover .bbi-prompt-edit {
+  color: var(--bbi-accent);
+}
+.bbi-modal-wide {
+  max-width: 680px;
+}
+.bbi-prompt-area {
+  line-height: 1.6;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
 .key-row {
   display: flex;
   gap: 8px;

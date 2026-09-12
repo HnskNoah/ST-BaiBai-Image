@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { matchArtist, planArtistRemoval } from '@/backends/naiArtistLib';
-import { BUILTIN_NAI_ARTISTS } from '@/backends/nai';
+import { BUILTIN_LATENT_ARTISTS, BUILTIN_NAI_ARTISTS } from '@/backends/nai';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import Icon from '@/components/Icon.vue';
@@ -24,7 +24,14 @@ import { newNaiArtist, settings, type NaiArtistPreset } from '@/state/settings';
  *   路径记在条目 previewPath 上,不维护额外索引;换图同名覆盖,删条目时连带删文件。
  */
 
-const props = defineProps<{ open: boolean }>();
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    /** 管理哪份库:nai = settings.nai(NAI 渠道),latent = settings.latent(Latent 独立库)。 */
+    target?: 'nai' | 'latent';
+  }>(),
+  { target: 'nai' },
+);
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>();
 
 function close() {
@@ -34,6 +41,30 @@ function close() {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/* ============ 库与激活项的 target 化访问 ============ */
+
+const isLatent = computed(() => props.target === 'latent');
+/** 当前 target 的用户库(reactive 数组引用;push/splice 就地生效,整体替换走 setter)。 */
+const library = computed<NaiArtistPreset[]>({
+  get: () => (isLatent.value ? settings.latent.artistPresets : settings.nai.artistPresets),
+  set: list => {
+    if (isLatent.value) settings.latent.artistPresets = list;
+    else settings.nai.artistPresets = list;
+  },
+});
+/** 当前激活项('' = 不使用)。 */
+const activeId = computed<string>({
+  get: () => (isLatent.value ? settings.latent.activeArtistId : settings.nai.activeArtistId),
+  set: id => {
+    if (isLatent.value) settings.latent.activeArtistId = id;
+    else settings.nai.activeArtistId = id;
+  },
+});
+/** 内置表按 target 分册(NAI 官方配方 / Anima 格式模板)。 */
+const builtins = computed(() =>
+  isLatent.value ? BUILTIN_LATENT_ARTISTS : BUILTIN_NAI_ARTISTS,
+);
 
 /** 列表条目:内置库排前(与下拉的顺序一致),附带只读标记。 */
 interface ManagerItem {
@@ -56,8 +87,8 @@ watch(
 );
 
 const items = computed<ManagerItem[]>(() => [
-  ...BUILTIN_NAI_ARTISTS.map(p => ({ preset: p, builtin: true })),
-  ...settings.nai.artistPresets.map(p => ({ preset: p, builtin: false })),
+  ...builtins.value.map(p => ({ preset: p, builtin: true })),
+  ...library.value.map(p => ({ preset: p, builtin: false })),
 ]);
 
 const filtered = computed(() => items.value.filter(i => matchArtist(i.preset, search.value)));
@@ -71,11 +102,9 @@ const allFilteredSelected = computed(
     selectableFiltered.value.every(i => selected.value.has(i.preset.id)),
 );
 
-const activeId = computed(() => settings.nai.activeArtistId);
-
 /** 点卡片:启用;再点当前条:停用(回「不使用」,是有意义的存储值)。 */
 function toggleActive(item: ManagerItem) {
-  settings.nai.activeArtistId = item.preset.id === activeId.value ? '' : item.preset.id;
+  activeId.value = item.preset.id === activeId.value ? '' : item.preset.id;
 }
 
 function toggleSelect(id: string) {
@@ -96,9 +125,9 @@ function toggleSelectAllFiltered() {
 
 /** 新建:入库 + 设为当前 + 直接开编辑弹窗,一步到位。 */
 function addArtist() {
-  const preset = newNaiArtist(`画师串 ${settings.nai.artistPresets.length + 1}`);
-  settings.nai.artistPresets.push(preset);
-  settings.nai.activeArtistId = preset.id;
+  const preset = newNaiArtist(`画师串 ${library.value.length + 1}`);
+  library.value.push(preset);
+  activeId.value = preset.id;
   openEdit({ preset, builtin: false });
 }
 
@@ -115,7 +144,7 @@ function duplicate(item: ManagerItem) {
     quality: src.quality,
     negative: src.negative,
   };
-  settings.nai.artistPresets.push(preset);
+  library.value.push(preset);
   toastr.success(`已复制为「${preset.name}」`, '画师串');
 }
 
@@ -195,7 +224,7 @@ function askDelete(presets: NaiArtistPreset[]) {
 }
 
 function askDeleteSelected() {
-  const byId = new Map(settings.nai.artistPresets.map(p => [p.id, p]));
+  const byId = new Map(library.value.map(p => [p.id, p]));
   askDelete([...selected.value].map(id => byId.get(id)).filter((p): p is NaiArtistPreset => !!p));
 }
 
@@ -203,7 +232,7 @@ async function confirmDelete() {
   if (deleting.value) return;
   deleting.value = true;
   const ids = new Set(deleteList.value.map(p => p.id));
-  const plan = planArtistRemoval(settings.nai.artistPresets, ids, activeId.value);
+  const plan = planArtistRemoval(library.value, ids, activeId.value);
   // 预览文件清理 best-effort:文件没删掉不阻塞删条目(孤儿文件可手动清,条目删不掉才烦人)
   let fileFailures = 0;
   for (const p of plan.removed) {
@@ -214,8 +243,8 @@ async function confirmDelete() {
       fileFailures += 1;
     }
   }
-  settings.nai.artistPresets = plan.remaining;
-  settings.nai.activeArtistId = plan.nextActiveId;
+  library.value = plan.remaining;
+  activeId.value = plan.nextActiveId;
   const nextSelected = new Set(selected.value);
   for (const id of ids) nextSelected.delete(id);
   selected.value = nextSelected;
