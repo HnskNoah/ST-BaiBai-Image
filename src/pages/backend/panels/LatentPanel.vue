@@ -209,6 +209,9 @@ const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value
         <p v-if="artist && isBuiltin" class="bbi-field-hint">
           内置画师串随插件版本更新,不可直接改;在 NAI 渠道页复制一条自己的再改。
         </p>
+        <p v-if="artist" class="bbi-field-hint">
+          Latent 底层是 Anima 系模型:画师 tag 用 <code>@名字</code> 格式(NAI 的 <code>artist:xxx</code> 写法在它上面无效),本渠道激活的画师串请按 @ 格式填写。
+        </p>
         <p class="bbi-field-hint">新增/改名/删除画师串请到 NAI 渠道页的画师串库管理。</p>
 
         <hr class="bbi-rule" />
@@ -218,7 +221,7 @@ const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value
             <span class="bbi-field-label">正面质量词(可留空)</span>
           </div>
           <BbiTextarea v-model="settings.latent.qualityTags" :rows="2" :max-rows="6" mono />
-          <p class="bbi-field-hint">留空自动带 NAI 官方质量词(与 NAI 渠道同口径)。</p>
+          <p class="bbi-field-hint">留空自动带 Anima 推荐质量词(masterpiece, best quality, score_7, safe),拼在画面 tag 之前。</p>
         </div>
 
         <div class="bbi-field">
@@ -226,7 +229,7 @@ const isBuiltin = computed(() => (artist.value ? isBuiltinNaiArtist(artist.value
             <span class="bbi-field-label">负面提示词(可留空)</span>
           </div>
           <BbiTextarea v-model="settings.latent.negativePrompt" :rows="2" :max-rows="6" mono />
-          <p class="bbi-field-hint">留空自动带 NAI 官方负面基线;画面级负面在楼层 tag 里,会与本条合并。</p>
+          <p class="bbi-field-hint">留空自动带 Anima 推荐负面(启用画师串时自动剔除其中的 artist name);画面级负面在楼层 tag 里,会与本条合并。</p>
         </div>
 
         <p class="bbi-field-hint">

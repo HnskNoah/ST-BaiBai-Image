@@ -350,15 +350,24 @@ tag 原文被 DOMPurify 剥壳后当正文显示出来(用户直接看见一串 
   因此副 API 的 new 建档验收(强制 nl)只对 NAI 渠道生效,latent 建档不要求 nl
   (档案 nl 字段保持可选记录,NAI 建的带 nl 档案切到 latent 时 nl 不发送但档案无损)。
   恒走单串口径(latentSpec/latentThinking 可编辑,回落旧 naiSpec/naiThinking 再回落内置;
-  **单串 tag + 区分性称谓邻接绑定**,非 V5 双层结构);
+  **单串 tag + 区分性称谓邻接绑定**,非 V5 双层结构;内置默认已按 Anima 口径修订——
+  画师 tag 由用户画师串附加、**AI 禁写**(规范条款 + 思维链自查),邻接绑定写法对
+  Anima 的 Qwen 编码器同样有效);
   发送侧带 `latentTagOnly` 降级为纯 tag 载荷——nl 不拼 prompt、v4_prompt/v4_negative_prompt/
   characterPrompts 整个剥掉(characters[].tag 的内容副 API 已按绑定写法写进主串,丢弃的是
-  冗余副本),prompt 顶层与 input 同源。
+  冗余副本),prompt 顶层与 input 同源。**默认词分册**(nai.ts 的 LATENT_DEFAULT_*):
+  质量词留空回落 `masterpiece, best quality, score_7, safe` 且**前置到串首**
+  (fullPositivePrompt 的 qualityFirst,Anima 官方推荐;NAI 分册是拼尾),负面留空回落
+  Anima 推荐串且**启用画师串时自动剔掉 artist name**(latentDefaultUndesired——该词防
+  署名水印,会连用户的画风一起压);NAI 特训词(very aesthetic/location)对 Anima 无效,
+  是分册存在的理由。
   兼容面(/api/novelai)不在该 openapi 里;发 `resolution` 枚举是唯一有文档依据的画幅形状。
   画师串与 NAI 共库,**激活项分渠道记忆**:`settings.latent.activeArtistId` 独立保存
   (默认 '' = 不使用;内置 bi_default 是 NAI 官方模型配方,不默认塞给 Anima),
   `latentAsNai` 用它覆盖视图的 activeArtistId,盖章(`activeNaiArtistName`)按当前渠道取——
   两渠道各选各的画风,互不影响;清洗不变式同 normalizeNai(悬空 id 清空,查找域含内置库)。
+  **画师 tag 格式两渠道不同**:Anima 用 `@名字`(面板 hint 有说明),NAI 用 `artist:xxx`,
+  内容由用户按渠道自管,不做发送侧转换。
 - **取消必须分流**(comfyui.ts 的 `cancelPrompt`):任务在排队 → `POST /queue {delete:[id]}`;
   正在执行 → `POST /interrupt`(带 prompt_id)。**无脑 /interrupt 会打断正在跑的别的任务**
   ——旧实现如此,并发下必现。有单测锁定这两条路径。

@@ -106,6 +106,25 @@ export function naiDefaultUndesired(model: string): string {
   return DEFAULT_UNDESIRED_CONTENT[model] ?? '';
 }
 
+/* ============ Latent 渠道(Anima 系)默认词分册 ============ */
+
+/**
+ * Anima 官方推荐的默认词——Latent 渠道留空时的回落值,与 NAI 官方词**分册**:
+ * NAI 的 very aesthetic / location / no text 是 NAI 特训进模型的审美词,Anima 不认识;
+ * Anima(Qwen 编码器)认 masterpiece / best quality / score_N(人类评分制)体系。
+ * 负面取 Anima 官方推荐串;`artist name` 防画师署名水印,启用画师串时须剔除
+ * (见 latentDefaultUndesired),否则它会把用户的画风一起压掉。
+ */
+export const LATENT_DEFAULT_QUALITY_TAGS = 'masterpiece, best quality, score_7, safe';
+export const LATENT_DEFAULT_UNDESIRED_CONTENT =
+  'worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration';
+
+/** Latent 渠道默认负面:启用画师串时剔掉 artist name,未启用时保留完整防署名串。 */
+export function latentDefaultUndesired(nai: NaiSettings): string {
+  const base = LATENT_DEFAULT_UNDESIRED_CONTENT;
+  return naiArtistPrompt(nai) ? base.replace(', artist name', '') : base;
+}
+
 /** variety boost 的 magic 常数(st-chatu8 同口径):按像素量相对参考分辨率缩放。 */
 const REFERENCE_PIXEL_COUNT = 1011712;
 const SIGMA_MAGIC_NUMBER = 19;
@@ -309,19 +328,19 @@ export function naiArtistPrompt(nai: NaiSettings): string {
 }
 
 /**
- * 正面质量词解析链:配方绑定值 → 渠道覆盖值(qualityTags)→ 内置默认。
- * 任一级空串(或纯空白)= 跟随下一级。内置默认当前 = 模型官方词;
+ * 正面质量词解析链:配方绑定值 → 渠道覆盖值(qualityTags)→ 注入回落(渠道分册,可省)
+ * → 内置默认。任一级空串(或纯空白)= 跟随下一级。内置默认当前 = 模型官方词;
  * 以后插件要换成自己的精选默认,只改 naiDefaultQualityTags,链结构不变。
  */
-export function naiQualityTags(nai: NaiSettings): string {
+export function naiQualityTags(nai: NaiSettings, fallback?: string): string {
   const bound = naiActivePreset(nai)?.quality.trim();
-  return bound || nai.qualityTags.trim() || naiDefaultQualityTags(nai.model);
+  return bound || nai.qualityTags.trim() || fallback?.trim() || naiDefaultQualityTags(nai.model);
 }
 
-/** 负面提示词解析链:配方绑定值 → 渠道覆盖值(undesiredContent)→ 内置默认(模型官方负面词)。 */
-export function naiUndesiredContent(nai: NaiSettings): string {
+/** 负面提示词解析链:配方绑定值 → 渠道覆盖值(undesiredContent)→ 注入回落(可省)→ 内置默认(模型官方负面词)。 */
+export function naiUndesiredContent(nai: NaiSettings, fallback?: string): string {
   const bound = naiActivePreset(nai)?.negative.trim();
-  return bound || nai.undesiredContent.trim() || naiDefaultUndesired(nai.model);
+  return bound || nai.undesiredContent.trim() || fallback?.trim() || naiDefaultUndesired(nai.model);
 }
 
 /**
@@ -331,14 +350,26 @@ export function naiUndesiredContent(nai: NaiSettings): string {
  * - 质量词 = 配方绑定值优先,其次渠道覆盖值(qualityTags),都留空则按模型取官方词
  *   (见 naiQualityTags)。
  *
+ * opts.qualityFirst(Latent 专用):Anima 官方推荐质量词放串首(flow 模型对开头 token
+ * 更敏感),顺序改为 质量词 → 画师串 → 画面 tag;opts.qualityTagsFallback 为渠道分册
+ * 回落值(留空时替换「模型官方词」那一级,Latent 传 Anima 默认词,见 LATENT_DEFAULT_*)。
+ *
  * ⚠ 本函数在 buildNaiParameters(v4_prompt 的来源)与 generateNaiImage 的顶层 input
  * 字段处各调一次,两处必须同源。拼装改动一律留在本函数内部——在某个调用点单独加料会让
  * NAI3(读 input)与 NAI4/4.5(读 v4_prompt)拿到不同的提示词,且只在 NAI3 上暴露。
  */
-export function fullPositivePrompt(nai: NaiSettings, prompt: string, nl = ''): string {
+export function fullPositivePrompt(
+  nai: NaiSettings,
+  prompt: string,
+  nl = '',
+  opts: { qualityTagsFallback?: string; qualityFirst?: boolean } = {},
+): string {
   const artist = naiArtistPrompt(nai);
-  const quality = naiQualityTags(nai);
-  const tags = [artist, prompt.trim(), quality].filter(Boolean).join(', ');
+  const quality = naiQualityTags(nai, opts.qualityTagsFallback);
+  const parts = opts.qualityFirst
+    ? [quality, artist, prompt.trim()]
+    : [artist, prompt.trim(), quality];
+  const tags = parts.filter(Boolean).join(', ');
   return naiSupportsCharacterPrompts(nai.model) && nl.trim() ? `${tags}. ${nl.trim()}` : tags;
 }
 
@@ -643,13 +674,19 @@ export async function generateNaiImage(
   const params = buildNaiParameters(nai, values, {
     multipleOf64: !opts.allowNon64Size,
   });
+  // Latent(Anima 系)提示词口径:质量词前置到串首 + 留空时回落渠道分册默认词
+  // (不落 NAI 官方词——very aesthetic 等对 Anima 无效,见 LATENT_DEFAULT_* 注释)。
+  const latentPromptOpts = {
+    qualityTagsFallback: LATENT_DEFAULT_QUALITY_TAGS,
+    qualityFirst: true,
+  } as const;
   if (opts.latentTagOnly) {
     // 站点只吃 tag:扁平 prompt 串。fullPositivePrompt 重算一遍只拿 tag 部分
     // (values.nl 不传入),v4_prompt 系结构整个剥掉,prompt/input 同源。
     delete (params as Record<string, unknown>).v4_prompt;
     delete (params as Record<string, unknown>).v4_negative_prompt;
     delete (params as Record<string, unknown>).characterPrompts;
-    params.prompt = fullPositivePrompt(nai, values.prompt);
+    params.prompt = fullPositivePrompt(nai, values.prompt, '', latentPromptOpts);
   }
   if (opts.latentResolution) {
     // 站点原生面收枚举不收数字对;宽高在本地仍用于 skip_cfg 等派生计算,只从载荷移除。
@@ -687,7 +724,7 @@ export async function generateNaiImage(
     ? // 站点只吃 tag:input 与 parameters.prompt 同源(纯 tag、无 nl)。
       // 此前只重算 parameters.prompt、input 仍拼 nl——违反本函数自立的
       // 「nl 不拼 prompt」不变式,站长口径被顶层字段绕过,已修复。
-      fullPositivePrompt(nai, values.prompt)
+      fullPositivePrompt(nai, values.prompt, '', latentPromptOpts)
     : fullPositivePrompt(nai, values.prompt, values.nl);
   const body = {
     input: positiveForInput,

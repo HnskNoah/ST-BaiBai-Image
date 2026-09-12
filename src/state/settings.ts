@@ -565,13 +565,14 @@ Two girls as the main focus, medium shot, in a park at sunset. The black-haired 
 /**
  * NAI 规范内置默认:与 ComfyUI 规范同构,danbooru 短 tag;质量词由后端按模型自动附加,故禁写。
  *
- * ⚠ 设置页已撤掉本项的编辑入口:模型列表只剩 4.5/V5(见 NAI_MODELS),
- * `naiCharPromptsOn` 恒真,本常量与 settings 里的 `naiSpec` 键都不再可达。
- * 保留是为了不动存量 settings 键、也不动 4.5 以下模型标识的协议分支;
- * 改 NAI 规范请改 DEFAULT_NAI_V5_SPEC(设置页里显示为「NAI 规范」的就是那一份)。
+ * ⚠ NAI 渠道自身已不可达(模型列表只剩 4.5/V5,naiCharPromptsOn 恒真,走 DEFAULT_NAI_V5_SPEC),
+ * 但 **Latent 渠道恒走单串口径**,本常量是「Latent 规范」回落链的终端(latentSpec → naiSpec 存量
+ * 旧值 → 本常量),内容按消费方现状维护:画师 tag 由用户画师串附加(AI 禁写),底层模型为
+ * Anima 系(站点口径),质量词回落见 backends/nai.ts 的 LATENT_DEFAULT_* 分册。
+ * 改 NAI 渠道的规范请改 DEFAULT_NAI_V5_SPEC(设置页「NAI 规范」)。
  */
 export const DEFAULT_NAI_SPEC = `【NovelAI 提示词规范】
-你输出的画面提示词会被直接发送给 NovelAI 生图接口。
+你输出的画面提示词会被直接发送给 NovelAI 协议的生图接口（兼容站的底层为 Anima 系动漫模型）。
 
 tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的关键词串，多词用空格连接（不要用下划线），例如：
 1girl, long hair, school uniform, sitting by window, classroom, warm sunlight
@@ -584,7 +585,8 @@ tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的
 - 正文没写表情不是不写的理由——推断一个；判断为面无表情时也要显式写 expressionless。
 同人角色身份 tag：若角色明确来自已有动漫、游戏、小说等作品，必须在人数/构图之后、普通外貌之前写模型可识别的英文 Danbooru 身份 tag，格式为 character name (copyright name)。角色名与作品名使用其通行英文 tag，不转义圆括号，不得直译中文、缩写作品名或只写角色名。原创角色不写；无法可靠确定作品时不得猜测，按原创角色处理。
 显式场景 tag：当正文明确是 NSFW/性行为画面时，不能只写 nsfw、nude、sex 或含蓄动作。逐个写出画面中实际可见、与动作有关的身体部位和性器官（如 breasts、nipples、penis、pussy、anus、testicles），并用准确的 Danbooru 动作/接触 tag 说明谁的什么部位接触或进入哪里；性器官被衣物、身体或镜头完全遮住时不要虚构为可见。
-NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag（1girl、2boys 等）；需要特定画风时可加艺术家/风格 tag。
+NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag（1girl、2boys 等）。
+画风不归你管：不得写任何画师/画风 tag（artist:xxx 与 @xxx 两种写法都不要出现），画师串由系统按用户配置附加，你写了只会污染画面、挤占 tag 预算。
 
 多人画面（两人及以上）额外规则：
 - 人数 tag 必须明确（2girls、1boy 1girl 等）；缺了模型会漏画或多画。
@@ -597,6 +599,7 @@ NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag�
 - 表情与视线同样是**每人各一份、必须绑定**的特征：写 "black hair girl smiling, silver hair girl looking at another"，不要把 smile、looking at another 裸写在串里——两人同框时裸写的表情/视线只会落到其中一人身上，另一人变成默认木脸。两人表情或视线恰好相同时也各写一份带称谓的，不适用「共有特征只写一次」。
 - 体型词（petite、tall、muscular 等）不是锚点，必须绑定到具体角色，不要裸写：写 "petite on silver hair girl"，不要让 petite 飘在串里——飘着的体型词会被模型摊到同框每个人身上。发色、瞳色本身是用来指认角色的锚点，照常裸列即可，不需要（也无法）自我绑定。
 - 场景词 1~2 个即可，多了会抢角色主体；背景不重要时用 blurred background 类词压住。
+- 这套「把特征绑到人身上」的写法对 Anima 系模型同样有效——它的文本编码器对这种自然语言式绑定理解良好，照常使用。
 
 多人 tag 示例（对照上面的规则看写法）：
 2girls, medium shot, long hair, black hair, blue eyes, silver hair, red eyes, petite on silver hair girl, white dress on black hair girl, red dress on silver hair girl, black hair girl waving, black hair girl smile, black hair girl looking at viewer, silver hair girl eating dango, silver hair girl blush, silver hair girl looking away, park, sunset
@@ -727,8 +730,10 @@ E. 选段
  * AI 不写);显式 NSFW 场景有解剖落点(对应 DEFAULT_NAI_SPEC 的显式场景 tag 条款,
  * 0.1.16 的旧清单本来有、三层重写时弄丢,此处补回)。
  *
- * ⚠ 与 DEFAULT_NAI_SPEC 同批下线:设置页已无编辑入口,模型列表收窄到 4.5/V5 后不可达。
- * 改 NAI 思维链请改 DEFAULT_NAI_V5_THINKING。
+ * ⚠ NAI 渠道自身不可达后,本份经 Latent 回落链(latentThinking → naiThinking 存量旧值 →
+ * 本常量)重新成为活跃路径,是「Latent 思维链」的回落终端,内容按消费方现状维护
+ * (画师 tag 由用户画师串附加,AI 禁写——第三层自查里有对应核对项)。
+ * 改 NAI 思维链请改 DEFAULT_NAI_V5_THINKING(设置页「NAI 思维链」)。
  */
 export const DEFAULT_NAI_THINKING = `【输出前思考清单】
 先在 <thinking> 与 </thinking> 之间按下面顺序过一遍，思考结束后再输出最终 JSON。除这一个 <thinking> 块与最终 JSON 外，不得输出任何内容，也不得开启第二个 <thinking> 块。
@@ -795,6 +800,7 @@ E. 选段
    - 多人画面里服装、体型、物件、表情、视线和个人动作都已绑定到各自角色，没有散落的无主特征；每个在场角色的服装都在 tag 里实际出现了，没有谁的衣服只写在槽位里却没进 tag，也没有 school uniform、pantyhose 这类没主人的笼统孤立词；每个在场角色都各有一个绑定到自己的表情词和视线词，没有谁只有动作没有表情。
    - 这一层只核对、不改决定：发现问题就在落 tag 时直接改对，不要在思考里写出「超限，需精简」「让位」「改为」这类修订过程。张数在 E 段就已经定死，这里不该再变。
    - 每个同人角色的 tag 串里都有 B 段定下的 character name (copyright name) 身份 tag（人数/构图之后、普通外貌之前，不转义括号），原创角色没有被误加作品名。
+   - tag 串里没有混入画师/画风 tag（artist: 或 @ 开头的画风词都不该出现），画风由系统按用户画师串附加。
    - 若本图是显式 NSFW 场景：实际可见的性器官、身体部位和接触关系都已用准确 tag 写明，没有只用 nsfw、nude、sex 这类泛化词一笔带过；非显式场景本项直接跳过。
    - 每个在场正式角色都能二选一：指出【角色固定外貌库】中的同名条目，或在 changes 中有 field:"new"；世界书里有详细设定不能代替建档。每条 field:"new" 建档的 hair 都同时带发色和长度/发型、eyes 都带瞳色。永久变化的 P编号合法，临时状态没被误写进 changes。
    - 张数在设定范围内；仅当下限为 0 且确实无可画时 images 才为空，且无论如何都保留应有的建档与 changes。`;

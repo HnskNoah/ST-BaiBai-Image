@@ -4,7 +4,12 @@ import { computed, onMounted, ref, watch } from 'vue';
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import { validateSimpleConfig } from '@/backends/comfyTemplates';
 import { generateComfyImage, randomSeed } from '@/backends/comfyui';
-import { generateNaiImage, naiRandomSeed, naiUndesiredContent } from '@/backends/nai';
+import {
+  generateNaiImage,
+  naiRandomSeed,
+  naiUndesiredContent,
+  latentDefaultUndesired,
+} from '@/backends/nai';
 import type { Orientation } from '@/backends/size';
 import Icon from '@/components/Icon.vue';
 import { confirmDialog } from '@/components/confirm';
@@ -285,12 +290,16 @@ async function generate(): Promise<void> {
       }),
     );
     // Latent 渠道:渠道级负面(latentAsNai 映射)+ 本画面 <negative> 合并;
-    // 合并用 naiUndesiredContent 取值,渠道留空时官方负面基线照常回落,不被画面负面顶掉。
+    // 合并用 naiUndesiredContent 取值,渠道留空时回落 Anima 推荐默认
+    // (latentDefaultUndesired,启用画师串时自动剔掉 artist name),不被画面负面顶掉。
     // 无本地长度上限(站长确认站点支持超 2000 字符)。
     // NAI 渠道维持既有行为(只发渠道级负面)。两条 NAI 系分支共用同一调用,退避进度一致可见。
     const latentView = latentActive.value ? latentAsNai(settings.latent) : null;
     if (latentView) {
-      const merged = [naiUndesiredContent(latentView), job.negative.trim()].filter(Boolean);
+      const merged = [
+        naiUndesiredContent(latentView, latentDefaultUndesired(latentView)),
+        job.negative.trim(),
+      ].filter(Boolean);
       latentView.undesiredContent = merged.join(', ');
     }
     const naiView = latentView ?? (naiActive.value ? settings.nai : null);

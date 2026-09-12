@@ -8,6 +8,8 @@ import {
   fullPositivePrompt,
   generateNaiImage,
   isBuiltinNaiArtist,
+  LATENT_DEFAULT_QUALITY_TAGS,
+  latentDefaultUndesired,
   naiArtistPrompt,
   naiDefaultQualityTags,
   naiDefaultUndesired,
@@ -378,13 +380,49 @@ describe('NAI V5 support', () => {
     expect(params.v4_prompt).toBeUndefined();
     expect(params.v4_negative_prompt).toBeUndefined();
     expect(params.characterPrompts).toBeUndefined();
-    // 纯 tag:nl 句子不进 prompt 串,质量词照常在
-    expect(params.prompt).toBe('1girl, smile, location, very aesthetic, masterpiece, no text');
+    // 纯 tag:nl 句子不进 prompt 串;质量词走 Latent 分册(Anima 口径)且前置到串首
+    expect(params.prompt).toBe('masterpiece, best quality, score_7, safe, 1girl, smile');
     // 顶层 input 与 parameters.prompt 同源(纯 tag):nl 不经顶层字段绕过站点口径
     expect(typed0.input).toBe(params.prompt);
     expect(params.resolution).toBe('portrait');
     expect(params.width).toBeUndefined();
     expect(params.height).toBeUndefined();
+  });
+
+  it('latentTagOnly:用户渠道级质量词优先于 Anima 默认,画师串按用户原样拼在质量词后', () => {
+    const settings = nai({
+      model: 'nai-diffusion-4-5-full',
+      qualityTags: 'my quality words',
+      artistPresets: [
+        { id: 'a1', name: 'Anima 画风', prompt: '@some_artist', quality: '', negative: '' },
+      ],
+      activeArtistId: 'a1',
+    });
+    const prompt = fullPositivePrompt(
+      settings,
+      '1girl, smile',
+      '',
+      { qualityTagsFallback: LATENT_DEFAULT_QUALITY_TAGS, qualityFirst: true },
+    );
+    expect(prompt).toBe('my quality words, @some_artist, 1girl, smile');
+  });
+
+  it('latentDefaultUndesired:未启用画师串含 artist name,启用后剔除', () => {
+    const base = latentDefaultUndesired(
+      nai({ model: 'nai-diffusion-4-5-full', activeArtistId: '' }),
+    );
+    expect(base).toContain('artist name');
+    const withArtist = latentDefaultUndesired(
+      nai({
+        model: 'nai-diffusion-4-5-full',
+        artistPresets: [
+          { id: 'a1', name: 'Anima 画风', prompt: '@some_artist', quality: '', negative: '' },
+        ],
+        activeArtistId: 'a1',
+      }),
+    );
+    expect(withArtist).not.toContain('artist name');
+    expect(withArtist).toContain('score_1');
   });
 
   it('maps Base Tag + NL and native Character Prompts into the V5 caption schema', () => {

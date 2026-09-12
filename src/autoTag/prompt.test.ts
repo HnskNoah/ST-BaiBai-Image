@@ -759,6 +759,10 @@ describe('auto tag prompt', () => {
       // 单串 naiSpec 判据:多人邻接绑定规则与其示例在,身份 tag 转义口径在
       expect(text).toContain('white dress on green hair girl');
       expect(text).toContain('character name (copyright name)');
+      // Anima 口径:画师 tag 由用户画师串附加,AI 禁写;绑定写法对 Anima 有效的背书在
+      expect(text).toContain('不得写任何画师/画风 tag');
+      expect(text).toContain('对 Anima 系模型同样有效');
+      expect(text).toContain('没有混入画师/画风 tag');
       // V5 双层结构判据不得出现(nl 要求不下发)
       expect(text).not.toContain('Write exactly one shot distance');
       expect(text).not.toContain('Every image must include Base tag');
