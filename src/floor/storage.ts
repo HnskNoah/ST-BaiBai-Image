@@ -1,5 +1,6 @@
 import type { ComfyImageResult } from '@/backends/comfyui';
 import { utf8ToBase64 } from '@/base64';
+import { normalizeImagePath } from '@/floor/missingImages';
 import { deleteUploadedFile, uploadBase64File } from '@/floor/upload';
 import { getContext, type STContext, type STMessage } from '@/st/context';
 import { deleteUserImage, uploadUserImage } from '@/st/images';
@@ -448,10 +449,17 @@ export async function saveImageResult(
  *
  * 侧写删失败只警告:老图本来就没有侧写,404 属预期常态(deleteUploadedFile 对 404 返回
  * false 不抛);真失败了也只是多个几 KB 的孤儿 json,不值得让整次删除报错。
+ *
+ * 入口先 `normalizeImagePath`:调用方手上两种写法都有——图库的 src 是逐段
+ * encodeURIComponent 过的,extra/目录列表里的是原文。而 ST 的 /api/images/delete 与
+ * /api/files/delete 都是把 body.path 直接 path.join 到根目录、**不做 URL 解码**,
+ * 编码路径传过去只会 404,还会被 deleteUserImage 当成「本就不存在」静默吞掉——
+ * 症状就是图没删掉、侧写却真删了。
  */
 export async function deleteImageFileOnly(path: string): Promise<void> {
-  await deleteUserImage(path);
-  const sidecar = sidecarPathFor(path);
+  const target = normalizeImagePath(path);
+  await deleteUserImage(target);
+  const sidecar = sidecarPathFor(target);
   if (!sidecar) return;
   try {
     await deleteUploadedFile(sidecar);

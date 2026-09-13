@@ -435,7 +435,10 @@ async function deleteSelected(): Promise<void> {
     // 逐张容错:一张失败不该中断其余的(mapLimit 会 reject 整体,故在回调里自己接住)
     const results = await mapLimit(targets, REQUEST_CONCURRENCY, async image => {
       try {
-        await deleteImageFileOnly(image.src);
+        // 传 key 而非 src:src 是给 <img> 用的逐段编码路径,而删除接口要的是解码后的
+        // 磁盘路径(ST /api/images/delete 直接 path.join,不做 decodeURIComponent)。
+        // key 与 markImagesMissing / sizes 同一口径,中文目录名不会打偏到 404。
+        await deleteImageFileOnly(image.key);
         return { key: image.key, ok: true };
       } catch (e) {
         console.warn('[柏宝绘] 删除图片失败', image.key, e);

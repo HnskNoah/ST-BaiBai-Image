@@ -125,8 +125,8 @@ const prefix = '\u67cf\u5b9d\u7ed8_';
 const alpha = `${prefix}Alpha`;
 const beta = `${prefix}Beta`;
 const expandedKey = 'bbi.ui.galleryExpanded.v1';
-/** \u4e0e\u7ec4\u4ef6 imageSrc() \u540c\u6b3e\u9010\u6bb5\u7f16\u7801\uff0c\u65ad\u8a00\u5220\u9664\u8c03\u7528\u65f6\u8981\u5bf9\u5f97\u4e0a\u3002 */
-const srcOf = (folder: string, file: string) => `/user/images/${encodeURIComponent(folder)}/${file}`;
+/** 删除调用要的是归一化 key（解码、无前导斜杠），与组件 image.key、markImagesMissing 同一口径；<img> 用的编码 src 是另一回事（见 imageSrc）。 */
+const keyOf = (folder: string, file: string) => `user/images/${folder}/${file}`;
 let stored: Map<string, string>;
 let app: ReturnType<typeof renderer.createApp> | undefined;
 
@@ -345,8 +345,8 @@ describe('gallery multi-select delete', () => {
 
     expect(vi.mocked(confirmDialog)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(deleteImageFileOnly).mock.calls.map(call => call[0])).toEqual([
-      srcOf(alpha, 'image-0.png'),
-      srcOf(alpha, 'image-2.png'),
+      keyOf(alpha, 'image-0.png'),
+      keyOf(alpha, 'image-2.png'),
     ]);
     // 就地摘除:53 → 51,且没有重新拉目录(重新 load 会把展开态和批次全重置)
     expect(vi.mocked(listUserImages)).toHaveBeenCalledTimes(2);

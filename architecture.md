@@ -450,7 +450,9 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   入口(而非顶着 ready 显示破图、连重新生成都点不了),并加一行「图片文件已删除」说明。
 - 路径归一化(`normalizeImagePath`)是**读写两侧唯一口径**:extra 存的是服务端原样返回的
   未编码中文路径,图库拼的是逐段 `encodeURIComponent` 的,前导斜杠也有无不定;
-  两套写法不对账,图库删完图卡片照样显示破图。
+  两套写法不对账,图库删完图卡片照样显示破图。删除入口(`deleteImageFileOnly`)同样先走
+  这一归一化再发请求——ST 的 `/api/images/delete`、`/api/files/delete` 都是把 `body.path`
+  直接 `path.join` 到根目录、**不做 URL 解码**,编码路径传过去只会 404。
 
 **出图后端(backends/)**:
 - `comfyui.ts`:两种互斥模式在 `generateComfyImage` 里分叉,汇合点是「拿到可提交 JSON」:

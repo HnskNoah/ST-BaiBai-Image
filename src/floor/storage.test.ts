@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   appendEntry,
   BBI_IMAGE_EXTRA_KEY,
+  deleteImageFileOnly,
   deleteImageResult,
   generationId,
   historyEntries,
@@ -588,5 +589,31 @@ describe('deleteImageResult', () => {
 
     await expect(deleteImageResult(0, 0, 'h', 'g1')).rejects.toThrow('Save failed');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteImageFileOnly', () => {
+  it('decodes the encoded gallery src before calling the delete endpoints', async () => {
+    // 图库的 src 是逐段 encodeURIComponent 过的，而 ST 的删除接口不做解码：
+    // 编码路径原样发过去只会 404（图没删掉），这里锁死「先归一化再发请求」。
+    const fetchMock = vi.fn(async () => new Response('OK', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', {
+      SillyTavern: { getContext: () => ({ getRequestHeaders: () => ({}) }) },
+    });
+
+    const src = `/user/images/${encodeURIComponent('柏宝绘_测试角色')}/bbi_abc_0_h-g1.png`;
+    await deleteImageFileOnly(src);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/images/delete', {
+      method: 'POST',
+      headers: {},
+      body: JSON.stringify({ path: 'user/images/柏宝绘_测试角色/bbi_abc_0_h-g1.png' }),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/files/delete', {
+      method: 'POST',
+      headers: {},
+      body: JSON.stringify({ path: '/user/files/bbi_abc_0_h-g1.json' }),
+    });
   });
 });
