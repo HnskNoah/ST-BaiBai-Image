@@ -195,7 +195,10 @@ async function load(): Promise<void> {
       return rank || collator.compare(a.name, b.name);
     });
     groups.value = next;
-    void measureSizes(next);
+    // ⚠ 暂时禁用分组体积统计:作者不满意当前方案——逐张 HEAD 读 Content-Length,
+    // 请求数随图库规模线性增长,进一次图库就是几百上千个后台请求。
+    // 体积相关的计算、模板、CSS 与测试全部原样保留,恢复时解注下面这一行即可。
+    // void measureSizes(next);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -205,7 +208,7 @@ async function load(): Promise<void> {
 
 onMounted(load);
 
-/* —— 体积统计 —— */
+/* —— 体积统计(⚠ 暂时禁用:load() 里的 measureSizes 调用已注释,理由见该处) —— */
 
 /**
  * 归一化路径 → 字节数。**逐张 HEAD 量出来的**。

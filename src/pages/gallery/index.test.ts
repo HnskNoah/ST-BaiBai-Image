@@ -249,7 +249,9 @@ describe('gallery on-demand rendering', () => {
   });
 });
 
-describe('gallery size readout', () => {
+// 体积统计暂时禁用:作者不满意「逐张 HEAD 读 Content-Length」的方案(见 index.vue 的 load())。
+// 以下用例原样保留,恢复 measureSizes 调用时去掉 .skip 即可。
+describe.skip('gallery size readout', () => {
   it('sums measured bytes per group and in total, sizing every image including unrendered ones', async () => {
     const root = await mount();
     // 58 张全都量过(懒加载只是渲染策略,体积统计必须覆盖整组,否则角标随下拉往上跳)
@@ -286,6 +288,21 @@ describe('gallery size readout', () => {
     // 只有新增的那一张要量
     expect(vi.mocked(probeUserImage)).toHaveBeenCalledTimes(59);
     expect(find(root, '.gal-size').map(text)).toEqual(['54 KB', '5.0 KB']);
+  });
+});
+
+describe('gallery size readout disabled', () => {
+  it('issues no HEAD probes and renders no size UI', async () => {
+    const root = await mount();
+    // 进页零体积探测;刷新也不该冒出来——请求数随图库线性增长正是暂时停用它的原因
+    expect(vi.mocked(probeUserImage)).not.toHaveBeenCalled();
+    await click(find(root, '.gal-icon-btn')[0]);
+    await flush();
+    expect(vi.mocked(probeUserImage)).not.toHaveBeenCalled();
+    // 分组角标、总计体积、测量中的「+」一律不出现
+    expect(find(root, '.gal-size')).toHaveLength(0);
+    expect(find(root, '.gal-measuring')).toHaveLength(0);
+    expect(text(find(root, '.gal-count')[0])).not.toContain('KB');
   });
 });
 
@@ -337,8 +354,8 @@ describe('gallery multi-select delete', () => {
     // 已显示张数(48)不变,后面的图往前补位——删两张不该让用户重新往下翻
     expect(find(root, 'img')).toHaveLength(48);
     expect(text(find(root, '.gal-count')[0])).toContain('56 张');
-    // 体积缓存同步清掉,否则合计里还挂着已删图的字节
-    expect(find(root, '.gal-size').map(text)).toEqual(['51 KB', '5.0 KB']);
+    // 体积显示已暂时禁用(见 load()):删除后就地渲染的列表里也不该出现任何体积角标
+    expect(find(root, '.gal-size')).toHaveLength(0);
     // 楼层卡片据此立刻降级,不必等它自己 404
     expect(isImageMissing(`user/images/${alpha}/image-0.png`)).toBe(true);
     expect(isImageMissing(`user/images/${alpha}/image-1.png`)).toBe(false);

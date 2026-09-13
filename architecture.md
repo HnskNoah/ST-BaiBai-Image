@@ -101,7 +101,7 @@ src/
 │   ├── backend/index.vue      # 「渠道」页:页签(webui 已隐藏)+ 各后端面板
 │   │   └── panels/            # ComfyUIPanel / NaiPanel / WebUIPanel(隐藏,代码保留)/ NaiArtistManager
 │   ├── characters/index.vue   # 「角色管理」页:全局/本聊天两区卡片式外貌库 CRUD + 历史回滚
-│   ├── gallery/index.vue      # 「图库」页:按角色名分组浏览 user/images/柏宝绘_<角色名>/(放大+看提示词+另存;多选删除**只删文件不碰聊天记录**,分组体积逐张 HEAD 量)
+│   ├── gallery/index.vue      # 「图库」页:按角色名分组浏览 user/images/柏宝绘_<角色名>/(放大+看提示词+另存;多选删除**只删文件不碰聊天记录**,分组体积逐张 HEAD 量但 ⚠ 已暂时禁用)
 │   ├── history/index.vue      # 「请求历史」页:调试辅助(LLM 提示词/响应/生图元信息)
 │   └── settings/index.vue     # 「设置」页:渠道管理/自动 tag/提示词编辑/界面偏好(最大页)
 ├── components/       # 通用组件:BbiSelect/BbiCombo/BbiTextarea/Collapsible/ConfirmDialog/FloatingOrb/Icon/ModalMask/NavBar
@@ -625,12 +625,14 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   分组头的复选框选的是**整组**而非当前渲染的那批(懒加载只是渲染策略)。删除逐张容错
   (单张失败不中断其余,失败的留在列表里且仍勾着),删完 `markImagesMissing` 让已打开的
   楼层卡片立刻降级,并**就地**从列表摘掉而非重新 `load()`(否则展开态与已加载批次全被重置)。
-  **分组体积**:`/api/images/list` 只返回文件名(服务端 `util.js getImages` 只 map 出
-  `dirent.name`),既无 size 也无 mtime,唯一办法是逐张 HEAD 读 `Content-Length`
-  (静态路由 `res.sendFile`,实测 1~2ms 且无 body,比图库直接加载原图当缩略图便宜得多)。
-  后台限并发(`src/pool.ts` 的 `mapLimit`,6 路——ST 单进程,压太狠会卡住用户自己的聊天)
-  且不阻塞首屏;量不到的**不计入**而非当 0 累加,未量全的文案带「≥」。
-  `probeUserImage` 的返回是三态(`exists:true` / `exists:false` / `null`=分不清),
+  **分组体积(⚠ 暂时禁用)**:原方案逐张 HEAD 读 `Content-Length`——`/api/images/list`
+  只返回文件名(服务端 `util.js getImages` 只 map 出 `dirent.name`),既无 size 也无 mtime,
+  只能一张张问(静态路由 `res.sendFile`,实测 1~2ms 且无 body,比图库直接加载原图当缩略图
+  便宜得多)。**作者不满意这一方案(请求数随图库规模线性增长),`index.vue` 的 `load()` 中
+  `measureSizes` 调用已注释**,计算/模板/CSS/测试原样保留,恢复时解注即可;`probeUserImage`
+  仍供 `missingImages.ts` 的 404 确认使用。原设计:后台限并发(`src/pool.ts` 的 `mapLimit`,
+  6 路——ST 单进程,压太狠会卡住用户自己的聊天)且不阻塞首屏;量不到的**不计入**而非当 0
+  累加,未量全的文案带「≥」;返回三态(`exists:true` / `exists:false` / `null`=分不清),
   `null` 让网络抖动不会被当成删除。
 - **charTags(三层真源:全局库 + 本聊天手动基线 + AI 楼层增量)**:
   - **全局库**:存 `extensionSettings['baibai_image_char_global']`(globalCharTags.ts,
@@ -803,7 +805,7 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 画师串库管理器(搜索/预览图/批量删除) | src/pages/backend/panels/NaiArtistManager.vue(纯逻辑在 backends/naiArtistLib.ts;内置只读库在 backends/nai.ts 的 `BUILTIN_NAI_ARTISTS`) |
 | 画师串预览图(user/images 上传/删除) | src/st/images.ts + imageFile.ts(文件夹常量 `ARTIST_PREVIEW_FOLDER`) |
 | 图库页(按角色名分组列图) | src/pages/gallery/index.vue(目录/文件列举在 st/images.ts 的 `listUserImageFolders` / `listUserImages`) |
-| 图库多选删除 / 分组体积 | src/pages/gallery/index.vue + src/floor/storage.ts 的 `deleteImageFileOnly`(只删文件不碰聊天记录)+ st/images.ts 的 `probeUserImage`(HEAD 量体积,三态返回)+ src/pool.ts / src/bytes.ts |
+| 图库多选删除 / 分组体积(体积**已暂时禁用**,代码保留待恢复) | src/pages/gallery/index.vue + src/floor/storage.ts 的 `deleteImageFileOnly`(只删文件不碰聊天记录)+ st/images.ts 的 `probeUserImage`(HEAD 三态返回;现供 404 确认,原亦量体积)+ src/pool.ts / src/bytes.ts |
 | 图被删后卡片不显示破图 | src/floor/missingImages.ts(模块级 reactive 册,HEAD 确认 404 才落册)+ Card.vue 的 `liveHistory` / `liveStale` / `@error` |
 | 图库点图看提示词 | src/floor/storage.ts 的 `sidecarFileName` / `sidecarPathFor`(存图时写侧写)+ gallery/index.vue(当前聊天读 extra、其余取侧写;展示口径 `formatPromptText`) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
