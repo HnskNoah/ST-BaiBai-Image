@@ -55,7 +55,8 @@ src/
 │   ├── context.ts     # 世界书激活(条目级渲染:展宏+EJS)、角色卡、user 人设
 │   ├── bookMemory.ts  # 读「柏宝书」全局 API,解析成角色参考块
 │   ├── charAnchors.ts # 角色库:库文本注入 → 兜底替换残留 @占位符(AI 照抄字段值,不用占位符)
-│   └── rebase.ts      # 插入位置重定位:请求时正文 → 落盘时正文(文本 LCS 骨架 + 顺延)
+│   ├── rebase.ts      # 插入位置重定位:请求时正文 → 落盘时正文(文本 LCS 骨架 + 顺延)
+│   └── slotPlan.ts    # 单槽重规划提示备注(只重选第 N 张 + 列出已占用画面,防撞车)
 ├── backends/          # 出图后端(链路 B 的生成端)+ 共享尺寸工具
 │   ├── comfyui.ts     # ComfyUI:工作流模板 %占位符% 渲染、浏览器直连/ST 转发自动回退
 │   ├── comfyTemplates.ts # 简易模式:模板族(checkpoint/flux/anima) + 参数组装 API JSON(无占位符)
@@ -80,6 +81,7 @@ src/
 │   ├── Card.vue       # 卡片本体(**纯展示层**,运行态在 genState.ts)+ 历史翻页
 │   ├── genState.ts    # ★ 生成运行态 store(模块级,跨卡片重建存活)——改卡片状态先读它
 │   ├── genQueue.ts    # NAI 并发闸门 + 节奏等待(ComfyUI 靠服务端队列,不经过这里)
+│   ├── tagPlanState.ts # 「AI 重选画面」提示词规划运行态 store(模块级,与 genState 分开)
 │   ├── collapseState.ts # 卡片折叠态模块级 store(按槽位 key 认领;手动折叠覆盖默认设置)
 │   ├── missingImages.ts # ★ 「文件已不在」路径册(模块级 reactive):图库删文件留下的破指针,
 │   │                  # 由卡片 <img> @error → HEAD 确认 404 才落册(分不清一律不记)
@@ -391,6 +393,20 @@ release 后立刻 `pump()`,下一个任务在同一 tick 就发出去;而错误�
 - ⚠ stale 态只显示**一张**(`latestStaleEntry` 返回单条,且 `pageable` 要求
   `history.length > 1`,翻页器整个不出现)。旧提示词下有 N 张时改提示词 → 只剩最新一张可见
   (文件与指针都没删,改回原样即全部找回)。弹窗里据此给了明确提示。
+
+**卡片「AI 重选画面」(runner.ts 的 `requestSlotTag` + slotPlan.ts)**:与「重绘」的区别——
+重绘用**同一条提示词**再出一张,这里是让 AI 重读本楼正文、**重写这一条 tag 的内容**。
+分析与写回都只围着一个槽位转,不碰本楼其它 tag 与图片:
+- 分析基底是 `stripImageTags(整楼)`(AI 不该把 tag 当正文),并靠 `buildSlotTaskNote` 把其余
+  槽位的画面摘要带给模型,防止它又选出相邻的同一瞬间(那只是换皮图);
+- 强制 `min=max=1`(build 的规则文案与 `parseImagePlan` 校验要同时覆盖,只改一处自相矛盾);
+- 库文本取 `charTagsBeforeFloor(floor + 1)`（含本楼已落档增量),否则 AI 会把首轮建档的角色
+  当新人重写;**本次 AI 的 changes 一律丢弃**(首轮全量分析已为整楼建档,重复应用只会污染历史);
+- 写回是 `replaceImageTagAt` 原位替换第 seq 条(同 PromptEditor),写前按 `rawTag` 核对 seq
+  还指着同一条;成功后 `markForAutoGenerate(..., 'force')` 让本槽位自动按新提示词出图,
+  旧图落进该槽位 stale 桶,其余槽位走差量水合、图片零重建;
+- 规划运行态在 `floor/tagPlanState.ts`(模块级,票据防旧任务收尾污染新任务);取消走
+  `cancelFloorTags`(与全量分析共用「每楼一把」的在途锁)。
 
 **卡片折叠(collapseState.ts + Card.vue)**:折叠态是「临时遮蔽」性质的 UI 态,不是数据——
 存模块级 store、**不写 message.extra**(每次折叠都 saveChat 落盘,代价与语义都不合适),刷新后
@@ -813,6 +829,7 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |
 | 手动编辑生图提示词(卡片 ⋯ 铅笔) | src/floor/PromptEditor.vue + promptEditor.ts(序列化在 st/imageTagRegex.ts) |
+| 卡片「AI 重选画面」(只换某一槽位的提示词) | src/autoTag/runner.ts 的 `requestSlotTag` + src/autoTag/slotPlan.ts;入口在 Card.vue;运行态 src/floor/tagPlanState.ts |
 | 写 tag 后自动出图的握手 / 判定 | src/floor/autoGenerate.ts 的 `shouldAutoGenerate`(纯函数,Card 无单测) |
 | 卡片折叠(默认折叠 / 手动折叠态) | src/floor/collapseState.ts + Card.vue(默认值 = settings.ui.autoCollapseImages) |
 | 卡片「生成中」状态 / 取消 / 并发 | src/floor/genState.ts(运行态)+ genQueue.ts(NAI 闸门与节奏等待) |
