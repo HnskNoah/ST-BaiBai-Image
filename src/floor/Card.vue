@@ -2,21 +2,14 @@
 import { computed, onMounted, ref, watch } from 'vue';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
-import { validateSimpleConfig } from '@/backends/comfyTemplates';
-import { generateComfyImage, randomSeed } from '@/backends/comfyui';
-import {
-  generateNaiImage,
-  naiRandomSeed,
-  naiUndesiredContent,
-  latentDefaultUndesired,
-} from '@/backends/nai';
+
 import type { Orientation } from '@/backends/size';
 import Icon from '@/components/Icon.vue';
 import { confirmDialog } from '@/components/confirm';
+import { backendStatus, decideSeed, generateImage } from '@/generate';
 import { consumeAutoGenerate, shouldAutoGenerate } from '@/floor/autoGenerate';
 import { isCollapsed, setCollapsed } from '@/floor/collapseState';
 import { imageDownloadFileName, saveImageFile } from '@/floor/download';
-import { acquireNaiSlot } from '@/floor/genQueue';
 import {
   beginGen,
   cancelGen,
@@ -32,6 +25,7 @@ import {
 } from '@/floor/genState';
 import { hydrateMessage } from '@/floor/hydrate';
 import { openLightbox } from '@/floor/lightbox';
+import { confirmImageMissing, isImageMissing } from '@/floor/missingImages';
 import { openPromptEditor } from '@/floor/promptEditor';
 import {
   deleteImageResult,
@@ -39,12 +33,7 @@ import {
   saveImageResult,
   type BbiImageEntry,
 } from '@/floor/storage';
-import {
-  activeComfyPreset,
-  effectiveComfyConn,
-  latentAsNai,
-  settings,
-} from '@/state/settings';
+import { activeComfyPreset, settings } from '@/state/settings';
 import { filterCharTagByName } from '@/state/charTags';
 import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
 import { copyText } from '@/st/clipboard';
@@ -99,11 +88,28 @@ type Phase = 'pending' | 'queued' | 'generating' | 'ready' | 'stale' | 'error';
 const key = computed(() => slotKey(props.chatId, props.messageId, props.swipeId, props.seq));
 const hash = computed(() => promptHash(props.tag));
 
-/** 翻页位置:默认最新一张。history 变化(新图落盘)后自动跟到最新。 */
-const index = ref(props.history.length ? props.history.length - 1 : 0);
+/**
+ * 文件仍在的那部分历史。**卡片一律用它,不用 props.history**。
+ *
+ * 图库现在能直接删 user/images 下的文件,而那张图的指针还留在本楼的 extra 里
+ * (图库按目录列图、指针在某个聊天里,两者无反向索引,扫全库反查不可行——
+ * 见 floor/missingImages.ts 顶部)。破指针不过滤掉的话:翻页器会多出翻得到却是空的格子,
+ * 折叠条的「N 张」也跟着虚高。
+ *
+ * 过滤只看**已确认 404**的图(missingImages 册),不是猜的:没被标记的图一律当作还在。
+ */
+const liveHistory = computed(() => props.history.filter(entry => !isImageMissing(entry.path)));
+/** 旧提示词结果同样要对账:它的文件一样可能被图库删掉。 */
+const liveStale = computed(() =>
+  props.staleEntry && !isImageMissing(props.staleEntry.path) ? props.staleEntry : null,
+);
+
+/** 翻页位置:默认最新一张。history 变化(新图落盘 / 删掉破指针)后自动跟到最新。 */
+const index = ref(liveHistory.value.length ? liveHistory.value.length - 1 : 0);
 watch(
-  () => props.history.length,
+  () => liveHistory.value.length,
   length => {
+    // 删掉的若是当前这张,index 会越界 → 钳回最后一张;新图落盘则跟到最新
     index.value = length ? length - 1 : 0;
   },
 );
@@ -128,8 +134,10 @@ const record = computed(() => getGenRecord(key.value));
 const phase = computed<Phase>(() => {
   const running = record.value;
   if (running) return running.phase;
-  if (props.history.length) return 'ready';
-  if (props.staleEntry) return 'stale';
+  // 用存活口径:图被图库删光后该退回 pending 给出「生成图片」入口,
+  // 而不是顶着 ready 显示一张破图(那样连重新生成都点不了)。
+  if (liveHistory.value.length) return 'ready';
+  if (liveStale.value) return 'stale';
   return 'pending';
 });
 
@@ -138,24 +146,17 @@ const queueAhead = computed(() => record.value?.queueAhead ?? null);
 /** 限流退避中(NAI 自动重试);非 null 时状态文案优先报它。 */
 const retryInfo = computed(() => record.value?.retry ?? null);
 
-const comfyActive = computed(() => settings.defaultBackend === 'comfyui');
 const naiActive = computed(() => settings.defaultBackend === 'nai');
 const latentActive = computed(() => settings.defaultBackend === 'latent');
-// ComfyUI 门槛按模式分:custom 要有工作流 JSON;simple 要模型/VAE/CLIP 选齐
- // (与出图组装同一口径 validateSimpleConfig,避免「卡片能点、出图才报错」)。
-const configured = computed(() => {
-  if (comfyActive.value) {
-    if (!settings.comfyui.url.trim()) return false;
-    const preset = activeComfyPreset();
-    return preset.mode === 'simple' ? !validateSimpleConfig(preset.simple) : !!preset.workflow.trim();
-  }
-  if (naiActive.value) return !!settings.nai.url.trim() && !!settings.nai.key.trim();
-  if (latentActive.value) return !!settings.latent.url.trim() && !!settings.latent.key.trim();
-  return false;
-});
+/**
+ * 后端是否已配齐(决定给「生成图片」按钮还是配置引导)。
+ * 判据在 generate.ts 的 backendStatus 里,与真正出图、与公开接口同源——
+ * 曾经这里自己判一套,改了 ComfyUI 简易模式的校验就得两处同步改。
+ */
+const configured = computed(() => backendStatus().configured);
 
-const current = computed(() => props.history[index.value] ?? null);
-/** 提示词全文:复制、灯箱、展开区共用。口径与图库同源(formatPromptText),画师串名按「名字:tags」前缀盖在首行(仅展示)。 */
+const current = computed(() => liveHistory.value[index.value] ?? null);
+/** 提示词全文:复制、灯箱、展开区共用。口径与图库同源(st/imageTagRegex.ts)。 */
 const promptText = computed(() =>
   formatPromptText({
     tag: props.prompt,
@@ -169,19 +170,40 @@ const promptText = computed(() =>
  * 当前展示的结果。**刻意不看运行态**:生成失败/重绘中都该继续显示上一张图,
  * 否则「有图 → 点重绘 → 失败」会让图凭空消失(只剩一行报错),看着像把图弄丢了。
  */
-const shownEntry = computed(() => (props.history.length ? current.value : props.staleEntry));
+const shownEntry = computed(() => (liveHistory.value.length ? current.value : liveStale.value));
 const imageSrc = computed(() => shownEntry.value?.path ?? '');
+
+/**
+ * `<img>` 加载失败:确认确实是 404 再落册,让上面那些 live* 把它摘掉。
+ *
+ * 不一 error 就当删除——error 分不清「文件没了」和「网断了」(详见 missingImages.ts)。
+ * 确认失败时什么都不做:破图占位留着,下次重挂 <img> 会自然重试。
+ */
+async function onImageError(): Promise<void> {
+  const path = imageSrc.value;
+  if (!path) return;
+  await confirmImageMissing(path);
+}
 const downloadFileName = (entry: BbiImageEntry): string => {
   const context = getContext();
   const characterName = context?.chat[props.messageId]?.name || context?.name2 || '';
   return imageDownloadFileName(entry.path, characterName, entry.generationId);
 };
 /** 展示的图是否属于旧提示词(有旧结果但当前提示词还没出过图)。 */
-const isStale = computed(() => !props.history.length && !!props.staleEntry);
+const isStale = computed(() => !liveHistory.value.length && !!liveStale.value);
 /** 生成中/排队中仍显示上一张(若有),避免卡片塌空;骨架叠在其上。 */
 const busy = computed(() => phase.value === 'generating' || phase.value === 'queued');
-/** 历史翻页:多于一张且不在生成中才给。 */
-const pageable = computed(() => props.history.length > 1 && !busy.value);
+/** 历史翻页:多于一张且不在生成中才给(按存活张数,破指针不占格)。 */
+const pageable = computed(() => liveHistory.value.length > 1 && !busy.value);
+
+/** 有过结果、但文件已被删光(通常是在图库里删的)。据此给一句说明,免得像凭空丢图。 */
+const filesGone = computed(
+  () =>
+    !busy.value &&
+    !liveHistory.value.length &&
+    !liveStale.value &&
+    !!(props.history.length || props.staleEntry),
+);
 
 const statusLabel = computed(() => {
   // 退避优先:请求已经失败过、正在等重试,不能继续报「生成中」骗人
@@ -198,21 +220,12 @@ const barText = computed(() => {
   if (busy.value) return statusLabel.value;
   if (phase.value === 'error') return error.value || '生成失败';
   if (shownEntry.value) return props.prompt || props.nl || '图片';
+  if (filesGone.value) return '图片文件已删除';
   return '待生成';
 });
 
-/** 无图且后端未就绪时,占位区中央的配置引导。 */
-const pendingHint = computed(() => {
-  if (!comfyActive.value && !naiActive.value && !latentActive.value)
-    return '出图后端未选择,请到柏宝绘「渠道」页选择出图渠道';
-  if (latentActive.value) {
-    if (!settings.latent.url.trim()) return '未配置 Latent,请到柏宝绘「渠道」页填写接口地址';
-    return settings.latent.key.trim() ? '' : '未配置 Latent,请到柏宝绘「渠道」页填写 API Key';
-  }
-  return naiActive.value
-    ? '未配置 NAI,请到柏宝绘「渠道」页填写 API Key'
-    : '未配置 ComfyUI,请到柏宝绘「渠道」页填写工作流';
-});
+/** 无图且后端未就绪时,占位区中央的配置引导。判据与措辞同源 backendStatus.reason(覆盖 comfy/nai/latent 全渠道)。 */
+const pendingHint = computed(() => backendStatus().reason);
 
 async function generate(): Promise<void> {
   if (busy.value || !configured.value) return;
@@ -237,38 +250,20 @@ async function generate(): Promise<void> {
     size: props.size,
   };
   // NAI 系(latent 与 nai 同为阻塞式 POST、无服务端队列)需要闸门排队 → 先显示「排队中」;
-  // ComfyUI 有服务端队列,直接进 generating。
+  // ComfyUI 有服务端队列,直接进 generating。闸门本身在 generateImage 里(见 generate.ts),
+  // 这里的阶段只负责让文案在等槽期间说「排队中」。
   const { signal, token } = beginGen(
     slot,
     currentHash,
     naiActive.value || latentActive.value ? 'queued' : 'generating',
   );
-  let release: (() => void) | null = null;
   // 历史记录 id:在 seed 确定后才登记(见下),故这里先置空,catch 里据此判断要不要收尾。
   let historyId: number | null = null;
 
   try {
-    if (naiActive.value || latentActive.value) {
-      // latent 与 NAI 共用同一闸门与节奏(acquireNaiSlot 是通用信号量):站点同样是
-      // 阻塞式 POST,409=在途任务超上限,客户端闸门直接堵住这一面。
-      release = await acquireNaiSlot(signal);
-      setGenPhase(slot, token, 'generating');
-    }
-    // 发起时就确定种子并显式传入(面板种子 > 0 时用固定值;否则随机),
-    // 随结果落盘进 extra(entry.seed),历史翻页可查/可复用。
-    // 种子:naiRandomSeed 产出 32 位无符号(NAI 协议域);Latent 站点原生域更宽
-    // (0–2^53-1,settings.latent.test.ts 已锁 2^32 可用),用户显式大值照常透传,
-    // 随机兜底取 32 位子集无害。不能用 comfy 的 randomSeed(超站点域)。
-    // NOTE naiRandomSeed 的注释同样过时,见 backends/nai.ts;两处一起改才改这里。
-    const seed = latentActive.value
-      ? settings.latent.seed > 0
-        ? settings.latent.seed
-        : naiRandomSeed()
-      : naiActive.value
-        ? settings.nai.seed > 0
-          ? settings.nai.seed
-          : naiRandomSeed()
-        : randomSeed();
+    // 发起时就确定种子(面板种子 > 0 时用固定值;否则随机),随结果落盘进 extra
+    // (entry.seed),历史翻页可查/可复用。口径在 generate.ts,与公开接口同源。
+    const seed = decideSeed(settings.defaultBackend);
     // 历史埋点:seed 已定、请求将发,此刻登记。图片本身不进 store(dataURL 会爆内存,
     // 且图随后就落盘进 ST 了)——只留元信息 + 楼层坐标,够回溯「这张图是怎么来的」。
     historyId = safeHistory(() =>
@@ -289,54 +284,13 @@ async function generate(): Promise<void> {
         seq: job.seq,
       }),
     );
-    // Latent 渠道:渠道级负面(latentAsNai 映射)+ 本画面 <negative> 合并;
-    // 合并用 naiUndesiredContent 取值,渠道留空时回落 Anima 推荐默认
-    // (latentDefaultUndesired,启用画师串时自动剔掉 artist name),不被画面负面顶掉。
-    // 无本地长度上限(站长确认站点支持超 2000 字符)。
-    // NAI 渠道维持既有行为(只发渠道级负面)。两条 NAI 系分支共用同一调用,退避进度一致可见。
-    const latentView = latentActive.value ? latentAsNai(settings.latent) : null;
-    if (latentView) {
-      const merged = [
-        naiUndesiredContent(latentView, latentDefaultUndesired(latentView)),
-        job.negative.trim(),
-      ].filter(Boolean);
-      latentView.undesiredContent = merged.join(', ');
-    }
-    const naiView = latentView ?? (naiActive.value ? settings.nai : null);
-    const result = naiView
-      ? await generateNaiImage(
-          naiView,
-          { prompt: job.prompt, nl: job.nl, characters: job.characters, seed, size: job.size },
-          signal,
-          {
-            // latent 的 429 = 周配额耗尽(站点 openapi:quota_exhausted),退避无意义不重试;
-            // NAI 官方 429 = 限流,照旧退避。尺寸:站点原生档(920×1536 等)不是 NAI 的
-            // 64 倍数,豁免协议校验(格式/范围检查仍生效)。
-            noRetry429: latentActive.value,
-            allowNon64Size: latentActive.value,
-            // 站长确认:站点不支持自然语言必须用 tag——纯 tag 载荷(去 nl/v4_prompt)
-            latentTagOnly: latentActive.value,
-            // 站点原生面收分辨率枚举(portrait/landscape)而非宽高数字对
-            latentResolution:
-              latentActive.value ? (job.size === 'landscape' ? 'landscape' : 'portrait') : undefined,
-            onRetry: info =>
-              setGenRetry(slot, token, { attempt: info.attempt, max: info.max }),
-          },
-        )
-      : await generateComfyImage(
-          effectiveComfyConn(),
-          {
-            prompt: job.prompt,
-            nl: job.nl,
-            negative_prompt: job.negative,
-            seed,
-            size: job.size,
-          },
-          signal,
-          { onQueue: ahead => setQueueAhead(slot, token, ahead) },
-        );
-    // 退避文案到此为止:图已拿到,落盘还要一会儿,不该继续显示「稍后重试」
-    setGenRetry(slot, token, null);
+    // 闸门、后端分派都在 generateImage 里(公开接口走同一条路,见 generate.ts);
+    // 本组件只把进度回调接到自己的槽位运行态上。
+    const { result } = await generateImage({ ...job, seed }, signal, {
+      onStart: () => setGenPhase(slot, token, 'generating'),
+      onQueue: ahead => setQueueAhead(slot, token, ahead),
+      onRetry: retry => setGenRetry(slot, token, retry),
+    });
     // 图已经拿到手:此时若发现本任务已被取代(取消后重绘 / reconcile),不要落盘,
     // 否则会把旧提示词的结果写进 extra,并触发一次多余的重水合打断新任务。
     if (!isCurrentGen(slot, token)) {
@@ -364,8 +318,6 @@ async function generate(): Promise<void> {
     } else {
       failGen(slot, token, e instanceof Error ? e.message : String(e));
     }
-  } finally {
-    release?.();
   }
 }
 
@@ -408,7 +360,8 @@ function openEditor(): void {
       characters: props.characters.map(character => ({ ...character })),
       size: props.size,
     },
-    historyCount: props.history.length,
+    // 存活口径:文案要许诺「改回提示词即可找回」,被图库删掉的图找不回来,不能算进去
+    historyCount: liveHistory.value.length,
     configured: configured.value,
   });
 }
@@ -498,8 +451,8 @@ onMounted(() => {
       <span class="bbi-figure__bar-text" :data-error="phase === 'error' && !busy ? '1' : ''">
         {{ barText }}
       </span>
-      <span v-if="history.length > 1 && !busy" class="bbi-figure__bar-count">
-        {{ history.length }} 张
+      <span v-if="liveHistory.length > 1 && !busy" class="bbi-figure__bar-count">
+        {{ liveHistory.length }} 张
       </span>
       <Icon name="chevron" :size="13" class="bbi-figure__bar-chevron" />
     </button>
@@ -515,6 +468,7 @@ onMounted(() => {
         :src="imageSrc"
         alt="生图结果"
         @click="openImage"
+        @error="onImageError"
       />
 
       <!-- 无图时的生成中:骨架微光扫过占位底 -->
@@ -614,11 +568,11 @@ onMounted(() => {
       <!-- 翻页器:叠在图片右下角的胶囊 -->
       <span v-if="pageable" class="bbi-figure__pager">
         <button class="bbi-figure__pager-btn" type="button" :disabled="index <= 0" @click="index--">◀</button>
-        <span class="bbi-figure__pager-count">{{ index + 1 }}/{{ history.length }}</span>
+        <span class="bbi-figure__pager-count">{{ index + 1 }}/{{ liveHistory.length }}</span>
         <button
           class="bbi-figure__pager-btn"
           type="button"
-          :disabled="index >= history.length - 1"
+          :disabled="index >= liveHistory.length - 1"
           @click="index++"
         >
           ▶
@@ -635,6 +589,10 @@ onMounted(() => {
     </p>
     <p v-else-if="isStale && !busy" class="bbi-figure__status bbi-figure__status--warn">
       提示词已修改,上图由旧提示词生成;点右上角重绘按新提示词出图
+    </p>
+    <!-- 文件被删(通常是在图库里删的):记录还在但图没了,明说一句免得像凭空丢图 -->
+    <p v-else-if="filesGone" class="bbi-figure__status bbi-figure__status--warn">
+      图片文件已删除(在图库里删掉了);可点上方重新生成
     </p>
 
     <!-- 提示词面板:悬浮 文本按钮唤起,复制按钮跟着面板走 -->

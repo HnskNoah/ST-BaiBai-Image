@@ -124,6 +124,46 @@ export async function listUserImages(
   return parseJsonArray(text).filter((name): name is string => typeof name === 'string');
 }
 
+/**
+ * 探一张图的存在性与体积:HEAD 静态路由取 Content-Length,不下载图片本身。
+ *
+ * 为什么非 HEAD 不可:`/api/images/list` **只返回文件名**,既无 size 也无 mtime
+ * (服务端 util.js getImages 只 map 出 dirent.name),而图库要显示体积、卡片要判断
+ * 「这张图是不是真没了」,都只能逐张问。实测 HEAD 走 users.js 的 createRouteHandler →
+ * res.sendFile,响应 1~2ms 且无 body,比列表接口改造便宜得多。
+ *
+ * 走裸 fetch 不带 headers——静态路由不需要鉴权头(与 backends/vibeStore.ts loadVibeData 同款)。
+ *
+ * 返回值刻意三分:
+ * - `{ exists: true, size }`   文件在,size 为字节数(缺 Content-Length 时为 null);
+ * - `{ exists: false }`        服务端明确说没有(404);
+ * - `null`                     **分不清**(网络错误/超时/5xx)。
+ *
+ * 第三态是关键:卡片凭它决定要不要把图标记成「已删除」。把一次掉线当成删除,
+ * 会让用户网一抖就看见满屏「文件已删除」。
+ */
+export async function probeUserImage(
+  path: string,
+  timeoutMs = 8000,
+): Promise<{ exists: true; size: number | null } | { exists: false } | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(path, { method: 'HEAD', signal: controller.signal });
+    if (response.status === 404) return { exists: false };
+    if (!response.ok) return null;
+    // 必须先判空再转数字:header 缺失时 get() 返回 null,而 `Number(null)` 是 **0** 不是 NaN,
+    // 直接转会把「不知道多大」谎报成「0 字节」,分组体积凭空少算一张。
+    const raw = response.headers.get('content-length');
+    const length = raw === null || raw.trim() === '' ? NaN : Number(raw);
+    return { exists: true, size: Number.isFinite(length) && length >= 0 ? length : null };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 删除 user/images 下的图片。返回 false 表示文件本就不存在(无需清理)。 */
 export async function deleteUserImage(path: string): Promise<boolean> {
   const { ok, status, text } = await postImage('/api/images/delete', { path });
