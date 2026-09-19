@@ -768,6 +768,9 @@ describe('auto tag prompt', () => {
       expect(text).toContain('归属与配对全部交给 nl');
       expect(text).toContain('No other people or duplicate identities are present');
       expect(text).toContain('character name (copyright name)');
+      // 选段门槛:出现人物时必须有女性,纯男性画面不选;无人物风景不受限
+      expect(text).toContain('画面里出现人物时，必须至少有一位女性角色');
+      expect(text).toContain('无人物画面（风景、空镜）不受此限');
       // Anima 口径:画师 tag 由用户画师串附加,AI 禁写
       expect(text).toContain('不得写任何画师/画风 tag');
       // fandom 身份 tag 的位置口径三份文档必须一致:任务规则不得再与规范/思维链的
