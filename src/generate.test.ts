@@ -213,6 +213,9 @@ describe('latent 渠道', () => {
 
   it('把站点原生面的差异交给 generateNaiImage(官方 NAI 路径不带这些)', async () => {
     latentReady();
+    // 站点不收 v4_prompt/characterPrompts:报 supportsCharacters=true 会让
+    // 公开接口的 charactersApplied 说谎(载荷里其实一个 characters 都没有)
+    expect(backendStatus()).toMatchObject({ backend: 'latent', supportsCharacters: false });
     await generateImage({ prompt: 'x', seed: 3, size: 'landscape' });
     expect(vi.mocked(generateNaiImage).mock.calls[0][3]).toMatchObject({
       noRetry429: true,

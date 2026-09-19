@@ -131,12 +131,15 @@ export function backendStatus(): BackendStatus {
   }
 
   if (backend === 'latent') {
-    // Latent 渠道(站点的 NovelAI 兼容面):判据同 NAI(url + key)。模型名按兼容层
-    // 文档选 NAI 名,故 characters 支持与否沿用同一谓词,不支持时仍由 buildNaiParameters 兜底。
+    // Latent 渠道(站点的 NovelAI 兼容面):判据同 NAI(url + key)。
+    // supportsCharacters **恒 false**:站点不收 v4_prompt/characterPrompts 这套双层结构
+    // (characterPromptsOn 对 latent 恒 false,发送侧 latentFlatPrompt 一律剥掉),人物外貌
+    // 是 AI 写进主 tag 串的。报 true 会让公开接口的 charactersApplied 说谎——第三方据此
+    // 以为多角色提示生效了,实际载荷里一个 characters 都没有。
     const base = {
       backend,
       model: settings.latent.model,
-      supportsCharacters: naiSupportsCharacterPrompts(settings.latent.model),
+      supportsCharacters: false,
     };
     if (!settings.latent.url.trim())
       return { ...base, configured: false, reason: '未填写 Latent 渠道服务地址' };
