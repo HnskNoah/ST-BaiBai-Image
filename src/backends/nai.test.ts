@@ -345,10 +345,10 @@ describe('NAI V5 support', () => {
     expect(fallback.sampler).toBe('k_euler_ancestral');
   });
 
-  it('latentTagOnly:strips v4_prompt structures and drops nl from the prompt', async () => {
-    // 站长确认:站点不支持自然语言,必须用 tag。generateNaiImage 的降级块剥掉
-    // v4_prompt/v4_negative_prompt/characterPrompts 并重算纯 tag prompt。
-    // 这里直接对降级后的参数对象断言——通过 mock fetch 拦截 body。
+  it('latentFlatPrompt:剥掉 v4_prompt 系结构,nl 照拼进扁平串', async () => {
+    // 站点走 NAI 兼容面:不收 v4_prompt/characterPrompts 双层结构,但吃自然语言
+    // (底层 Anima 系)。generateNaiImage 的扁平块剥掉三个结构字段,并把 tag 与 nl
+    // 拼成同一个串——parameters.prompt 与顶层 input 必须同源。
     const settings = nai({
       model: 'nai-diffusion-4-5-full',
       key: 'k',
@@ -366,7 +366,7 @@ describe('NAI V5 support', () => {
         settings,
         { prompt: '1girl, smile', nl: 'A girl smiling by the window.', characters: [], seed: 1 },
         undefined,
-        { latentTagOnly: true, latentResolution: 'portrait' },
+        { latentFlatPrompt: true, latentResolution: 'portrait' },
       ).catch(() => undefined); // 抛出即可,我们只要拦截到的 body
     } finally {
       vi.stubGlobal('fetch', realFetch);
@@ -380,16 +380,18 @@ describe('NAI V5 support', () => {
     expect(params.v4_prompt).toBeUndefined();
     expect(params.v4_negative_prompt).toBeUndefined();
     expect(params.characterPrompts).toBeUndefined();
-    // 纯 tag:nl 句子不进 prompt 串;质量词走 Latent 分册(Anima 口径)且前置到串首
-    expect(params.prompt).toBe('masterpiece, best quality, score_7, safe, 1girl, smile');
-    // 顶层 input 与 parameters.prompt 同源(纯 tag):nl 不经顶层字段绕过站点口径
+    // 扁平串:质量词走 Latent 分册(Anima 口径)前置到串首,tag 后接 nl 句子
+    expect(params.prompt).toBe(
+      'masterpiece, best quality, score_7, 1girl, smile. A girl smiling by the window.',
+    );
+    // 顶层 input 与 parameters.prompt 同源:同一个扁平串,不经顶层字段绕过站点口径
     expect(typed0.input).toBe(params.prompt);
     expect(params.resolution).toBe('portrait');
     expect(params.width).toBeUndefined();
     expect(params.height).toBeUndefined();
   });
 
-  it('latentTagOnly:用户渠道级质量词优先于 Anima 默认,画师串按用户原样拼在质量词后', () => {
+  it('latentFlatPrompt:用户渠道级质量词优先于 Anima 默认,画师串按用户原样拼在质量词后', () => {
     const settings = nai({
       model: 'nai-diffusion-4-5-full',
       qualityTags: 'my quality words',

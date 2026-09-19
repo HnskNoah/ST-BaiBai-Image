@@ -283,9 +283,7 @@ describe('Latent 渠道设置', () => {
     // 绑定清空后:渠道级(留空)→ Anima 分册默认;画师串启用中故无 artist name
     settings.latent.artistPresets[0].quality = '';
     settings.latent.artistPresets[0].negative = '';
-    expect(naiQualityTags(view, LATENT_DEFAULT_QUALITY_TAGS)).toBe(
-      'masterpiece, best quality, score_7, safe',
-    );
+    expect(naiQualityTags(view, LATENT_DEFAULT_QUALITY_TAGS)).toBe('masterpiece, best quality, score_7');
     const negative = naiUndesiredContent(view, latentDefaultUndesired(view));
     expect(negative).toContain('score_1');
     expect(negative).not.toContain('artist name');

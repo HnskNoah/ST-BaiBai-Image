@@ -325,9 +325,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           // NAI 官方 4.5/V5 的 Character Prompts 协议要求 new 建档必须带 nl 外貌描述:
           // 三条件缺一不可——渠道是 NAI、模型支持 CP(与 newCharacterNlRule 下发判据
           // 同源,NAI3 等旧模型规范不要求 nl 就不能拦)、且确有缺 nl 的建档。
-          // latent 不在此列:站长确认站点不支持自然语言(见 prompt.ts characterPromptsOn
-          // 注释),nl 在其档案中只是可选记录,不强制——否则每条建档都被这里拒绝,
-          // 自动 tag 必然失败。
+          // latent 不在此列:它不收 v4_prompt 双层结构(见 prompt.ts characterPromptsOn
+          // 注释),档案 nl 只是给 nl 段供素材的可选记录,协议不强制——若在这里拦,
+          // 每条建档都会被拒,自动 tag 必然失败。
           if (
             settings.defaultBackend === 'nai' &&
             naiSupportsCharacterPrompts(settings.nai.model) &&

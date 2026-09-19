@@ -345,8 +345,8 @@ describe('auto tag prompt', () => {
         { backend: 'nai', model: 'nai-diffusion-4-full', want: 'NAI-CHECKLIST' },
         { backend: 'nai', model: 'nai-diffusion-4-5-full', want: 'NAIV5-CHECKLIST' },
         { backend: 'nai', model: 'nai-diffusion-5-full', want: 'NAIV5-CHECKLIST' },
-        // latent:站长确认站点不支持自然语言必须用 tag——恒走单串口径,不看
-        // settings.latent.model(4.5/V5 名也不例外)。这里的 latent 行全部没填
+        // latent:恒走单串口径(站点不收 v4_prompt/characterPrompts 双层;nl 拼在同一串里),
+        // 不看 settings.latent.model(4.5/V5 名也不例外)。这里的 latent 行全部没填
         // latentThinking,恰好同时锁住回落层:留空 → 旧 naiThinking 键仍生效。
         { backend: 'latent', model: 'nai-diffusion-3', want: 'NAI-CHECKLIST' },
         { backend: 'latent', model: 'nai-diffusion-4-5-full', want: 'NAI-CHECKLIST' },
@@ -739,7 +739,7 @@ describe('auto tag prompt', () => {
   // latent:站点不支持自然语言,必须用 tag(站长确认)——恒走单串口径
   // (latentSpec → 旧 naiSpec 存量值 → 内置 DEFAULT_NAI_SPEC,见 Latent 键优先级用例)
   // (邻接绑定多人规则),不拿 V5 判据,不要求 Base+characters 双层结构。
-  it('gives latent the tag-only NAI doctrine with adjacency binding', async () => {
+  it('gives latent the single-string doctrine with nl-owned binding, nl included', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
@@ -757,12 +757,19 @@ describe('auto tag prompt', () => {
       const messages = await buildAutoTagMessages(context(), 1, options, null);
       const text = messages.map(m => m.content).join('\n');
 
-      // 单串 naiSpec 判据:多人邻接绑定规则与其示例在,身份 tag 转义口径在
-      expect(text).toContain('white dress on green hair girl');
+      // 单串 naiSpec 判据:归属改由 nl 承担——tag 区把复合指称列为禁令,计数锁定与
+      // 位置词、身份 tag 转义口径都在
+      // 禁令是描述式的(不原样引用旧写法——给语言模型的负面示例会变成示范污染),
+      // 所以旧形态整条消失,可以直接用 not.toContain 干净锁定
+      expect(text).toContain('不要把服装/体型/动作词用 on 接到别人的外貌短语后面造复合指称');
+      expect(text).not.toContain('on green hair girl');
+      expect(text).not.toContain('petite on silver hair girl');
+      expect(text).not.toContain('对 Anima 系模型同样有效');
+      expect(text).toContain('归属与配对全部交给 nl');
+      expect(text).toContain('No other people or duplicate identities are present');
       expect(text).toContain('character name (copyright name)');
-      // Anima 口径:画师 tag 由用户画师串附加,AI 禁写;绑定写法对 Anima 有效的背书在
+      // Anima 口径:画师 tag 由用户画师串附加,AI 禁写
       expect(text).toContain('不得写任何画师/画风 tag');
-      expect(text).toContain('对 Anima 系模型同样有效');
       // fandom 身份 tag 的位置口径三份文档必须一致:任务规则不得再与规范/思维链的
       // 「人数/构图之后」打架(旧文案「照抄在 tag 串首位」是自相矛盾指令)
       expect(text).toContain('照抄在人数/构图之后、普通外貌之前');
@@ -775,7 +782,20 @@ describe('auto tag prompt', () => {
       expect(text).not.toContain('%negative_prompt%');
       // 规范(Latent 终端)的禁写条款已改条件式,不再与任务规则打架
       expect(text).toContain('任务规则要求输出 negative 键时');
-      // V5 双层结构判据不得出现(nl 要求不下发)
+      // nl 已开(站点吃自然语言):任务规则教 tag+nl 两种写法,样例 JSON 带 nl 键;
+      // 规范正文的 nl 段与身份 tag 转义口径、审美词禁令都要下发到模型
+      expect(text).toContain('tag 与 nl 是同一画面的两种写法');
+      expect(text).toContain('"nl"');
+      expect(text).toContain('括号必须转义');
+      // 转义指导必须原样到达模型:模板串里单反斜杠的 \( 会被烹饪成 (,
+      // 所以「实际形态」与 JSON 双反斜杠两处都要断言(0.1.16 踩过这个坑)
+      expect(text).toContain('实际形态为 character name \\(copyright name\\)');
+      expect(text).not.toContain('实际形态为 character name (copyright name)');
+      expect(text).toContain('very aesthetic');
+      // 分级词归 AI:渠道级默认词里的 safe 已去掉,规范要求 AI 按每张画面写分级词
+      expect(text).toContain('分级词由你写');
+      expect(text).toContain('safe / sensitive / nsfw / explicit');
+      // V5 双层结构判据不得出现(站点不收 v4_prompt/characters)
       expect(text).not.toContain('Write exactly one shot distance');
       expect(text).not.toContain('Every image must include Base tag');
       expect(text).not.toContain('NAI V5 profile requirement');
@@ -836,12 +856,13 @@ describe('auto tag prompt', () => {
       const text = messages.map(m => m.content).join('\n');
 
       expect(text).toContain('多人画面（两人及以上）额外规则');
-      expect(text).toContain('white dress on green hair girl');
-      expect(text).toContain('petite on silver hair girl');
-      expect(text).toContain('black hair girl smiling, silver hair girl looking at another');
-      expect(text).toContain('dark trousers on black hair boy');
+      // 单串口径的多人规则与示例(与 latent 共用同一份常量:归属交给 nl,tag 只放袋装词)
+      expect(text).toContain('tag 区只放袋装词');
+      expect(text).toContain('归属与配对全部交给 nl');
+      expect(text).toContain('dark trousers');
       // 示例是规则的靠山:只有条文没有示例时模型照抄不到写法。
-      expect(text).toContain('多人 tag 示例');
+      expect(text).toContain('多人示例（tag 与 nl 是同一画面');
+      expect(text).toContain('No other people or duplicate identities are present');
       // NAI 不吃 ComfyUI 的权重括号转义,那条不该跟着复制过来。
       expect(text).not.toContain('ComfyUI 会把未转义圆括号当作权重语法');
       // 排序统一到「构图紧跟人数」口径:与 Comfy 一致,也与多人规则原文一致;

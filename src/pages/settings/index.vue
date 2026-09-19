@@ -153,7 +153,7 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
   {
     key: 'latentSpec',
     label: 'Latent \u89c4\u8303',
-    hint: 'Latent 渠道(第三方站点兼容面)拼进自动 tag 请求的 tag 书写规范。站点不支持自然语言,恒走单串 tag 口径(区分性称谓邻接绑定),与 NAI 那份 V5 规范互不相干。留空回落旧 4.5 键 naiSpec(更旧版本的存量自定义,弹窗里已预填生效值)再回落内置默认;改这份不影响 NAI 渠道。',
+    hint: 'Latent 渠道(第三方站点兼容面)拼进自动 tag 请求的 tag 与 nl 书写规范。站点收扁平单串(tag + nl 拼一段,区分性称谓邻接绑定),不收 NAI 的 v4_prompt 双层结构,与那份 V5 规范互不相干。留空回落旧 4.5 键 naiSpec(更旧版本的存量自定义,弹窗里已预填生效值)再回落内置默认;改这份不影响 NAI 渠道。',
     fallback: () => settings.autoTag.prompts.naiSpec.trim() || DEFAULT_NAI_SPEC,
     builtin: DEFAULT_NAI_SPEC,
     macros: [],

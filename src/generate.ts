@@ -198,8 +198,8 @@ export async function generateImage(
 
   // Latent 渠道:完全复用 NAI 机器(latentAsNai 映射后走 generateNaiImage),站点原生面
   // 的差异全在这一段兜住(别搬回调用方——卡片与公开接口共用本函数)。
-  // 负面 = 渠道级(latentAsNai 映射的 negativePrompt)留空时回落 Anima 推荐默认
-  // (latentDefaultUndesired,启用画师串时自动剔掉 artist name),再追加本画面 <negative>
+  // 负面 = naiUndesiredContent 取值(画师串绑定词 > 渠道级 negativePrompt > Anima 推荐默认
+  // latentDefaultUndesired,启用画师串时自动剔掉 artist name),再追加本画面 <negative>
   // ——是追加不是顶掉。无本地长度上限(站长确认站点支持超 2000 字符)。
   const latentView = isLatent ? latentAsNai(settings.latent) : null;
   if (latentView) {
@@ -240,8 +240,8 @@ export async function generateImage(
               noRetry429: true,
               // 站点原生档尺寸(920×1536 等)不是 64 的倍数,豁免协议校验(格式/范围检查仍生效)。
               allowNon64Size: true,
-              // 站长确认站点不支持自然语言,必须用 tag —— 纯 tag 载荷(去 nl/v4_prompt)。
-              latentTagOnly: true,
+              // 扁平 prompt 串:tag + nl 拼一段,剥掉 v4_prompt 系双层结构。
+              latentFlatPrompt: true,
               // 站点原生面收分辨率枚举(portrait/landscape)而非宽高数字对。
               latentResolution: size === 'landscape' ? 'landscape' : 'portrait',
               onRetry: info => progress.onRetry?.({ attempt: info.attempt, max: info.max }),

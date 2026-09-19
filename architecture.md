@@ -243,7 +243,7 @@ runForFloor(floor, opts)
 Latent 对是 `latentSpec` / `latentThinking`(设置页「Latent 规范/思维链」,2026-09 新增——
 此前 latent 实际在用的提示词没有任何编辑入口)。另有 `naiSpec` / `naiThinking` 是 4.5 以下的
 单串 tag 版本(含多人邻接绑定口径),NAI 渠道:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 →
-那两份对 NAI 走不到;**Latent 渠道恒走单串口径**(站长确认站点不支持自然语言必须用 tag,
+那两份对 NAI 走不到;**Latent 渠道恒走单串口径**(站点收扁平串:tag 与 nl 拼一段,
 characterPromptsOn 对 latent 恒 false)——取值链 `latentSpec → naiSpec(旧键,存量自定义不失效)
 → DEFAULT_NAI_SPEC/THINKING`,分流按 defaultBackend==='latent' 精确判定,NAI 渠道
 (含遗留单串分支)不读 latent 键。别按键名猜归属。
@@ -379,18 +379,22 @@ tag 原文被 DOMPurify 剥壳后当正文显示出来(用户直接看见一串 
   测试连接换 `testLatentConnection`:兼容面没有订阅端点(404),Key 从来验不了——消息如实报
   「地址可达;参数域已同步:…(Key 未验证,以实际生图为准)」;原生 API 无 CORS,浏览器侧
   无法用 /api/v1/* 验 Key。
-  **站长确认:站点不支持自然语言,必须用 tag**(SD checkpoint 生态,danbooru 短 tag)。
-  因此副 API 的 new 建档验收(强制 nl)只对 NAI 渠道生效,latent 建档不要求 nl
-  (档案 nl 字段保持可选记录,NAI 建的带 nl 档案切到 latent 时 nl 不发送但档案无损)。
+  **站点吃自然语言**(底层 Anima 系,danbooru 短 tag 与英文 NL 混写皆可;Qwen 编码器)。
+  但副 API 的 new 建档验收(强制 nl)仍只对 NAI 渠道生效:latent 的档案 nl 只是 nl 段素材,
+  协议不强制(NAI 建的带 nl 档案切到 latent 时照常随扁平串下发)。
   恒走单串口径(latentSpec/latentThinking 可编辑,回落旧 naiSpec/naiThinking 再回落内置;
-  **单串 tag + 区分性称谓邻接绑定**,非 V5 双层结构;内置默认已按 Anima 口径修订——
-  画师 tag 由用户画师串附加、**AI 禁写**(规范条款 + 思维链自查),邻接绑定写法对
-  Anima 的 Qwen 编码器同样有效);
-  发送侧带 `latentTagOnly` 降级为纯 tag 载荷——nl 不拼 prompt、v4_prompt/v4_negative_prompt/
+  **扁平串:tag + nl 拼一段**,非 V5 双层结构;内置默认已按 Anima 口径修订——
+  画师 tag 由用户画师串附加、**AI 禁写**(规范条款 + 思维链自查),身份 tag 圆括号须转义;
+  **多人归属由 nl 承担**(tag 区只裸列特征,不造 "X on Y girl" 复合指称、不重复 "X hair girl"——
+  那是 CLIP 系手法;nl 逐人一句区分性称谓 + 位置词,末句计数锁定句 `No other people or duplicate
+  identities are present.`,negative 再写 extra people, duplicate character 兜底);
+  发送侧带 `latentFlatPrompt`——nl 照拼进扁平串、v4_prompt/v4_negative_prompt/
   characterPrompts 整个剥掉(characters[].tag 的内容副 API 已按绑定写法写进主串,丢弃的是
   冗余副本),prompt 顶层与 input 同源。**默认词分册**(nai.ts 的 LATENT_DEFAULT_*):
-  质量词留空回落 `masterpiece, best quality, score_7, safe` 且**前置到串首**
-  (fullPositivePrompt 的 qualityFirst,Anima 官方推荐;NAI 分册是拼尾),负面留空回落
+  质量词留空回落 `masterpiece, best quality, score_7` 且**前置到串首**
+  (fullPositivePrompt 的 qualityFirst,Anima 官方推荐;NAI 分册是拼尾);官方前缀里的
+  `safe` **有意去掉**——分级词随画面内容走,渠道级恒定 safe 会压住成人画面,
+  分级改由 **AI 按每张画面写**(规范条款 + 思维链自查;同楼 SFW/成人混排时各写各的)。负面留空回落
   Anima 推荐串且**启用画师串时自动剔掉 artist name**(latentDefaultUndesired——该词防
   署名水印,会连用户的画风一起压);NAI 特训词(very aesthetic/location)对 Anima 无效,
   是分册存在的理由。
@@ -898,7 +902,7 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe / 智绘姬提示词预设导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
-| Latent 渠道(第三方站 NAI 兼容面精简适配) | state/settings.ts 的 `LatentSettings` + `latentAsNai`(面板 LatentPanel.vue;生成复用 generateNaiImage,画师串库共用、激活项分渠道) |
+| Latent 渠道(第三方站 NAI 兼容面精简适配) | state/settings.ts 的 `LatentSettings` + `latentAsNai`(面板 LatentPanel.vue;生成复用 generateNaiImage,画师串库独立分册,多人归属由 nl 承担) |
 | 画师串显示名盖章(<artist> 展示元数据,不进提示词) | st/imageTagRegex.ts 的 `ImageTagContent.artist` + settings.activeNaiArtistName()(盖章位 runner/promptEditor;展示在 Card.vue promptText) |
 | NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
 | 画师串库管理器(搜索/预览图/批量删除) | src/pages/backend/panels/NaiArtistManager.vue(纯逻辑在 backends/naiArtistLib.ts;内置只读库在 backends/nai.ts 的 `BUILTIN_NAI_ARTISTS`) |

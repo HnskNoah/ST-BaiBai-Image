@@ -35,8 +35,9 @@ import {
 /**
  * 当前出图后端是否为 NAI 系(nai / latent)。latent 走站点的 NovelAI 兼容面,
  * 出图侧的拼装(fullPositivePrompt/质量词/负面链)与 NAI 同构,规范与思维链
- * 取同族的单串口径(不是 comfy 的)——ComfyUI 规范教的工作流占位符、括号转义
- * 等知识对兼容层毫无意义,只会与本地追加的 NAI 质量词打架。
+ * 取同族的单串口径(不是 comfy 的)——ComfyUI 规范教的工作流占位符等知识对兼容层
+ * 毫无意义,只会与本地追加的 NAI 质量词打架。
+ * ⚠ 括号转义两边都要(latent 站点同样按权重语法解析圆括号),别当成 comfy 专属删掉。
  * 取哪一份:latent 有自己的键(latentSpec/latentThinking,回落旧 naiSpec/naiThinking
  * 再回落内置),NAI 按 characterPromptsOn 走 V5 或遗留单串。
  */
@@ -47,10 +48,11 @@ export function isNaiFamilyBackend(): boolean {
 /**
  * Character Prompts(tag+nl 双键结构)是否生效:
  * - NAI:看自身模型(4.5/V5 → 是);
- * - latent:**恒否**。站长确认:站点不支持自然语言,必须用 tag——站点是 SD checkpoint
- *   生态(Anima 跑 danbooru 短 tag),兼容层对 v4_prompt/nl 的消费没有文档依据。
- *   故 latent 恒走单串 tag 口径(latentSpec/latentThinking,单串 + 区分性称谓邻接
- *   绑定,无 nl 键),发送侧同步降级为纯 tag 载荷(见 generateNaiImage 的 latentTagOnly)。
+ * - latent:**恒否**。站点不收 v4_prompt/characterPrompts 这套双层结构(那是 NAI 官方
+ *   协议里的东西),人物的归属与配对由 nl 承担(tag 区只裸列特征,见 DEFAULT_NAI_SPEC 多人规则)。
+ *   ⚠ 这不等于「站点不支持自然语言」:站点底层是 Anima 系(Qwen 编码器),官方口径
+ *   明确吃 NL——nl 只是拼在同一个 prompt 串里、不占独立键(见 buildAutoTagMessages
+ *   的 nlOn 与 generateNaiImage 的 latentFlatPrompt)。
  */
 export function characterPromptsOn(): boolean {
   return settings.defaultBackend === 'nai' && naiSupportsCharacterPrompts(settings.nai.model);
@@ -60,7 +62,7 @@ export function characterPromptsOn(): boolean {
  * 按默认后端取 tag 书写规范:
  * - comfyui → comfySpec(留空回落内置默认);{{nl}} 宏按自然语言开关展开/置空,
  *   自定义内容不含宏时开启开关会把自然语言规范追加在末尾(防止开关静默失效)。
- * - latent → 恒走单串 tag 口径(站点不支持自然语言):latentSpec(设置页「Latent 规范」)
+ * - latent → 恒走单串口径(站点无 v4_prompt 双层结构;nl 拼在同一串里):latentSpec(设置页「Latent 规范」)
  *   → naiSpec(旧 4.5 键,存量自定义不失效)→ 内置 DEFAULT_NAI_SPEC。
  * - nai → naiCharPromptsOn 恒真(可选模型只剩 4.5/V5),走 naiV5Spec;单串 naiSpec
  *   分支仅为已下线模型保留作回归锁,latent 不经此分支(上面已分流)。
@@ -182,7 +184,11 @@ export async function buildAutoTagMessages(
   // latent 渠道:model 字段存的就是 NAI 名,Character Prompts 支持面按同一口径判断
   const naiCharPromptsOn = characterPromptsOn();
   const comfyPreset = comfyOn ? activeComfyPreset() : null;
-  const nlOn = !!comfyPreset?.naturalLanguage || naiCharPromptsOn;
+  // latent 恒要 nl:站点底层是 Anima 系(Qwen 编码器),官方口径明确支持自然语言——
+  // tag 定身份/概念,完整英文句子写服装构造、肢体几何、镜头与空间关系。这与 NAI 的
+  // v4_prompt 双层结构无关(naiCharPromptsOn 对 latent 仍为 false),只是单串里多拼一段 nl。
+  const nlOn =
+    !!comfyPreset?.naturalLanguage || naiCharPromptsOn || settings.defaultBackend === 'latent';
   // 动态负面词门槛:custom 模式看工作流是否含 %negative_prompt%;
   // simple 模式由模板决定(Flux 无真实负面输入,请求了也没地方写)。
   let negativeOn = false;
@@ -233,10 +239,10 @@ export async function buildAutoTagMessages(
   const contentRule = naiCharPromptsOn
     ? '4. Every image must include Base tag, English Base nl, and characters. Write every nl in English even when the story text is in another language, but keep every character name exactly as in the story: Chinese names stay Chinese (小雪, never Xiaoxue or Snow) in characters[].name, changes[].name, and inside any tag/nl text. Base contains only global counts, scene, composition, lighting, and shared relations — this applies to the Base nl as much as to the Base tag. Give each individual character visible inside the selected frame one Character Prompt ordered left-to-right then top-to-bottom; name/tag/nl are all required. This includes visible characters who have no library profile: a one-off unnamed individual gets a Character Prompt too, keyed by the term the story uses for them. Anonymous crowds visible in the frame remain in Base. Character tag uses girl/boy without a numeric count and contains that character appearance, outfit, and action. Do not include quality tags, negative tags, or XML.'
     : nlOn
-    ? '4. tag 与 nl 是同一画面的两种写法：tag 是 danbooru 短 tag，nl 是连贯的自然语言；二者都只含正面内容，不得包含质量词、负面词、JSON 以外的说明或 <bbi_image>/<tag>/<nl>/<size> 标签。'
+    ? '4. tag 与 nl 是同一画面的两种写法：tag 是 danbooru 短 tag（只裸列特征，不做归属），nl 是连贯的自然语言（**多人画面的归属与配对只由 nl 承担，nl 不得为空**；两人及以上时每个角色各一句分述，末句写 No other people or duplicate identities are present.）；二者都只含正面内容，不得包含质量词、负面词、JSON 以外的说明或 <bbi_image>/<tag>/<nl>/<size> 标签。'
     : '4. tag 只能是该画面的正面内容提示词；不得包含质量词、负面词、JSON 以外的说明或 <bbi_image> 标签。';
   const negativeRule = negativeOn
-    ? '\n   negative 是本画面专用的 danbooru 负面短 tag：只排除与正文冲突或本构图特别容易误生成的内容，可为空；禁止输出通用质量、画质、审美或技术性负面词，包括但不限于 worst quality、low quality、blurry、lowres、bad anatomy、bad hands、jpeg artifacts；不要写希望出现的内容，不得使用 @角色占位符。\n   negative 里绝不能出现正文已明确成立的事实，也不能否定你自己刚写进本图 tag/nl 的任何东西：正文写了在下雨、或你自己的 nl 写了 drizzle，就绝不许在 negative 写 rain；写了角色戴眼镜就不许写 glasses——那是在抹掉画面本该有的东西。写完 negative 逐词回看本图的 tag 与 nl，凡是能在里面找到对应内容的词一律删掉。拿不准时留空，空的 negative 永远比抵消正文的 negative 安全。'
+    ? '\n   negative 是本画面专用的 danbooru 负面短 tag：只排除与正文冲突或本构图特别容易误生成的内容，可为空；多人画面写 extra people, duplicate character 作计数兜底（nl 末句的计数锁定句之外的第二道保险）；禁止输出通用质量、画质、审美或技术性负面词，包括但不限于 worst quality、low quality、blurry、lowres、bad anatomy、bad hands、jpeg artifacts；不要写希望出现的内容，不得使用 @角色占位符。\n   negative 里绝不能出现正文已明确成立的事实，也不能否定你自己刚写进本图 tag/nl 的任何东西：正文写了在下雨、或你自己的 nl 写了 drizzle，就绝不许在 negative 写 rain；写了角色戴眼镜就不许写 glasses——那是在抹掉画面本该有的东西。写完 negative 逐词回看本图的 tag 与 nl，凡是能在里面找到对应内容的词一律删掉。拿不准时留空，空的 negative 永远比抵消正文的 negative 安全。'
     : '';
 
   // 设置层已维护 0 ≤ min ≤ max；这里仍做一次局部归一,让直接调用/测试传入脏对象也不会
@@ -254,7 +260,7 @@ export async function buildAutoTagMessages(
   const libraryReferenceRule = naiCharPromptsOn
     ? '- If a visible character exists in the fixed appearance library or is created in this changes array, copy the fixed fields into that character own characters[].tag; keep appearance wording verbatim but convert 1girl/1boy to girl/boy. The fandom identity tag (fields.fandom) goes first, verbatim. Do not put them in Base or assign them to another character. Library natural-language notes may inform that character nl. Use the library entry name verbatim for characters[].name and for any name inside tag/nl — never transliterate, translate, or vary it.'
     : settings.defaultBackend === 'latent'
-    ? '- 画面中的角色只要已在【角色固定外貌库】，或在本次 changes 中建了档，tag 就必须照抄库中/刚建档的字段值，用词一字不改，不得自行改写或增删其固定外貌。同人角色的 fandom 身份 tag（如 kasumi (blue archive)）照抄在人数/构图之后、普通外貌之前——生图模型按它识别角色归属（与后端规范/思维链的定位口径一致）。\n   - 同一角色的固定外貌在一张图里只写一遍：同一图内再次提到他时用简短指代（the boy、the silver-haired girl）承接，禁止把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成互不相连的几块。'
+    ? '- 画面中的角色只要已在【角色固定外貌库】，或在本次 changes 中建了档，tag 与 nl 就必须照抄库中/刚建档的字段值，用词一字不改，不得自行改写或增删其固定外貌。同人角色的 fandom 身份 tag（库里存的是未转义形态，如 kasumi (blue archive)）照抄在人数/构图之后、普通外貌之前，**落 tag 时把圆括号转义**成 kasumi \\(blue archive\\)——站点把未转义圆括号当权重语法，不转义会被当成权重而不是身份的一部分（与后端规范/思维链的定位口径一致）。\n   - 同一角色的固定外貌在一张图里只写一遍：同一图内再次提到他时用简短指代（the boy、the silver-haired girl）承接，禁止把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成互不相连的几块。'
     : '- 画面中的角色只要已在【角色固定外貌库】，或在本次 changes 中建了档，tag 与 nl 就必须照抄库中/刚建档的字段值，用词一字不改，不得自行改写或增删其固定外貌。fandom 字段只作档案记录，ComfyUI 画图时不照抄它，同人身份 tag 按下发的 ComfyUI 规范现场判定并按规范转义括号。\n   - 同一角色的固定外貌在一张图里只写一遍：同一图内再次提到他时用简短指代（the boy、the silver-haired girl）承接，禁止把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成互不相连的几块。';
   const newCharacterNlRule = naiCharPromptsOn
     ? '\n   - NAI V5 profile requirement: every field:"new" change must include a non-empty nl containing a concise English natural-language description of the character fixed appearance. The name must be the character exact name from the card/lorebook/story — a Chinese name stays Chinese (小雪), never pinyin or translation. Fandom characters must also include their identity tag in fields.fandom, e.g. {"name":"冬海","field":"new","fields":{"sex":"1girl","hair":"long black hair","eyes":"blue eyes","fandom":"kasumi (blue archive)"},"nl":"A girl with long black hair and blue eyes.","position":"P2","reason":"first appearance"}; original characters omit fandom. If an existing library entry lacks fandom but the character is fandom, report a changes item with field:"fandom". Describe only fixed appearance: no current outfit, pose, or location — temporary states never enter the profile.'
@@ -270,6 +276,8 @@ export async function buildAutoTagMessages(
    - 建完档就直接用：同一次输出里，先在 changes 里确立该角色的固定外貌，再在图片 ${naiCharPromptsOn ? 'characters[].tag' : 'tag'} 中照抄这套外貌，并围绕它补充服装、动作、场景等其余 tag；同一张图里这套外貌只写一遍。${newCharacterNlRule}`;
   const multiCharacterBindingRule = naiCharPromptsOn
     ? '- 多人画面中，每个角色的发色、瞳色、体型、服装、物件和个人动作都必须放进各自的 characters[].tag，禁止放进 Base 或分配给其他角色。'
+    : settings.defaultBackend === 'latent'
+    ? '- 多人画面中，tag 区只放袋装词：**不要**把服装/体型/动作词用 on 接到别人的外貌短语后面造复合指称，也**不要**靠反复重念同一个外貌短语来配对（那是 CLIP 系手法，本站的 Qwen 编码器读句子）。归属与配对全部写进 nl：每个角色各一句，用区分性称谓把本镜头可见服装、个人动作、表情、视线按人归位，缺一句那个角色就丢了归属；nl 末句写 No other people or duplicate identities are present.；画面级 negative 写 extra people, duplicate character 作计数兜底。'
     : '- 多人画面中，每个角色的发色、瞳色、体型、服装、物件和个人动作都必须使用该角色的区分性称谓邻接绑定，禁止把两人的外貌特征散放成无法归属的一串公共 tag。';
   const characterRule = `7. 角色状态与 changes：${newCharacterRule}
    ${libraryReferenceRule}

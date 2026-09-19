@@ -217,7 +217,7 @@ describe('latent 渠道', () => {
     expect(vi.mocked(generateNaiImage).mock.calls[0][3]).toMatchObject({
       noRetry429: true,
       allowNon64Size: true,
-      latentTagOnly: true,
+      latentFlatPrompt: true,
       latentResolution: 'landscape',
     });
   });

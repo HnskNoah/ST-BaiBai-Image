@@ -125,7 +125,7 @@ export type NaiModel =
  * 可选模型:只留 4.5 与 V5。两代共用同一套「Base + 原生 Character Prompts + 英文自然
  * 语言」协议,收窄后 naiSupportsCharacterPrompts 对全部可选模型恒真 —— NAI 渠道自身
  * 不再走单串 tag 的 DEFAULT_NAI_SPEC / DEFAULT_NAI_THINKING,设置页相应撤掉了入口。
- * 但 **latent 渠道恒走单串口径**(站点不支持自然语言,见 autoTag/prompt.ts 的
+ * 但 **latent 渠道恒走单串口径**(站点收扁平串:tag + nl 拼一段,见 autoTag/prompt.ts 的
  * characterPromptsOn),回落链 latentSpec → naiSpec(存量旧值)→ DEFAULT_NAI_SPEC,
  * 那两份内置模板经此仍然可达,并作为「Latent 规范/思维链」重新有了编辑入口。
  *
@@ -303,10 +303,9 @@ export interface NaiSettings extends BackendConn {
 export interface LatentSettings extends BackendConn {
   key: string;
   /**
-   * 仅作副 API 规范族的历史字段。**站点无模型参数且不支持自然语言**(站长确认:
-   * 必须用 tag——SD checkpoint 生态,danbooru 短 tag),面板无模型 UI;
-   * Character Prompts 对 latent 恒关(characterPromptsOn),规范恒走 naiSpec
-   * (单串 tag + 邻接绑定),发送侧恒纯 tag 载荷(latentTagOnly)。
+   * 仅作副 API 规范族的历史字段。**站点无模型参数**(底层 Anima 系,面板无模型 UI),
+   * 但**吃自然语言**(Qwen 编码器):Character Prompts 双层结构对 latent 恒关
+   * (characterPromptsOn),nl 与 tag 拼在同一个扁平串里下发(latentFlatPrompt)。
    * 字段保留只为 latentAsNai 映射成 NaiSettings 时形状完整,值恒默认 4.5-full。
    */
   model: NaiModel;
@@ -581,42 +580,56 @@ Two girls as the main focus, medium shot, in a park at sunset. The black-haired 
  * ⚠ NAI 渠道自身已不可达(模型列表只剩 4.5/V5,naiCharPromptsOn 恒真,走 DEFAULT_NAI_V5_SPEC),
  * 但 **Latent 渠道恒走单串口径**,本常量是「Latent 规范」回落链的终端(latentSpec → naiSpec 存量
  * 旧值 → 本常量),内容按消费方现状维护:画师 tag 由用户画师串附加(AI 禁写),底层模型为
- * Anima 系(站点口径),质量词回落见 backends/nai.ts 的 LATENT_DEFAULT_* 分册。
+ * Anima 系(站点口径,吃自然语言——tag 与 nl 拼在同一串里下发),质量词回落见
+ * backends/nai.ts 的 LATENT_DEFAULT_* 分册。
  * 改 NAI 渠道的规范请改 DEFAULT_NAI_V5_SPEC(设置页「NAI 规范」)。
  */
-export const DEFAULT_NAI_SPEC = `【NovelAI 提示词规范】
-你输出的画面提示词会被直接发送给 NovelAI 协议的生图接口（兼容站的底层为 Anima 系动漫模型）。
+export const DEFAULT_NAI_SPEC = `【Latent 渠道提示词规范】
+你输出的画面提示词会被直接发送给该站点（NovelAI 兼容面；底层为 Anima 系动漫模型，文本编码器为 Qwen 系）。
 
-tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的关键词串，多词用空格连接（不要用下划线），例如：
-1girl, long hair, school uniform, sitting by window, classroom, warm sunlight
+tag（JSON 的 tag 键）：danbooru 短 tag——英文小写、逗号分隔的关键词串，多词用空格连接（不要用下划线；唯一例外是 score_1～score_9 这类评分 tag，它们保留下划线），例如：
+1girl, long hair, school uniform, window, sitting, classroom, warm sunlight
 从重要到次要排列：人数/主体 → 镜头构图 → 外貌 → 服饰 → 动作姿态 → 表情视线 → 场景 → 光线氛围；单个画面控制在 40 个 tag 以内。
+Anima 训练时做过随机 tag dropout，不要求把相关 tag 写满：优先给高信息量的词，删掉同义重复，不要为凑数堆词。
 动作姿态内部再排：本画面核心动作（谁做了什么、身体部位接触了什么）必须是动作区第一条独立短 tag；辅助姿态（坐着、站着、跪着等）排后面。同一动作词不得重复写两遍。
 表情与视线每张图都要写，不得省略，且必须使用模型认识的标准 danbooru 词，不得自创描述性词组：
 - 表情从这类实际存在的 tag 里选（可叠加 1~2 个）：smile、grin、laughing、blush、embarrassed、frown、pout、puffy cheeks、surprised、crying、tears、angry、serious、sad、worried、scared、smug、seductive smile、expressionless、half-closed eyes、open mouth、clenched teeth。
 - 视线选一个：looking at viewer、looking at another、looking away、looking down、looking up、looking back、closed eyes 之外不要另造。
-- 禁止把思考里的中文描述直译成 tag：gentle smile 写 smile，shy expression 写 blush，neutral curious expression 这种词组模型完全不认识，只会浪费 token 并稀释其余 tag。带形容词的自然语言感受留给 nl，tag 只放标准词。
+- 禁止把思考里的中文描述直译成 tag：gentle smile 写 smile，shy expression 写 blush，neutral curious expression 这类词组在 tag 区不会按你想的方式生效，只会浪费 token 并稀释其余 tag。带形容词的自然语言感受写进 nl，tag 只放标准词。
 - 正文没写表情不是不写的理由——推断一个；判断为面无表情时也要显式写 expressionless。
-同人角色身份 tag：若角色明确来自已有动漫、游戏、小说等作品，必须在人数/构图之后、普通外貌之前写模型可识别的英文 Danbooru 身份 tag，格式为 character name (copyright name)。角色名与作品名使用其通行英文 tag，不转义圆括号，不得直译中文、缩写作品名或只写角色名。原创角色不写；无法可靠确定作品时不得猜测，按原创角色处理。
+同人角色身份 tag：若角色明确来自已有动漫、游戏、小说等作品，必须在人数/构图之后、普通外貌之前写模型可识别的英文 Danbooru 身份 tag，实际形态为 character name \\(copyright name\\)——**括号必须转义**：站点按权重语法解析未转义圆括号，不转义它就不是身份的一部分；由于最终输出是 JSON，tag 字符串里要写成 "character name \\\\(copyright name\\\\)"，JSON 解析后才会保留单个反斜杠。角色名与作品名使用其通行英文 tag，不得直译中文、缩写作品名或只写角色名。原创角色不写；无法可靠确定作品时不得猜测，按原创角色处理。
 显式场景 tag：当正文明确是 NSFW/性行为画面时，不能只写 nsfw、nude、sex 或含蓄动作。逐个写出画面中实际可见、与动作有关的身体部位和性器官（如 breasts、nipples、penis、pussy、anus、testicles），并用准确的 Danbooru 动作/接触 tag 说明谁的什么部位接触或进入哪里；性器官被衣物、身体或镜头完全遮住时不要虚构为可见。
-NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag（1girl、2boys 等）。
-画风不归你管：不得写任何画师/画风 tag（artist:xxx 与 @xxx 两种写法都不要出现），画师串由系统按用户配置附加，你写了只会污染画面、挤占 tag 预算。
+人数 tag 是构图的基础：人物多的画面务必写清数量 tag（1girl、2boys 等）——Anima 系对 danbooru 词表理解良好，缺了数量 tag 会漏画或多画。
+画风不归你管：不得写任何画师/画风 tag（本站画师格式是 @名字，artist:xxx 是 NAI 官方格式——两种都不要出现），画师串由系统按用户配置以 @名字 形式附加在最前，你写了只会污染画面、挤占 tag 预算。
+
+nl（JSON 的 nl 键）：自然语言——连贯完整的英文句子，与 tag 描述同一画面。本站底层模型（Qwen 编码器）对完整句子的跟随能力强于孤立词组，tag 说不清的结构都该用 nl 讲明：服装构造与穿着方式（衣领、袖口、系带、下摆、材质层次）、肢体与手的几何、姿态先后与接触点、镜头角度与透视、画面内的空间关系、环境与光线氛围的具体状态。
+nl 与 tag 是同一画面的两种写法，不是替代：tag 定身份、概念、人数与常见元素（**裸列，不做归属**），nl 补结构与空间；**多人画面里，谁穿哪件、谁在做什么、谁是什么表情，全部由 nl 承担**。单人一到三句；多人按下面结构组织：先一句总起（人数 + as the main focus + 构图，把主体锁在角色上）→ 再每人一句分述，先主动方后被动方 → 最后一句环境氛围，以 blurred in the background 收尾。
+每句分述都要带上该角色的**区分性称谓**（the green-haired girl with green eyes ...）——模型不跨句记忆，用 she/they 这类指代会丢失配对；tag 里裸列的特征（本镜头可见服装、体型、个人动作、表情、视线）都在这句里按人归位，一项不落。
+区分性称谓 = 足以把此人和同框其他人分开的最短说法（发色 + 瞳色通常就够），不是把他的整串固定外貌重新念一遍：写 the black-haired girl with blue eyes，不要写 1girl, long black hair, blue eyes, petite, white dress 这种把 tag 串塞进句子的写法——那会让模型以为画面里有多个同样的人。
+多人画面还要写清位置关系（on the left / on the right / in the center / in the foreground）——位置比名字更能决定谁站在哪里、谁碰谁。
+**nl 的最后一句永远是计数锁定句**：No other people or duplicate identities are present.（模型会多画人，这句是实测有效的兜底；位置固定在末尾，不许插在中间或省掉。）
+多人 nl 示例（与下面 tag 示例是同一画面）：
+Two girls as the main focus, medium shot, in a park at sunset. The black-haired girl with blue eyes on the left wears a white dress and waves at the viewer with a smile. The petite silver-haired girl with red eyes on the right wears a red dress and eats a skewer of dango, blushing and looking away. Warm sunset light across the park, the trees softly blurred in the background. No other people or duplicate identities are present.
 
 多人画面（两人及以上）额外规则：
+先把分工记住：**tag 区只放袋装词**（谁有、有什么），**归属与配对全部交给 nl**——不要把服装/体型/动作词用 on 接到别人的外貌短语后面造复合指称（那是给靠位置邻近配对的 CLIP 系模型用的手法，本站的 Qwen 编码器读的是句子），也不要靠反复重念同一个外貌短语来配对。
+
+tag 区：
 - 人数 tag 必须明确（2girls、1boy 1girl 等）；缺了模型会漏画或多画。
 - 构图词（medium shot、full body 等，只写一个）紧跟人数 tag 写在前面，把画面主体锁在角色身上。
-- 每个角色的硬特征（发色/瞳色/体型）并列写出，不要编号（girl1/girl2 模型不认识）。
-- 角色各自的颜色/服装/物件必须绑定到该角色的特征词上——模型靠相邻关系配对：写 "white dress on green hair girl, black dress on blue hair girl"，不要写成 "a white dress and a black dress" 这种无法分配的一堆。
-- 同类不同款的服装尤其要绑定，不能靠一个统称糊过去：两人都穿校服但男女版型不同时，写 "dark pleated skirt on green hair girl, black opaque pantyhose on green hair girl, white shirt on black hair boy, dark trousers on black hair boy"，绝不能只裸写一个 school uniform——那会让模型把裙子套到男生身上，或者干脆给两人各自随机设计一套。同理，pantyhose、blazer 这类只有一个人穿的部件也必须带上主人。
+- 每个角色的硬特征（发色/瞳色）都裸列出来，不要编号（girl1/girl2 模型不认识）——发色瞳色本身就是锚点词，nl 里靠它们指认角色。
+- 同类不同款的服装/物件必须都写全，不能靠一个统称糊过去：两人都穿校服但男女版型不同时，写 dark pleated skirt, black opaque pantyhose, white shirt, dark trousers，绝不能只裸写一个 school uniform——那会让模型把裙子套到男生身上，或者干脆给两人各自随机设计一套。
 - 多人共有的特征只写一次（如都是长发：一个 long hair 即可，不要每人复制一遍）。
-- 各自不同的动作/姿态也用同一个绑定手法写进 tag：写 "black hair girl waving, silver hair girl eating dango"，不要写成 "waving, eating dango" 这种无法分配的裸动作（模型会随机安到人头上）；多人共同参与的互动（holding hands、hug 等）直接写。
-- 表情与视线同样是**每人各一份、必须绑定**的特征：写 "black hair girl smiling, silver hair girl looking at another"，不要把 smile、looking at another 裸写在串里——两人同框时裸写的表情/视线只会落到其中一人身上，另一人变成默认木脸。两人表情或视线恰好相同时也各写一份带称谓的，不适用「共有特征只写一次」。
-- 体型词（petite、tall、muscular 等）不是锚点，必须绑定到具体角色，不要裸写：写 "petite on silver hair girl"，不要让 petite 飘在串里——飘着的体型词会被模型摊到同框每个人身上。发色、瞳色本身是用来指认角色的锚点，照常裸列即可，不需要（也无法）自我绑定。
+- 各自不同的动作/姿态、表情与视线照常写进 tag（表情视线词表见上），但**不在 tag 里做归属**；两人表情或视线恰好相同时也各写一份。
+- 体型词（petite、tall、muscular 等）不是锚点：不要在 tag 区裸写（飘着的体型词会被模型摊到同框每个人身上），只写进 nl 里该角色的那一句。
 - 场景词 1~2 个即可，多了会抢角色主体；背景不重要时用 blurred background 类词压住。
-- 这套「把特征绑到人身上」的写法对 Anima 系模型同样有效——它的文本编码器对这种自然语言式绑定理解良好，照常使用。
 
-多人 tag 示例（对照上面的规则看写法）：
-2girls, medium shot, long hair, black hair, blue eyes, silver hair, red eyes, petite on silver hair girl, white dress on black hair girl, red dress on silver hair girl, black hair girl waving, black hair girl smile, black hair girl looking at viewer, silver hair girl eating dango, silver hair girl blush, silver hair girl looking away, park, sunset
-（构图紧跟人数，且只写一个景别词；long hair 是共有特征只写一次；发色瞳色裸列当锚点；体型、裙子、动作、表情和视线都各自绑定到发色词上——white dress、waving、smile、looking at viewer 归黑发，petite、red dress、eating dango、blush、looking away 归银发）
+nl 区（配对只在这里）：**多人画面 nl 不得为空**——归属没有别处可放，nl 缺了就只剩一串无主词；逐人一句 + 区分性称谓 + 位置词 + 末句计数锁定，写法见上面「nl」段；多人共同参与的互动（holding hands、hug 等）用一句整句写明参与者与接触点。
+
+多人示例（tag 与 nl 是同一画面；注意 tag 里没有任何归属词）：
+tag：2girls, medium shot, long hair, black hair, blue eyes, silver hair, red eyes, white dress, red dress, waving, smile, looking at viewer, eating dango, blush, looking away, park, sunset
+nl：Two girls as the main focus, medium shot, in a park at sunset. The black-haired girl with blue eyes on the left wears a white dress and waves at the viewer with a smile. The petite silver-haired girl with red eyes on the right wears a red dress and eats a skewer of dango, blushing and looking away. Warm sunset light across the park, the trees softly blurred in the background. No other people or duplicate identities are present.
+（tag 只回答「有哪些特征」：构图紧跟人数且只写一个景别词，long hair 是共有特征只写一次，发色瞳色裸列当锚点；谁穿哪件、谁在做什么、谁是什么表情由 nl 的区分性称谓句归位——white dress、waving、smile、looking at viewer 归黑发那位，red dress、eating dango、blush、looking away 归银发那位；petite 是体型词，只写在 nl 里、不在 tag 区裸列；末句是计数锁定句。）
 
 画面补全（重要）：
 正文是小说，不是分镜脚本——它永远不会写镜头、光线、时代服饰这些「画出来才存在」的东西。
@@ -653,7 +666,9 @@ NAI 对 danbooru 体系理解最好：人物多的画面务必写清数量 tag�
 两人同框不等于必须横屏。方向必须与 tag 里的镜头词一致（wide shot 通常配 landscape，close-up / upper body 通常配 portrait）。
 
 通用要求：
-- 不写质量词（masterpiece、best quality 之类，由系统按模型自动附加）；不写通用负面词。任务规则要求输出 negative 键时，按其规则只写与画面相关的排除项。
+- 不写质量词（masterpiece、best quality、score_7 之类，由系统按 Anima 官方推荐附加）；也不得写 NAI 特训的审美词（very aesthetic、aesthetic、location、no text 等）——Anima 不认识这些词，写了只会挤占 tag 预算。
+- **分级词由你写**（safe / sensitive / nsfw / explicit）：按本图实际内容判定——全年龄写 safe，擦边性感写 sensitive，成人内容写 nsfw，明确成人写 explicit。系统不再替你附加 safe，每张图都必须自己写对；同一楼里 SFW 与成人画面混排时各写各的，不许一律套同一个。
+- 不写通用负面词。任务规则要求输出 negative 键时，按其规则只写与画面相关的排除项。
 - 一律使用英文。`;
 
 /**
@@ -739,7 +754,7 @@ E. 选段
 /**
  * 思维链内置默认(NAI 4 系及以下)。协议形态与 ComfyUI 相同——单条 tag 串、多人靠邻接
  * 绑定——所以整体结构与 DEFAULT_COMFY_THINKING 一致,内容按 NAI 口径分头调:
- * 身份 tag 不转义圆括号;negative 条件自查为条件式(本常量现是 Latent 回落终端,
+ * 身份 tag 必须转义圆括号(站点按权重语法解析,与 comfy 同口径);negative 条件自查为条件式(本常量现是 Latent 回落终端,
  * AI 不写);显式 NSFW 场景有解剖落点(对应 DEFAULT_NAI_SPEC 的显式场景 tag 条款,
  * 0.1.16 的旧清单本来有、三层重写时弄丢,此处补回)。
  *
@@ -763,7 +778,7 @@ A. 事实与状态账本
 B. 角色清点与建档（具体建档字段与写法见任务协议，这里只做清点判断）
    - 通读目标正文，逐个列出实际在场且有名有姓的角色。不能只看最终入选图片里的人，也不能漏掉世界书、角色卡或柏宝书为其给出了设定的角色。
    - 每人写一行结论：命中的同名库条目，或本次 field:"new"。只有名字实际列在【角色固定外貌库】区块中的才算已建档——世界书、角色卡、柏宝书或正文里的详细设定只是建档来源，不代表已经在库，不得凭印象宣称已在库。库里没有、但属于正式角色（有设定或持续参与剧情）的，首次出场就建档，不论他是否入选本次图片；一次性无名路人不建。
-   - 同一行里顺带判定原创还是同人：只有角色卡、世界书、正文或通行角色名能可靠指向某个已有作品时才判为同人，证据不足按原创处理，不猜作品。判定为同人时同一行定出最终身份 tag 词：模型可识别的英文 Danbooru 角色名与作品名，格式 character name (copyright name)，不转义圆括号，写在人数/构图之后、普通外貌之前。
+   - 同一行里顺带判定原创还是同人：只有角色卡、世界书、正文或通行角色名能可靠指向某个已有作品时才判为同人，证据不足按原创处理，不猜作品。判定为同人时同一行定出最终身份 tag 词：模型可识别的英文 Danbooru 角色名与作品名，实际形态为 character name \\(copyright name\\)——括号必须转义（站点按权重语法解析圆括号），最终 JSON 里要写成 "character name \\\\(copyright name\\\\)"，双反斜杠经 JSON 解析才保留单个反斜杠；位置在人数/构图之后、普通外貌之前。
    - 缺发色、发型或瞳色时一次性补全：hair 必须同时带发色和长度/发型（long black hair 行，只写 black hair 这种裸颜色不行），eyes 必须带瞳色；建档在本楼全程有效，不要对同一角色给出两套外貌。
    - 对照角色库检查永久变化：染发、剪发、永久变身等写入 changes 并标出生效 P编号；假发、美瞳、湿发、光照变色等临时状态不写。即使 images 为空也不能跳过这一步。
 
@@ -799,20 +814,21 @@ E. 选段
    - 具体禁止这三种写法：带问号的自问（「landscape？」「用 blush？」）、并列候选（「expressionless 或 slight smile」）、写完再推翻（「用 A……不过 B 更好，改 A 为 B」）。心里比较完直接写结论，把比较过程留在心里。证据不足时按兜底口径直接定（size 拿不准写 portrait，服装细节不明就选一套常见且自洽的），定了就往下走。
    - 也不要在槽位里附上选择理由或对 danbooru 词表的检索过程（「looking ahead 不在标准列表」这类）——规范给了什么词，直接从里面挑一个填上。
    - 单一瞬间：一块只能是一次快门完整拍下的画面，不要把先后发生的多个动作、多个时间点或因果过程塞进同一块；剧情事实严格按正文，不编造人物、动作或人数。
-   - 表情与视线填后端规范给出的标准 danbooru 词，不写中文感受也不自创词组（想写「温柔地笑」就填 smile）；只能从规范列出的词里挑，规范没列的词一律不许用，拿不准就填 expressionless / looking at another。两项都不得留空，面无表情也要主动填 expressionless。多人画面每人各填一份，落 tag 时各自绑定，不得合并或裸写——裸写的表情只会落到一个人身上，另一人变成默认木脸。
+   - 表情与视线填后端规范给出的标准 danbooru 词，不写中文感受也不自创词组（想写「温柔地笑」就填 smile）；只能从规范列出的词里挑，规范没列的词一律不许用，拿不准就填 expressionless / looking at another。两项都不得留空，面无表情也要主动填 expressionless。多人画面每人各填一份，**落 tag 时照常裸写这些词、不做归属**：归属写进 nl 里该角色的那一句（区分性称谓 + 表情 + 视线），漏写那一句等于这个角色没有表情，会被模型画成木脸。
    - 若正文明确为显式 NSFW 场景：核心动作与角色行逐人点明镜头中实际可见的性器官、身体部位和接触关系（谁的什么部位接触或进入哪里），落 tag 时用准确 danbooru 词写出；不得只用 nsfw、nude、sex 或含蓄措辞代替关键解剖信息，被衣物、身体或镜头完全遮住的部位不得写成可见。
    - 角色行是每个在场角色各一行，配角也要写全，不许只给主角写完整一行、配角用一句中文动作带过。每一行的表情与视线都必须各是一个独立的英文 danbooru 词：写成「看向另一侧、弯腰换鞋」这种中文短语等于这一行没有表情词，落 tag 时这个角色就会没有表情，被模型画成木脸。
-   - 可见服装照 C 中该角色当前状态的视觉指纹逐件写全，只写本景别看得见的部件；镜头外不可见的部件可以省略，但省略不等于脱掉，后续重新可见且中间没有变化时必须恢复。槽位里不许退回 school uniform、dress、pantyhose 这种笼统孤立词——C 段定的是 navy school blazer 就写 navy school blazer，写笼统词等于让模型自己重新设计这套衣服，同一角色每张图都会换个款式。多人画面每人的服装各写各的，落 tag 时各自绑定：两人都穿校服但男女版型不同，裸写一个 school uniform 会让模型把裙子套到男生身上。
+   - 可见服装照 C 中该角色当前状态的视觉指纹逐件写全，只写本景别看得见的部件；镜头外不可见的部件可以省略，但省略不等于脱掉，后续重新可见且中间没有变化时必须恢复。槽位里不许退回 school uniform、dress、pantyhose 这种笼统孤立词——C 段定的是 navy school blazer 就写 navy school blazer，写笼统词等于让模型自己重新设计这套衣服，同一角色每张图都会换个款式。多人画面每人的服装都裸写进 tag，归属由 nl 里各自那一句承担：两人都穿校服但男女版型不同，tag 里只裸写一个 school uniform 会让模型把裙子套到男生身上。
    - 场景和环境光：场景只写正文、上下文或世界设定能支持的事实，地形、地面材质、天气痕迹和环境状态都算事实，没依据就别写；环境光则相反，光源、时间和色调正文不会写，必须由你主动定，缺了画面就是平庸的大头照。
 
 第三层｜落笔前自查（只核对，不预写答案）
 
 这一层只逐张核对下面几条，每点写一句结论即可。<thinking> 里禁止出现任何最终答案的草稿——不写完整 tag 串、不写完整 nl 句、更不要写出 JSON 对象或 "JSON:" 之类的标题。答案只在 </thinking> 之后出现一次，在思考里先写一遍等于把整份输出付两遍钱。核对完直接闭合 </thinking> 并输出 JSON：
-   - 每张图的 tag 覆盖了它自己那一块的全部非 "-" 槽位，没有漏掉表情、视线或环境光；要求 nl 时与 tag 描述同一画面。
+   - 每张图的 tag 覆盖了它自己那一块的全部非 "-" 槽位，没有漏掉表情、视线或环境光；nl 与 tag 描述同一画面，并补上 tag 说不清的服装构造、肢体几何与空间关系。
    - 每个剧情 tag 都能追溯到正文/设定；地形、地面、道路、天气和环境状态 tag 没依据就删除。
-   - 多人画面里服装、体型、物件、表情、视线和个人动作都已绑定到各自角色，没有散落的无主特征；每个在场角色的服装都在 tag 里实际出现了，没有谁的衣服只写在槽位里却没进 tag，也没有 school uniform、pantyhose 这类没主人的笼统孤立词；每个在场角色都各有一个绑定到自己的表情词和视线词，没有谁只有动作没有表情。
+   - 每张图都写了与画面内容相符的分级词（safe / sensitive / nsfw / explicit）：全年龄 safe、擦边 sensitive、成人 nsfw、明确成人 explicit；同楼混排时各写各的，没有漏写、也没有一律套同一个。
+   - 多人画面：tag 区没有复合指称（没有 "X on Y girl"、没有重复的 "X hair girl"），tag 里实际写出的角色与人数 tag 对得上；服装、体型、个人动作、表情、视线都在 nl 里按人归位到各自的区分性称谓句，每个在场角色都有一句、句里不缺项；nl 的末句是计数锁定句 No other people or duplicate identities are present.；每个在场角色的服装都在 tag 里实际出现了，没有 school uniform、pantyhose 这类没主人的笼统孤立词。
    - 这一层只核对、不改决定：发现问题就在落 tag 时直接改对，不要在思考里写出「超限，需精简」「让位」「改为」这类修订过程。张数在 E 段就已经定死，这里不该再变。
-   - 每个同人角色的 tag 串里都有 B 段定下的 character name (copyright name) 身份 tag（人数/构图之后、普通外貌之前，不转义括号），原创角色没有被误加作品名。
+   - 每个同人角色的 tag 串里都有 B 段定下的 character name \\(copyright name\\) 身份 tag（人数/构图之后、普通外貌之前，括号已转义），原创角色没有被误加作品名。
    - tag 串里没有混入画师/画风 tag（artist: 或 @ 开头的画风词都不该出现），画风由系统按用户画师串附加。
    - 若本图协议含 negative 键：negative 已逐词对照本图的 tag 与 nl，凡是能在其中找到对应内容的词都已删掉，没有抵消正文已成立的事实；拿不准的已留空。协议不含 negative 键时本项直接跳过。
    - 若本图是显式 NSFW 场景：实际可见的性器官、身体部位和接触关系都已用准确 tag 写明，没有只用 nsfw、nude、sex 这类泛化词一笔带过；非显式场景本项直接跳过。
@@ -1000,7 +1016,7 @@ export interface AutoTagPrompts {
    *  回落层(latentSpec 留空时生效,更旧版本在此键里的自定义因此不失效)。
    *  留空回落 DEFAULT_NAI_SPEC。 */
   naiSpec: string;
-  /** Latent 渠道 tag 书写规范(tag-only 单串口径,站点不支持自然语言);
+  /** Latent 渠道 tag 与 nl 书写规范(扁平单串口径,站点收 NL、不收 v4_prompt 双层);
    *  设置页显示为「Latent 规范」。留空回落 naiSpec(存量旧值)再回落 DEFAULT_NAI_SPEC。 */
   latentSpec: string;
   /** NAI 规范(4.5/V5 的 Base Prompt + 原生 Character Prompts);设置页显示为「NAI 规范」。 */
@@ -1896,7 +1912,7 @@ function normalize(raw: unknown): ImageSettings {
       const legacy = rt as Partial<AutoTagSettings> & { jailbreakPrompt?: unknown };
       const legacyJailbreak = typeof legacy.jailbreakPrompt === 'string' ? legacy.jailbreakPrompt : '';
       // 旧版单份 thinking 拆成三份(comfy/nai/naiV5)。老内容一律是照 ComfyUI 形态写的
-      // (单串 tag + 邻接绑定),只迁进同形态的 comfy 与 nai 两格;V5 留空回落新默认——
+      // (单串 tag + nl),只迁进同形态的 comfy 与 nai 两格;V5 留空回落新默认——
       // 把 ComfyUI 口径灌进 V5 等于把「思维链教它做规范禁止的事」这个 bug 固化下来。
       const legacyPrompts = rp as Partial<AutoTagPrompts> & { thinking?: unknown };
       const legacyThinking =

@@ -146,6 +146,7 @@ const queueAhead = computed(() => record.value?.queueAhead ?? null);
 /** 限流退避中(NAI 自动重试);非 null 时状态文案优先报它。 */
 const retryInfo = computed(() => record.value?.retry ?? null);
 
+const comfyActive = computed(() => settings.defaultBackend === 'comfyui');
 const naiActive = computed(() => settings.defaultBackend === 'nai');
 const latentActive = computed(() => settings.defaultBackend === 'latent');
 /**
@@ -224,8 +225,20 @@ const barText = computed(() => {
   return '待生成';
 });
 
-/** 无图且后端未就绪时,占位区中央的配置引导。判据与措辞同源 backendStatus.reason(覆盖 comfy/nai/latent 全渠道)。 */
-const pendingHint = computed(() => backendStatus().reason);
+/**
+ * 无图且后端未就绪时,占位区中央的配置引导(只在 configured=false 时渲染)。
+ * 判据归 backendStatus(按钮与公开接口同源,见上);这里只管文案——必须把用户送到设置页,
+ * 故不复用 reason:那是给公开接口看的短原因,不含「去哪配」。
+ */
+const pendingHint = computed(() => {
+  if (latentActive.value)
+    return settings.latent.url.trim()
+      ? '未配置 Latent,请到柏宝绘「渠道」页填写 API Key'
+      : '未配置 Latent,请到柏宝绘「渠道」页填写接口地址';
+  if (naiActive.value) return '未配置 NAI,请到柏宝绘「渠道」页填写 API Key';
+  if (comfyActive.value) return '未配置 ComfyUI,请到柏宝绘「渠道」页填写工作流';
+  return '出图后端未选择,请到柏宝绘「渠道」页选择出图渠道';
+});
 
 async function generate(): Promise<void> {
   if (busy.value || !configured.value) return;

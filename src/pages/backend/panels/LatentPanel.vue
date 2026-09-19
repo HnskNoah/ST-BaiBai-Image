@@ -181,7 +181,7 @@ const channelPromptTargets = computed<LatentPromptTarget[]>(() => [
   {
     key: 'quality',
     label: '正面质量词',
-    hint: '拼在画面 tag 之前（整体顺序：质量词 → 画师串 → 画面 tag）。画师串里设置了质量词时,会用画师串那份,这里的不生效。',
+    hint: '拼在画面 tag 之前（整体顺序：质量词 → 画师串 → 画面 tag）。留空 = 用 Anima 推荐默认（masterpiece, best quality, score_7）；分级词（safe / sensitive / nsfw / explicit）由 AI 按每张画面写,这里不必填——填了会与 AI 那份同时出现在提示词里。画师串里设置了质量词时,会用画师串那份,这里的不生效。',
     fallback: () => LATENT_DEFAULT_QUALITY_TAGS,
     read: () => settings.latent.qualityTags,
     write: v => (settings.latent.qualityTags = v),

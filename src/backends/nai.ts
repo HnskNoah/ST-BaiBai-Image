@@ -112,10 +112,13 @@ export function naiDefaultUndesired(model: string): string {
  * Anima 官方推荐的默认词——Latent 渠道留空时的回落值,与 NAI 官方词**分册**:
  * NAI 的 very aesthetic / location / no text 是 NAI 特训进模型的审美词,Anima 不认识;
  * Anima(Qwen 编码器)认 masterpiece / best quality / score_N(人类评分制)体系。
+ * ⚠ 官方前缀里的 `safe` **有意去掉**:分级词(safe/sensitive/nsfw/explicit)随画面内容走,
+ * 渠道级恒定 safe 会把成人画面压回全年龄——改由 **AI 按每张画面写**(规范与思维链自查
+ * 都有条款;同楼 SFW/成人混排时各写各的),系统不替它兜底。
  * 负面取 Anima 官方推荐串;`artist name` 防画师署名水印,启用画师串时须剔除
  * (见 latentDefaultUndesired),否则它会把用户的画风一起压掉。
  */
-export const LATENT_DEFAULT_QUALITY_TAGS = 'masterpiece, best quality, score_7, safe';
+export const LATENT_DEFAULT_QUALITY_TAGS = 'masterpiece, best quality, score_7';
 export const LATENT_DEFAULT_UNDESIRED_CONTENT =
   'worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration';
 
@@ -388,7 +391,7 @@ export function fullPositivePrompt(
   nai: NaiSettings,
   prompt: string,
   nl = '',
-  opts: { qualityTagsFallback?: string; qualityFirst?: boolean } = {},
+  opts: { qualityTagsFallback?: string; qualityFirst?: boolean; nlAlways?: boolean } = {},
 ): string {
   const artist = naiArtistPrompt(nai);
   const quality = naiQualityTags(nai, opts.qualityTagsFallback);
@@ -396,7 +399,11 @@ export function fullPositivePrompt(
     ? [quality, artist, prompt.trim()]
     : [artist, prompt.trim(), quality];
   const tags = parts.filter(Boolean).join(', ');
-  return naiSupportsCharacterPrompts(nai.model) && nl.trim() ? `${tags}. ${nl.trim()}` : tags;
+  // nlAlways:Latent 渠道的 nl 支持面由站点决定,与所选 NAI 模型名无关,不能靠
+  // naiSupportsCharacterPrompts 判(挂 4.5 以下的名字也照样该拼 nl)。
+  return (opts.nlAlways || naiSupportsCharacterPrompts(nai.model)) && nl.trim()
+    ? `${tags}. ${nl.trim()}`
+    : tags;
 }
 
 function characterCaption(character: ImageCharacterPrompt): string {
@@ -683,15 +690,16 @@ export async function generateNaiImage(
      */
     latentResolution?: 'portrait' | 'landscape';
     /**
-     * Latent 渠道:纯 tag 载荷。站长确认站点不支持自然语言,必须用 tag——
-     * ①nl 不拼进 prompt(fullPositivePrompt 只拿 tag 串);
-     * ②丢弃 v4_prompt/v4_negative_prompt/characterPrompts 结构(那是 4.5/V5 的
-     *   Character Prompts 载荷,兼容层消费没有文档依据;characters[].tag 的内容
-     *   副 API 已按邻接绑定写进主 tag 串,这里丢弃的是冗余副本而非信息)。
+     * Latent 渠道:扁平 prompt 串——tag 与 nl 拼成一段,剥掉 v4_prompt 系双层结构。
+     * 站点走 NAI 兼容面,不收 v4_prompt/characterPrompts(那是 NAI 官方协议的东西),
+     * 但**吃自然语言**(底层 Anima 系,Qwen 编码器,官方口径 tag 与 NL 混写皆可),故:
+     * ①nl 照拼进 prompt(fullPositivePrompt,nlAlways 不靠模型名判支持面);
+     * ②丢弃 v4_prompt/v4_negative_prompt/characterPrompts(characters[].tag 的内容
+     *   副 API 已按邻接绑定写进主 tag 串,这里丢弃的是冗余副本而非信息);
      * ③prompt 串顶层与 input 字段同源(fullPositivePrompt),无本地长度上限
      *   (站长确认站点支持超 2000 字符;openapi 的 maxLength 与实际不符)。
      */
-    latentTagOnly?: boolean;
+    latentFlatPrompt?: boolean;
   } = {},
 ): Promise<ComfyImageResult> {
   if (!nai.key.trim()) throw new NaiError('请先填写 NAI API Key');
@@ -705,14 +713,16 @@ export async function generateNaiImage(
   const latentPromptOpts = {
     qualityTagsFallback: LATENT_DEFAULT_QUALITY_TAGS,
     qualityFirst: true,
+    // 站点收自然语言,与所选 NAI 模型名无关,故显式 nlAlways(见 fullPositivePrompt)
+    nlAlways: true,
   } as const;
-  if (opts.latentTagOnly) {
-    // 站点只吃 tag:扁平 prompt 串。fullPositivePrompt 重算一遍只拿 tag 部分
-    // (values.nl 不传入),v4_prompt 系结构整个剥掉,prompt/input 同源。
+  if (opts.latentFlatPrompt) {
+    // 站点收扁平 prompt 串:tag 与 nl 拼一段,剥掉 v4_prompt 系双层结构
+    // (兼容层不认那套;characters[].tag 的内容副 API 已按邻接绑定写进主串)。
     delete (params as Record<string, unknown>).v4_prompt;
     delete (params as Record<string, unknown>).v4_negative_prompt;
     delete (params as Record<string, unknown>).characterPrompts;
-    params.prompt = fullPositivePrompt(nai, values.prompt, '', latentPromptOpts);
+    params.prompt = fullPositivePrompt(nai, values.prompt, values.nl, latentPromptOpts);
   }
   if (opts.latentResolution) {
     // 站点原生面收枚举不收数字对;宽高在本地仍用于 skip_cfg 等派生计算,只从载荷移除。
@@ -746,11 +756,10 @@ export async function generateNaiImage(
     toastr.warning(`vibe「${skipped.join('、')}」${reason},已跳过`, '柏宝绘');
   }
 
-  const positiveForInput = opts.latentTagOnly
-    ? // 站点只吃 tag:input 与 parameters.prompt 同源(纯 tag、无 nl)。
-      // 此前只重算 parameters.prompt、input 仍拼 nl——违反本函数自立的
-      // 「nl 不拼 prompt」不变式,站长口径被顶层字段绕过,已修复。
-      fullPositivePrompt(nai, values.prompt, '', latentPromptOpts)
+  const positiveForInput = opts.latentFlatPrompt
+    ? // input 与 parameters.prompt 必须同源:同一个扁平串(质量词 + 画师串 + tag + nl)。
+      // 此前只重算 parameters.prompt、input 走另一套拼装,顶层字段会绕过站点口径。
+      fullPositivePrompt(nai, values.prompt, values.nl, latentPromptOpts)
     : fullPositivePrompt(nai, values.prompt, values.nl);
   const body = {
     input: positiveForInput,
