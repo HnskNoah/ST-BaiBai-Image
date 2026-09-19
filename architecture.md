@@ -3,6 +3,7 @@
 > 给新聊天的 AI 快速定位代码用。先读本文,再按「任务定位索引」找文件;深入设计取舍见
 > `DESIGN.md`(总设计草案)、`GALLERY-STORAGE-DESIGN.md`(图库/画师串预览图存储)与
 > `NAI-PRESET-DESIGN.md`(NAI 预设化方案,待定稿)。
+> 面向第三方插件作者的接口文档是 `PUBLIC_API.md`(**对外契约,改接口必须同批改它**)。
 
 ## 1. 这是什么
 
@@ -12,7 +13,8 @@
   把 tag 以 `<bbi_image>...</bbi_image>` 形式插进正文(用户可手改);
 - 楼层里 tag 位置渲染一张「生图卡片」,点生成即调用出图后端(ComfyUI / NovelAI),
   结果图片落盘到 ST 文件系统,元数据存消息 extra,支持历史翻页/重新生成/stale 提示;
-- 自带一个全屏设置窗口(渠道、角色管理、设置),整个 UI 活在 **shadow DOM** 里,与 ST 样式隔离。
+- 自带一个全屏设置窗口(渠道、角色管理、设置),整个 UI 活在 **shadow DOM** 里,与 ST 样式隔离;
+- 对外开放 `globalThis.STBaiBaiImage`(读角色库 / 出图),让别的插件自己决定图显示在哪(见 §9)。
 
 技术栈:Vite + Vue 3(script setup)+ TypeScript,Vitest 单测。产物 `dist/index.js` + `dist/index.css`,
 manifest.json 的版本号由 `scripts/sync-version.mjs` 在 build 前自动同步(package.json → manifest)。
@@ -30,6 +32,7 @@ src/
 │   ├── keyboard.ts    # shadow 内编辑控件方向键不冒泡到 ST 全局快捷键
 │   ├── clipboard.ts   # 复制到剪贴板统一入口(失败 toast;卡片/灯箱/历史页共用)
 │   ├── images.ts      # /api/images/* 上传/删除/列举封装(user/images 子目录归类;画师串预览图、图库)
+│   │                  # + probeUserImage:HEAD 探存在与体积(三态:在/不在/分不清)
 │   ├── imageFile.ts   # 图片读取与 canvas 缩放(File→dataURL、makeJpegThumbnail;与网络层分开)
 │   └── iconFallback.ts# 注入按钮的字体图标兜底(防美化主题清空图标)
 ├── state/             # 全局状态与持久化
@@ -66,12 +69,20 @@ src/
 │   │                  # (collect/detect/import 纯函数三件套,绝不写回智绘姬)
 │   ├── vibeGroups.ts  # Vibe 分组纯逻辑(装箱 key/归拢/搜索/启用集合判定)
 │   └── size.ts        # 画幅方向归一 / 尺寸解析 / 按方向取配置(刻意不 import settings)
+├── generate.ts        # ★ 一次出图的共用中段:NAI 闸门 → 按后端分派 → 拿到图。
+│                      # 楼层卡片与公开接口的**唯一**生成路径(不落盘/不显示/不埋点)
+├── public/            # ★ 开放给第三方插件的接口(globalThis.STBaiBaiImage,见 §9)
+│   ├── types.ts       # 第三方契约 DTO + apiVersion(与 pluginVersion 分开,只增不改不删)
+│   ├── api.ts         # 实现层:深拷贝出参、错误归一成带 code 的普通 Error、图转 data URL
+│   └── register.ts    # 挂 globalThis + ready/changed 事件 + subscribe(冻结 API 对象)
 ├── floor/             # ★ 链路 B:楼层生图卡片
 │   ├── hydrate.ts     # 渲染事件 → 锚点×tag 配对 → 每锚点 attachShadow → Vue 卡片挂载(幂等)
 │   ├── Card.vue       # 卡片本体(**纯展示层**,运行态在 genState.ts)+ 历史翻页
 │   ├── genState.ts    # ★ 生成运行态 store(模块级,跨卡片重建存活)——改卡片状态先读它
 │   ├── genQueue.ts    # NAI 并发闸门 + 节奏等待(ComfyUI 靠服务端队列,不经过这里)
 │   ├── collapseState.ts # 卡片折叠态模块级 store(按槽位 key 认领;手动折叠覆盖默认设置)
+│   ├── missingImages.ts # ★ 「文件已不在」路径册(模块级 reactive):图库删文件留下的破指针,
+│   │                  # 由卡片 <img> @error → HEAD 确认 404 才落册(分不清一律不记)
 │   ├── Lightbox.vue   # 图片放大层(含长按保存的三条约束,改前必读顶部注释)
 │   ├── lightbox.ts    # 命令式打开灯箱(挂插件 shadow root,非卡片 shadow)
 │   ├── PromptEditor.vue # 手动改提示词的弹窗(结构化字段,非展示串;自带 Esc 捕获)
@@ -90,12 +101,14 @@ src/
 │   ├── backend/index.vue      # 「渠道」页:页签(webui 已隐藏)+ 各后端面板
 │   │   └── panels/            # ComfyUIPanel / NaiPanel / WebUIPanel(隐藏,代码保留)/ NaiArtistManager
 │   ├── characters/index.vue   # 「角色管理」页:全局/本聊天两区卡片式外貌库 CRUD + 历史回滚
-│   ├── gallery/index.vue      # 「图库」页:按角色名分组浏览 user/images/柏宝绘_<角色名>/(只读:放大+看提示词+另存,删图仍走卡片)
+│   ├── gallery/index.vue      # 「图库」页:按角色名分组浏览 user/images/柏宝绘_<角色名>/(放大+看提示词+另存;多选删除**只删文件不碰聊天记录**,分组体积逐张 HEAD 量但 ⚠ 已暂时禁用)
 │   ├── history/index.vue      # 「请求历史」页:调试辅助(LLM 提示词/响应/生图元信息)
 │   └── settings/index.vue     # 「设置」页:渠道管理/自动 tag/提示词编辑/界面偏好(最大页)
 ├── components/       # 通用组件:BbiSelect/BbiCombo/BbiTextarea/Collapsible/ConfirmDialog/FloatingOrb/Icon/ModalMask/NavBar
 │                     # (BbiCombo = 可输入可过滤下拉,与副 API 模型框同交互,菜单 Teleport 防裁剪)
 ├── styles/           # base.css(全局基础样式)、theme.css(主题变量,data-theme 切换)
+├── bytes.ts          # 字节数 → 人读体积(1024 进制、单位写 KB/MB 与资源管理器对齐;非有限值返回空串)
+├── pool.ts           # 限并发 map(mapLimit,返回顺序=输入顺序);图库量体积/批量删图用
 ├── menu.ts           # 魔杖菜单入口注入(轮询等懒加载)
 ├── topbar.ts         # ST 顶栏快速打开按钮(受 ui.showTopBar 开关控制)
 └── version.ts        # 版本号(__BBI_VERSION__)+ 带 ver 的资源 URL
@@ -109,10 +122,15 @@ src/
    `dist/index.css` 以 `<link>` 注入 shadow root —— 样式双向隔离。
 2. `$(() => ...)`:挂载应用、注入魔杖菜单入口、按开关同步顶栏按钮。
 3. `hydrateWhenReady()`:轮询 `window.SillyTavern.getContext`(最多 ~20s),就绪后依次:
-   `hydrateSettings()` → `bindCharTagSync()` → `ensureImageTagRegexRegistered()` →
-   `bindAutoTagging()` → `bindFloorHydration()` → `bindTagActionButtons()` → `checkForUpdate()`
+   `hydrateSettings()` → `initGlobalCharTags()` → `bindCharTagSync()` →
+   `ensureImageTagRegexRegistered()` → `bindAutoTagging()` → `bindFloorHydration()` →
+   `bindTagActionButtons()` → `registerPublicInterface()` → `checkForUpdate()`
    (每会话只查一次远端版本,不阻塞其余初始化)。
    各 bind 函数均**幂等**(内部 `bound` 标志),可安全重复调用。
+   **顺序里有两处不能动**:`initGlobalCharTags()` 必须在 `bindCharTagSync()` 之前
+   (首次重算就要把全局条目合进派生库);`registerPublicInterface()` 必须在
+   `hydrateSettings()` 之后 —— 设置回灌前 `getBackendStatus()` 读的是默认值,
+   会把明明配好的用户报成「未配置」,而第三方多半在 ready 事件里立刻问一次。
 
 新增「启动时要做的绑定」→ 在 `hydrateWhenReady` 里加一行,并让绑定函数幂等。
 
@@ -133,6 +151,7 @@ src/
 | `getWorldInfoPrompt` / 动态 import `checkWorldInfo` | autoTag/context.ts | 世界书激活(后者拿条目对象可逐条渲染;取不到自动降级前者) |
 | `globalThis.EjsTemplate`(ST-Prompt-Template) | autoTag/context.ts | 世界书条目 EJS 执行(未装则降级) |
 | `globalThis.STBaiBaiBook` | autoTag/bookMemory.ts | 柏宝书角色状态(apiVersion 1;不可用返回 null 降级) |
+| `globalThis.STBaiBaiImage` + window 事件 | public/register.ts | **我们自己挂出去的**公开接口(§9);`st-baibai-image:ready` / `:changed` 派发在 window 上 |
 | HTTP 代理 | api/client.ts、backends/comfyui.ts、floor/upload.ts、st/images.ts | `/api/backends/chat-completions/generate`、`/api/backends/chat-completions/status`、`/api/sd/comfy/*`、`/api/files/upload|delete`、`/api/images/upload|delete|folders|list` |
 | 扩展更新 API | src/update.ts | `GET /api/extensions/discover`(查类型)+ `POST /api/extensions/update`(自动更新);远端版本读 GitHub raw manifest.json(8s 超时,失败静默) |
 | 注入 DOM | menu.ts、topbar.ts、floor/actionButton.ts | 魔杖菜单 / 顶栏按钮 / 楼层按钮(不进 shadow) |
@@ -310,9 +329,23 @@ tag 原文被 DOMPurify 剥壳后当正文显示出来(用户直接看见一串 
   (新 tag 写进去了、卡片却停在旧图),多 tag 楼层更怪:有旧图的槽位被拦、纯新增的照跑。
   `'force'`(用户点「应用并重新生成」)无条件跑——来回改回旧提示词时该桶可能已有历史。
 - generate():输入就地取值存 `job`(在途时组件很可能已销毁,再读 props 不可靠)→ 定种子 →
-  按 `settings.defaultBackend` 分派 → `saveImageResult` 落盘 → 清运行态 → `hydrateMessage`。
+  调 `generate.ts` 的 `generateImage`(闸门与后端分派都在里面)→ `saveImageResult` 落盘 →
+  清运行态 → `hydrateMessage`。
   **灯箱回调同理**:灯箱挂插件 shadow root、活得比卡片长,楼层坐标必须快照后传参
   (`removeEntry(target, at)`),不能在回调里读 props。
+
+**出图中段抽在 `src/generate.ts`(卡片与公开接口共用)**:一次出图被切成三段——
+前(登记运行态/校验参数)、**中(闸门 → 后端分派 → 拿到图)**、后(落盘/显示/埋点)。
+公开接口要的恰恰是掐头去尾的中段:第三方自己决定图显示在哪。
+- **闸门不可绕过,这是抽出它的首要理由**:直接调 `generateNaiImage` 会跑在 genQueue 闸门与
+  naiRateLimit 全局节奏之外,0.2.0 整版的限流自愈当场失效——第三方并发调用是常态,
+  绕过去的症状是用户 NAI 账号吃一串密集 429,而用户只会认为柏宝绘坏了。故两条路共用本函数,
+  `release` 包在 `finally` 里(`generate.test.ts` 锁「抛错也要还槽」)。
+- `backendStatus()` 是「能不能出图」的**唯一判据**:卡片按钮的 `configured`、公开接口的
+  `not_configured` 同源,避免「卡片能点、出图才报错」。
+- **埋点刻意留给调用方**:一条历史记录的「成功」判据各家不同——楼层卡片要等落盘成功才算成,
+  还要把「图拿到了却因任务被取代而丢弃」记成已取消;本模块只知道请求本身的成败,
+  替调用方下结论会把那两种情形谎报成成功。故 `decideSeed` 单独导出,调用方先定种子再传进来。
 
 **并发是后端属性,不是全局设置**:
 - **ComfyUI 一次性全发**:`POST /prompt` 拿到 `prompt_id` 即入**服务端**队列,轮询各查各的
@@ -411,6 +444,27 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   **写失败只 warn 不抛** —— 图已存好,不能因附属 json 丢图;老图没有侧写属正常。
 - 写回用 CAS 循环(`mutateStore`,引用比对 + `saveChat`);保存顺序:先文件后指针 / 删时先指针后文件。
 - 旧 `user/files` 图片不迁移、不删除,按原路径显示;删除旧记录仅移除指针,只对 `user/images` 图片调用文件删除接口(连同它的侧写)。
+- **图库删图是另一条路**(`deleteImageFileOnly`):没有指针可摘——图库按**目录**列图,指针散在
+  各个聊天的 extra 里,两者之间没有反向索引,而扫全库反查不可行(同侧写那条的实测数据)。
+  故它**只删文件+侧写、不碰任何聊天记录**,必然留下破指针,由卡片侧运行时降级兜底(见下)。
+
+**破指针降级(floor/missingImages.ts + Card.vue)**:模块级 `reactive(Set)` 记「已确认不在的路径」。
+- **必须放组件外**:卡片生命周期由水合决定(任一兄弟槽位出图就重建整楼),
+  标记若在组件 ref 里,重建后破图原地复活。同 `genState.ts` / `collapseState.ts`。
+- **必须先确认再落册**:`<img>` 的 `error` 分不清「文件没了」和「网断了/500」,
+  故 `confirmImageMissing` 补一次 HEAD(`st/images.ts` 的 `probeUserImage`),
+  只有服务端明确 404 才记;分不清(返回 `null`)一律不记,破图占位留着下次重挂自然重试。
+  把掉线记成删除,用户网一抖就满屏「文件已删除」且刷新前好不了。
+- **不写回 extra**:那要 `saveChat()`,而「文件没了」是磁盘的客观状态不是聊天数据,
+  且用户完全可能把文件恢复回来。会话内记住即可。
+- 卡片一律用 `liveHistory`/`liveStale`(过滤掉已确认缺失的)算 phase、翻页器、张数:
+  不过滤则翻页器多出翻得到却是空的格子、折叠条张数虚高;删光则退回 pending 给出「生成图片」
+  入口(而非顶着 ready 显示破图、连重新生成都点不了),并加一行「图片文件已删除」说明。
+- 路径归一化(`normalizeImagePath`)是**读写两侧唯一口径**:extra 存的是服务端原样返回的
+  未编码中文路径,图库拼的是逐段 `encodeURIComponent` 的,前导斜杠也有无不定;
+  两套写法不对账,图库删完图卡片照样显示破图。删除入口(`deleteImageFileOnly`)同样先走
+  这一归一化再发请求——ST 的 `/api/images/delete`、`/api/files/delete` 都是把 `body.path`
+  直接 `path.join` 到根目录、**不做 URL 解码**,编码路径传过去只会 404。
 
 **出图后端(backends/)**:
 - `comfyui.ts`:两种互斥模式在 `generateComfyImage` 里分叉,汇合点是「拿到可提交 JSON」:
@@ -593,6 +647,19 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   使图片仅在展开时挂载、收起动画结束后卸载,保留原生 `loading="lazy"`。
   每组首次显示 24 张,之后每次最多追加 24 张;追加数量仅本页面内保留,刷新页面后重置,
   同页面内收起再展开保留进度。目录/文件名仍全量读取,不影响角色搜索和总数统计。
+  **多选删除**:独立的「选择」开关(不做长按进入——浏览是主用途,点图=放大必须是默认行为),
+  分组头的复选框选的是**整组**而非当前渲染的那批(懒加载只是渲染策略)。删除逐张容错
+  (单张失败不中断其余,失败的留在列表里且仍勾着),删完 `markImagesMissing` 让已打开的
+  楼层卡片立刻降级,并**就地**从列表摘掉而非重新 `load()`(否则展开态与已加载批次全被重置)。
+  **分组体积(⚠ 暂时禁用)**:原方案逐张 HEAD 读 `Content-Length`——`/api/images/list`
+  只返回文件名(服务端 `util.js getImages` 只 map 出 `dirent.name`),既无 size 也无 mtime,
+  只能一张张问(静态路由 `res.sendFile`,实测 1~2ms 且无 body,比图库直接加载原图当缩略图
+  便宜得多)。**作者不满意这一方案(请求数随图库规模线性增长),`index.vue` 的 `load()` 中
+  `measureSizes` 调用已注释**,计算/模板/CSS/测试原样保留,恢复时解注即可;`probeUserImage`
+  仍供 `missingImages.ts` 的 404 确认使用。原设计:后台限并发(`src/pool.ts` 的 `mapLimit`,
+  6 路——ST 单进程,压太狠会卡住用户自己的聊天)且不阻塞首屏;量不到的**不计入**而非当 0
+  累加,未量全的文案带「≥」;返回三态(`exists:true` / `exists:false` / `null`=分不清),
+  `null` 让网络抖动不会被当成删除。
 - **charTags(三层真源:全局库 + 本聊天手动基线 + AI 楼层增量)**:
   - **全局库**:存 `extensionSettings['baibai_image_char_global']`(globalCharTags.ts,
     协议同共享渠道:revision + 指纹 + 广播事件),跨聊天/跨设备。定位是**冻结模板**:
@@ -695,11 +762,67 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   码点 > 255 直接抛 InvalidCharacterError —— 提示词、角色名全是中文,直接 btoa 会当场炸。
   必须先 `TextEncoder` 编码成字节再逐字节转(且分块拼接防栈溢出)。
 
-## 9. 任务定位索引(改需求先查这里)
+## 9. 公开接口:开放给第三方插件(public/)
+
+`globalThis.STBaiBaiImage`(0.2.5 起,`apiVersion: 1`)。对外文档是仓根的 **`PUBLIC_API.md`**
+—— 那是写给第三方作者看的,**改接口必须同批改它**,否则第三方照着旧文档写出来的代码会静默错。
+形制照抄隔壁柏宝书(`globalThis.STBaiBaiBook`,本插件自己就是它的消费方):第三方学一套约定即可。
+
+开三件事:`getCharacters()` 读角色库、`getBackendStatus()` 问后端就绪、`generate()` 出图,
+外加 `subscribe()` 与 `st-baibai-image:ready` / `:changed` 两个 window 事件。
+**生成的图不进任何聊天记录**:不占楼层、不写 extra,第三方自己决定显示在哪
+(动机就是这个——柏宝绘自己的图画在楼层正文里,有的插件想画在侧边栏/自己的弹窗里)。
+
+分层:`types.ts` 只有契约 DTO,`api.ts` 是实现层(跨边界的脏活全在这),`register.ts` 管挂载与事件。
+
+**五条纪律,每条都对应一类真会咬人的问题**:
+- **一切出去的数据深拷贝**(`clonePublic`)。`charTagLib.entries` 是 Vue reactive 数组,
+  原样递出去 = 把角色库的写权限一起给了:轻则被下一次 `recomputeCharTags()` 静默冲掉
+  (用户看见「我改的东西又没了」),重则 reactive 代理进了对方的响应式系统两边互相触发。
+  `capabilities` 是 getter、每次返回新副本;通知也给**每个订阅者各一份**
+  (否则第一个订阅者改坏 detail,后面的全遭殃,有单测锁)。
+- **后端状态按白名单出**,不是「整个 status 递出去再删敏感字段」——后者日后往内部结构加字段时
+  会静默泄漏。`settings.nai.key` 与各后端 url **永不出现在任何公开返回值里**
+  (`api.test.ts` 直接 dump JSON 断言不含 key/域名/端口)。`history` 同理刻意不给:
+  给出去就删不掉了(删字段要升 apiVersion)。
+- **错误归一成带 `code` 的普通 Error**(`toPublicError`)。`NaiError`/`ComfyUIError`/`DOMException`
+  的 instanceof 跨 bundle 必然失效(两份构造函数),第三方只能匹配中文文案。故统一挂
+  `aborted / not_configured / invalid_args / rate_limited / backend_error`。
+  取消判定看 `name === 'AbortError'` 而非 instanceof:abort 多半由第三方**自己的**
+  AbortController 触发,那个 DOMException 来自它的 realm。
+  `rate_limited` 与 `backend_error` 分开是因为处置方式不同(前者该等,后者重来也一样错)。
+- **图一律转 data URL**。ComfyUI 直连返回 blob: URL 要配对 `revokeObjectURL`:第三方忘了就泄漏,
+  我们替它 revoke 它的 `<img>` 就变空白。原始 blob 在 `finally` 里撕掉。
+- **不降级、不猜**:ComfyUI 不支持 `characters`(全链路不读该字段),回报 `charactersApplied: false`
+  而**不**把角色拼进 prompt —— 那正是 0.2.3 修掉的重叠躯干问题。第三方的 `onProgress`
+  抛错只记 console,不连累生成。
+
+**`apiVersion` 与 `pluginVersion` 分开**:前者是公开数据结构的版本(固定 1),后者天天涨。
+结构**只增不改不删** —— 加可选字段安全,改含义或删字段一律升 apiVersion。
+
+**落盘(`save`,默认 `true`)**:外部图照常进图库,走 `storage.ts` 的 `saveExternalImage`
+→ `user/images/柏宝绘_<角色名>/` + 同名侧写 json(与楼层图同一套目录与文件名规则,
+图库据此分组并读出提示词)。侧写存的是 **tag 原文**(`serializeImageTag`,含 `<bbi_image>` 壳)
+而非展示文本,否则图库反解析出一团糊在一起的裸 tag。**落盘失败只 warn 不抛**:图已经在
+`dataUrl` 里了,因为存不进图库就让第三方连图都拿不到是本末倒置(`path` 返回 null 让它看得出来)。
+⚠ 文件名必须过 `sidecarPathFor` 的正则,否则图库压根不去请求侧写——症状是**图在、提示词空白、
+且没有任何报错**(`storage.test.ts` 把上传用的真实文件名喂回 `sidecarPathFor` 锁这条)。
+
+**变更通知**:`register.ts` 只 `watch(() => charTagLib.entries, …, {deep:true})` —— 角色库是
+**响应式派生结果**,一律 watch 它本身,不去逐个订阅那些**导致**它变的事件(切聊天/删楼/滑动/
+手动改档/AI 建档),漏订一个就是一类静默不通知。同一批变更用 `queueMicrotask` 攒成一条
+(否则一次重算能刷出十几条一样的通知,每条都可能引第三方做一次全量刷新)。
+
+**注册时机**:必须排在 `hydrateSettings()` 之后(见 §3)。`registerPublicInterface()` 幂等,
+API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西。
+
+## 10. 任务定位索引(改需求先查这里)
 
 | 想改什么 | 去哪个文件 |
 |---|---|
 | 启动流程 / 新子系统挂载 | src/index.ts |
+| 开放/修改第三方接口 | src/public/(types 契约 + api 实现 + register 挂载)+ **PUBLIC_API.md 必须同批改**;结构只增不改不删,改含义要升 apiVersion |
+| 出图链路中段(闸门 / 后端分派 / 就绪判据) | src/generate.ts(卡片与公开接口共用;**绕过它就绕过了 NAI 闸门**) |
 | 设置项(新增字段/默认值/迁移) | src/state/settings.ts(类型 + defaults + normalize 三处) |
 | 设置窗口 UI | src/pages/settings/index.vue |
 | 提示词内置默认(破限/规范/思维链/预填充) | src/state/settings.ts 的 `DEFAULT_*` 常量(NAI 那对是 `DEFAULT_NAI_V5_*`) |
@@ -728,6 +851,8 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | 画师串库管理器(搜索/预览图/批量删除) | src/pages/backend/panels/NaiArtistManager.vue(纯逻辑在 backends/naiArtistLib.ts;内置只读库在 backends/nai.ts 的 `BUILTIN_NAI_ARTISTS`) |
 | 画师串预览图(user/images 上传/删除) | src/st/images.ts + imageFile.ts(文件夹常量 `ARTIST_PREVIEW_FOLDER`) |
 | 图库页(按角色名分组列图) | src/pages/gallery/index.vue(目录/文件列举在 st/images.ts 的 `listUserImageFolders` / `listUserImages`) |
+| 图库多选删除 / 分组体积(体积**已暂时禁用**,代码保留待恢复) | src/pages/gallery/index.vue + src/floor/storage.ts 的 `deleteImageFileOnly`(只删文件不碰聊天记录)+ st/images.ts 的 `probeUserImage`(HEAD 三态返回;现供 404 确认,原亦量体积)+ src/pool.ts / src/bytes.ts |
+| 图被删后卡片不显示破图 | src/floor/missingImages.ts(模块级 reactive 册,HEAD 确认 404 才落册)+ Card.vue 的 `liveHistory` / `liveStale` / `@error` |
 | 图库点图看提示词 | src/floor/storage.ts 的 `sidecarFileName` / `sidecarPathFor`(存图时写侧写)+ gallery/index.vue(当前聊天读 extra、其余取侧写;展示口径 `formatPromptText`) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |
@@ -738,7 +863,7 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | NAI 429 / 重试 / 退避 / 全局冷却 | src/backends/naiRateLimit.ts(策略与节奏状态唯一口径;genQueue 取槽后等待,nai.ts 包住请求) |
 | 图片放大 / 长按保存 / 保存删除按钮 | src/floor/Lightbox.vue + lightbox.ts(另存走 download.ts) |
 | 卡片版面 / 按钮尺寸基线 / 卡片主题 | src/floor/card.css + cardStyles.ts(令牌来自 styles/theme.css) |
-| 结果存储 / 文件命名 / CAS | src/floor/storage.ts + src/st/images.ts |
+| 结果存储 / 文件命名 / CAS | src/floor/storage.ts + src/st/images.ts(外部图落盘走同文件的 `saveExternalImage`,与楼层图共用目录/文件名/侧写规则) |
 | 显示/提示词两侧的正则 | src/st/imageTagRegex.ts(提示词展示全文口径 `formatPromptText`,卡片与图库共用) |
 | 楼层按钮 / 顶栏按钮 / 魔杖入口 | src/floor/actionButton.ts / src/topbar.ts / src/menu.ts |
 | 正文写回(含竞态) | src/st/messageEdit.ts |
@@ -751,7 +876,7 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 | 版本号 | package.json(build 自动同步到 manifest.json;更新对比源 = 远端 GitHub manifest.json 的 version) |
 | 更新检测 / 自动更新 | src/update.ts(红点/按钮在 NavBar.vue + settings/index.vue;仅 `isNewer` 有单测) |
 
-## 10. 测试与构建
+## 11. 测试与构建
 
 ```bash
 pnpm test        # vitest 单测(与源码同目录 *.test.ts)
@@ -761,4 +886,11 @@ pnpm build       # 产物 dist/(build 前自动 sync manifest 版本)
 
 单测重点覆盖:autoTag 的协议解析/提示词组装(快照)、backends 的参数构造与工作流渲染、
 floor 的存储结构/自动生成标记/运行态与闸门(genState/genQueue 的 token 认领、剪枝、并发)、
-size 归一化。UI 层(Vue 组件)无测试。
+size 归一化、公开接口(`public/*.test.ts` + `generate.test.ts`:深拷贝不外泄、
+key/url 不出现在返回值里、错误 code 归一、闸门抛错也还槽)。UI 层(Vue 组件)无测试。
+
+**vitest 跑的是 node 环境,仓里没装 jsdom**:没有 `window`、没有 `document`。要测「浏览器里
+才有」的东西就得自己造替身——如 `register.test.ts` 用 `vi.stubGlobal('window', new EventTarget())`
+(且必须**在 import 被测模块之前**建好,否则模块拿到的还是那个不存在的 window);
+slotHealth 那类 DOM 判据则靠鸭子类型假节点。这也是 Card.vue 等组件逻辑要往纯函数里抽的原因
+(`shouldAutoGenerate`、`slotHealth`),留在组件里就锁不住。
