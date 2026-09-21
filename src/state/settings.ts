@@ -205,9 +205,52 @@ export interface NaiArtistPreset {
   previewPath?: string;
 }
 
-/** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */
+/** 官方站地址。内置那条接入点的 url 恒为它(UI 禁改,normalize 也把脏数据纠回来)。 */
+export const NAI_OFFICIAL_URL = 'https://image.novelai.net';
+
+/** 内置官方接入点的固定 id。靠它认人而非靠 url 比对(与内置画师串 `bi_*` 同套路)。 */
+export const OFFICIAL_NAI_ENDPOINT_ID = 'nep_official';
+
+/** 这条是不是内置官方接入点(url 只读、不可删、不可改名)。 */
+export function isOfficialNaiEndpoint(id: string): boolean {
+  return id === OFFICIAL_NAI_ENDPOINT_ID;
+}
+
+/**
+ * 一条 NAI 接入点:只有地址与密钥。
+ *
+ * 为什么**只**把 url/key 拆成多条、模型/采样器/尺寸一概留在渠道级:公益站之间换的是
+ * 「从哪儿发、用谁的额度」,协议与参数完全一致。参数若跟着接入点走,换个站就得把
+ * 步数/画师串/vibe 重配一遍,而用户要的恰恰是「同一套设置换个出口」。
+ */
+export interface NaiEndpoint {
+  id: string;
+  /** 显示名(下拉切换用;允许重名,以 id 为键)。 */
+  name: string;
+  /** 接口地址;内置官方那条恒为 NAI_OFFICIAL_URL。 */
+  url: string;
+  /** 该站的 API Key(公益站各有各的 key,故随条目走而非渠道级共用一份)。 */
+  key: string;
+}
+
+/** NAI 连接与出图参数。接入点(地址+密钥)可存多条,见 endpoints。 */
 export interface NaiSettings extends BackendConn {
-  /** API Key(与副 API 渠道同口径,随设置落盘)。 */
+  /**
+   * 接入点列表。**不变式:恒非空,且必含内置官方那条**(normalize 缺则补回列表首位)。
+   * 官方条不可删,故 UI 不必处理「删空了怎么办」——与 ComfyUI 工作流库的恒非空同构,
+   * 与画师串库的「允许为空」相反:没有地址就出不了图,它是必需品。
+   */
+  endpoints: NaiEndpoint[];
+  /** 当前使用的接入点 id;悬空时由 normalize 回落到第一条(地址是必需品,不能落空)。 */
+  activeEndpointId: string;
+  /**
+   * 【存量字段,已不参与出图】老版本的单一渠道密钥。
+   *
+   * 出图一律走 effectiveNai()(取 endpoints 里当前那条),这两个键(key 与继承自
+   * BackendConn 的 url)留着**只为回滚**:装回旧版本时配置还在。迁移是纯加法、不清空
+   * ——与 negativePrompt 并框那次刻意不同:那边是「同一个框换了位置」,留着会让人以为
+   * 两份都生效;这里 UI 上压根不再显示它们,不存在误解。
+   */
   key: string;
   model: NaiModel;
   /** 负面提示词覆盖值;留空 = 按模型取官方负面词(见 nai.ts naiDefaultUndesired)。 */
@@ -1017,10 +1060,26 @@ export function newNaiArtist(name = DEFAULT_ARTIST_NAME): NaiArtistPreset {
   return { id: `art_${Date.now()}_${artistSeq}`, name, prompt: '', quality: '', negative: '' };
 }
 
+/** 内置官方接入点。key 随用户填(内置的只是地址与名字,不是别人的密钥)。 */
+function officialNaiEndpoint(key = ''): NaiEndpoint {
+  return { id: OFFICIAL_NAI_ENDPOINT_ID, name: 'NovelAI 官方', url: NAI_OFFICIAL_URL, key };
+}
+
+let naiEpSeq = 0;
+
+/** 新建一条空接入点(id 前缀 nep_,不与 art_/wf_/ch_ 的 id 空间相撞)。 */
+export function newNaiEndpoint(name = '新接入点'): NaiEndpoint {
+  naiEpSeq += 1;
+  return { id: `nep_${Date.now()}_${naiEpSeq}`, name, url: '', key: '' };
+}
+
 function naiDefaults(): NaiSettings {
   return {
-    ...backendDefaults('https://image.novelai.net'),
+    ...backendDefaults(NAI_OFFICIAL_URL),
     resolution: '832×1216',
+    // 新装即带内置官方那条并选中它:地址是必需品,空列表会让「测试连接」无处可点
+    endpoints: [officialNaiEndpoint()],
+    activeEndpointId: OFFICIAL_NAI_ENDPOINT_ID,
     key: '',
     model: 'nai-diffusion-5-full',
     undesiredContent: '',
@@ -1190,6 +1249,32 @@ export function activeNaiArtist(): NaiArtistPreset | null {
     BUILTIN_NAI_ARTISTS.find(a => a.id === id) ??
     null
   );
+}
+
+/**
+ * 当前使用的接入点。
+ *
+ * 不返回 null(同 activeComfyPreset,与 activeNaiArtist 的「可为 null」相反):
+ * endpoints 恒非空、id 悬空也在 normalize 阶段回落过,这里再兜一层是为了
+ * 「UI 运行中把列表改坏」这种时序,让调用方不必到处判空。
+ * 刻意只读不写:本函数在 computed 里被调用,写 settings 会引起递归求值。
+ */
+export function activeNaiEndpoint(): NaiEndpoint {
+  const list = settings.nai.endpoints;
+  return list.find(e => e.id === settings.nai.activeEndpointId) ?? list[0] ?? officialNaiEndpoint();
+}
+
+/**
+ * 出图/测试连接/vibe 编码用的 NaiSettings:渠道级全部参数 + 当前接入点的 url/key。
+ *
+ * **后端层一律吃这个,不吃 settings.nai**(同 effectiveComfyConn 的理由):
+ * backends/nai.ts 关心的是「这一次往哪儿发、用谁的 key」,而不是「用户存了几个站」。
+ * 漏走一处的症状很隐蔽——那处会用上存量的 nai.url/nai.key(老用户还是通的),
+ * 只有切到第二个接入点的人才会发现某个功能还在往老地址发。
+ */
+export function effectiveNai(): NaiSettings {
+  const ep = activeNaiEndpoint();
+  return { ...settings.nai, url: ep.url, key: ep.key };
 }
 
 /**
@@ -1411,6 +1496,47 @@ function normalizeArtistPreset(raw: unknown, seq: number): NaiArtistPreset {
   };
 }
 
+/**
+ * 单条接入点清洗。官方条的 name/url 一律纠回内置值:UI 已禁掉改名与改址,
+ * 还能出现别的值只有手改 settings.json 一途;纠回去也顺带让内置名随插件版本更新。
+ * key 例外 —— 那是用户自己的密钥,内置的只是地址与名字。
+ */
+function normalizeNaiEndpoint(raw: unknown, seq: number): NaiEndpoint {
+  const o = (raw ?? {}) as Partial<NaiEndpoint>;
+  const id = typeof o.id === 'string' && o.id ? o.id : `nep_${Date.now()}_${seq}`;
+  if (isOfficialNaiEndpoint(id)) return officialNaiEndpoint(typeof o.key === 'string' ? o.key : '');
+  return {
+    id,
+    name: typeof o.name === 'string' && o.name ? o.name : `接入点 ${seq + 1}`,
+    url: typeof o.url === 'string' ? o.url : '',
+    key: typeof o.key === 'string' ? o.key : '',
+  };
+}
+
+/**
+ * 接入点列表的存量迁移与不变式兜底。
+ *
+ * 老配置只有渠道级 url/key 一对:收成第一条(名字按它指向官方还是第三方分别取),
+ * 并保证内置官方那条一定在列——用户当初填的若是第三方站,官方条补在**其后**,
+ * 免得静默把当前使用的那条挤到第二位、还顺手换了出图出口。
+ */
+function migrateNaiEndpoints(o: Partial<NaiSettings>): NaiEndpoint[] {
+  const list = Array.isArray(o.endpoints) ? o.endpoints.map(normalizeNaiEndpoint) : [];
+
+  if (!list.length) {
+    // 存量:渠道级 url/key 收成第一条。url 恰是官方地址(绝大多数人)时直接并入官方条,
+    // 不另起一条,否则列表一上来就是两条内容相同的。
+    const url = typeof o.url === 'string' ? o.url.trim() : '';
+    const key = typeof o.key === 'string' ? o.key : '';
+    if (!url || url.replace(/\/+$/, '') === NAI_OFFICIAL_URL) return [officialNaiEndpoint(key)];
+    return [{ id: `nep_legacy`, name: '我的接入点', url, key }, officialNaiEndpoint()];
+  }
+
+  // 官方条被删掉了(手改 settings.json,或以后版本回滚往返):补回去,但不抢当前那条的位置
+  if (!list.some(e => isOfficialNaiEndpoint(e.id))) list.push(officialNaiEndpoint());
+  return list;
+}
+
 function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   const conn = normalizeBackend(raw, def);
   const o = (raw ?? {}) as Partial<NaiSettings>;
@@ -1426,6 +1552,7 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   const artistPresets = Array.isArray(o.artistPresets)
     ? o.artistPresets.map(normalizeArtistPreset)
     : def.artistPresets;
+  const endpoints = migrateNaiEndpoints(o);
   // 悬空 id 一律清成空串(= 不使用)。**不**照抄 normalizeComfyUI 的「回落第一条」:
   // 用户删掉当前画师串后本该「什么都不加」,回落会给他静默换一套画风,而下拉显示的
   // 也正是那一条(看起来就是自己设的),几乎无法排查。
@@ -1440,6 +1567,14 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
     ...conn,
     // 「附加负面」已并入 undesiredContent 一个框,存量值折进去(见 foldLegacyNegative)
     negativePrompt: '',
+    // 接入点:存量 url/key 收成第一条;恒非空且必含官方条(见 migrateNaiEndpoints)。
+    // 悬空 id 回落第一条——与画师串「悬空清空」相反:地址是必需品,清空就出不了图了。
+    endpoints,
+    activeEndpointId:
+      typeof o.activeEndpointId === 'string' && endpoints.some(e => e.id === o.activeEndpointId)
+        ? o.activeEndpointId
+        : endpoints[0].id,
+    // 存量字段:出图已不读它(走 effectiveNai),原样留着只为回滚时配置不丢
     key: typeof o.key === 'string' ? o.key : def.key,
     model,
     // 覆盖值:空串是有意义的存储值(=跟随模型官方词),故不能用 `&& o.x` 那种把 '' 吞掉的守卫

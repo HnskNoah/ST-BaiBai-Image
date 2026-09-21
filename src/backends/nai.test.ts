@@ -31,6 +31,8 @@ function nai(overrides: Partial<NaiSettings> = {}): NaiSettings {
     portraitSize: '832×1216',
     landscapeSize: '1216×832',
     key: 'nai-test',
+    endpoints: [{ id: 'nep_official', name: 'NovelAI 官方', url: 'https://image.novelai.net', key: 'nai-test' }],
+    activeEndpointId: 'nep_official',
     model: 'nai-diffusion-4-5-full',
     undesiredContent: '',
     sampler: 'k_euler',

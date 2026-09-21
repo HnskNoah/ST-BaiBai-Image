@@ -106,6 +106,12 @@ export async function buildAutoTagMessages(
   preparedTargetOverride?: PreparedTargetText,
   /** 角色固定外貌库文本(charAnchors.ts 产出);空/null = 本轮无库,示例改用自行补特征的口径。 */
   library?: string | null,
+  /**
+   * 追加给模型的任务备注(单槽重写时说明「只重写第 N 张的提示词、画面不变」,
+   * 并带上该槽位当前提示词作锚点与其余画面清单)。
+   * 空串/缺省时不占消息位;放在角色参考与上下文之后、目标正文之前。
+   */
+  taskNote?: string,
 ): Promise<ChatMsg[]> {
   const target = context.chat[targetFloor];
   const preparedTarget =
@@ -265,7 +271,8 @@ ${characterRule}
   const thinking = backendThinkingPrompt(options, naiCharPromptsOn);
   if (thinking) messages.push({ role: 'system', content: thinking });
   const libraryBlock = library?.trim() || `【角色固定外貌库】[system-maintained; currently empty]\n（当前为空，没有任何角色已建档。世界书、角色卡、柏宝书和正文只提供建档依据；未列在本区块中的正式角色必须通过 field:"new" 建档。）`;
-  const userContent = `${memoryText}\n\n${libraryBlock}\n\n${previous ? `${previous}\n\n` : ''}--- 目标正文｜${roleLabel(context, targetFloor)} ---\n${preparedTarget.promptText}`;
+  const taskBlock = taskNote?.trim() ? `${taskNote.trim()}\n\n` : '';
+  const userContent = `${memoryText}\n\n${libraryBlock}\n\n${taskBlock}${previous ? `${previous}\n\n` : ''}--- 目标正文｜${roleLabel(context, targetFloor)} ---\n${preparedTarget.promptText}`;
   messages.push({ role: 'user', content: userContent });
   // 预填充:以 <thinking> 开头,强制模型从思考清单续写;渠道「发送预填充」关闭时由 client 丢弃。
   const prefill = (options.prompts?.prefill ?? '').trim() || DEFAULT_PREFILL_PROMPT;
