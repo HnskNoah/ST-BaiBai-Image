@@ -56,10 +56,16 @@ import ModalMask from '@/components/ModalMask.vue';
 import { getContext } from '@/st/context';
 import {
   activeNaiArtist,
+  activeNaiEndpoint,
+  effectiveNai,
+  isOfficialNaiEndpoint,
   newNaiArtist,
+  newNaiEndpoint,
   NAI_MODELS,
+  NAI_OFFICIAL_URL,
   settings,
   type NaiArtistPreset,
+  type NaiEndpoint,
   type NaiVibe,
 } from '@/state/settings';
 import { computed, nextTick, onMounted, ref } from 'vue';
@@ -79,13 +85,84 @@ async function onTestConnection() {
   if (testing.value) return;
   testing.value = true;
   try {
-    const result = await testNaiConnection(settings.nai);
-    toastr.success(result.message, 'NAI 连接');
+    // 测当前选中那条接入点(而非渠道级存量 url/key),与出图同一份连接
+    const result = await testNaiConnection(effectiveNai());
+    toastr.success(result.message, `NAI 连接 · ${endpoint.value.name}`);
   } catch (error) {
-    toastr.error(errorMessage(error), 'NAI 连接失败');
+    toastr.error(errorMessage(error), `NAI 连接失败 · ${endpoint.value.name}`);
   } finally {
     testing.value = false;
   }
+}
+
+/* ============ 接入点库(地址 + 密钥;形制照搬下方画师串行) ============ */
+
+/**
+ * 多条接入点解决的是「公益站换着用」:同一套出图参数,换个出口。
+ * 故这里只管 url/key,模型/采样器/尺寸一概留在渠道级,切站不用重配。
+ */
+const endpoint = computed<NaiEndpoint>(() => activeNaiEndpoint());
+
+/** 官方那条只读:名字/地址不给改、不给删,复制出来的副本才随便改。 */
+const isOfficialEndpoint = computed(() => isOfficialNaiEndpoint(endpoint.value.id));
+
+const endpointOptions = computed(() =>
+  settings.nai.endpoints.map(e => ({ value: e.id, label: e.name || '未命名接入点' })),
+);
+
+/** 下拉取「实际生效的那条」而非存的 id:悬空时 activeNaiEndpoint 回落首条,下拉要跟着显示。 */
+const activeEndpointId = computed<string>({
+  get: () => endpoint.value.id,
+  set: id => {
+    settings.nai.activeEndpointId = id;
+  },
+});
+
+/** 改名低频:平时只显示下拉,点「改名」才把选择器原地换成输入框(同画师串行)。 */
+const renamingEndpoint = ref(false);
+const endpointNameDraft = ref('');
+const endpointNameInput = ref<HTMLInputElement | null>(null);
+const endpointDeleteOpen = ref(false);
+
+function startRenameEndpoint() {
+  if (isOfficialEndpoint.value) return; // 官方条只读(按钮已禁用,双保险)
+  endpointNameDraft.value = endpoint.value.name;
+  renamingEndpoint.value = true;
+  nextTick(() => endpointNameInput.value?.focus());
+}
+
+/** Enter / 失焦都算确认;Esc 直接置 false 不经过这里,即为取消。 */
+function commitRenameEndpoint() {
+  if (renamingEndpoint.value && !isOfficialEndpoint.value) {
+    endpoint.value.name = endpointNameDraft.value.trim() || endpoint.value.name;
+  }
+  renamingEndpoint.value = false;
+}
+
+function addEndpoint() {
+  const preset = newNaiEndpoint(`接入点 ${settings.nai.endpoints.length + 1}`);
+  settings.nai.endpoints.push(preset);
+  settings.nai.activeEndpointId = preset.id;
+}
+
+function duplicateEndpoint() {
+  // 官方条也走这里:复制出来的是普通条目,地址可改 —— 这是「照着官方改个镜像」的捷径
+  const src = endpoint.value;
+  const preset: NaiEndpoint = { ...newNaiEndpoint(), name: `${src.name} 副本`, url: src.url, key: src.key };
+  settings.nai.endpoints.push(preset);
+  settings.nai.activeEndpointId = preset.id;
+}
+
+function confirmRemoveEndpoint() {
+  endpointDeleteOpen.value = false;
+  if (isOfficialEndpoint.value) return; // 官方条不可删:endpoints 恒非空靠它保底
+  const list = settings.nai.endpoints;
+  const index = list.findIndex(e => e.id === endpoint.value.id);
+  if (index < 0) return;
+  list.splice(index, 1);
+  // 接位到原位置那一条(已是最后一条则退一格)。**不**像画师串那样回落空串:
+  // 地址是必需品,空了就出不了图 —— 与工作流库同口径。
+  settings.nai.activeEndpointId = list[Math.min(index, list.length - 1)].id;
 }
 
 /* ============ 画师串库(形制照搬 ComfyUI 工作流库) ============ */
@@ -381,6 +458,16 @@ const currentVibeKey = computed(() => vibeModelKey(settings.nai.model));
 const vibesSupported = computed(() => naiSupportsVibes(settings.nai.model));
 const samplerOptions = computed(() => naiSamplers(settings.nai.model));
 
+/** BbiSelect 的 modelValue 是 string,而 nai.model 是字面量联合;这层 get/set 只为搭桥。
+ *  写入前对一遍 NAI_MODELS:下拉本就只发合法值,但少了这句类型断言就是空口无凭。 */
+const modelSel = computed<string>({
+  get: () => settings.nai.model,
+  set: v => {
+    const hit = NAI_MODELS.find(m => m.value === v);
+    if (hit) settings.nai.model = hit.value;
+  },
+});
+
 /** 生成 vibe 列表缩略图(最长边 96px 的 jpeg dataURL);失败回空串,由入库方按「无缩略图」处理。 */
 async function makeThumbnail(dataUrl: string): Promise<string> {
   try {
@@ -400,7 +487,7 @@ async function makeThumbnail(dataUrl: string): Promise<string> {
 async function encodeVibeGated(imageBase64: string): Promise<string> {
   const release = await acquireNaiSlot();
   try {
-    return await encodeVibeImage(settings.nai, imageBase64, settings.nai.model);
+    return await encodeVibeImage(effectiveNai(), imageBase64, settings.nai.model);
   } finally {
     release();
   }
@@ -711,6 +798,76 @@ async function removeVibe(vibe: NaiVibe) {
 
     <div class="bbi-sections">
       <Collapsible title="配置" :open="false">
+        <!-- 接入点库:公益站换着用的人不止一个出口,但换站只换地址+密钥,
+             模型/采样器/尺寸等出图参数一概留在下面,渠道级共用,切站不用重配 -->
+        <div class="art-row">
+          <span class="bbi-field-label">接入点</span>
+          <input
+            v-if="renamingEndpoint"
+            ref="endpointNameInput"
+            class="bbi-input"
+            type="text"
+            v-model="endpointNameDraft"
+            placeholder="接入点名称"
+            spellcheck="false"
+            title="Enter 确认，Esc 取消"
+            @keydown.enter.prevent="commitRenameEndpoint"
+            @keydown.esc.stop.prevent="renamingEndpoint = false"
+            @blur="commitRenameEndpoint"
+          />
+          <BbiSelect
+            v-else
+            class="art-select"
+            v-model="activeEndpointId"
+            :options="endpointOptions"
+            aria-label="当前接入点"
+          />
+          <span v-if="!renamingEndpoint" class="art-ops">
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              :disabled="isOfficialEndpoint"
+              :title="isOfficialEndpoint ? '官方接入点不可改名' : '重命名当前接入点'"
+              aria-label="重命名当前接入点"
+              @click="startRenameEndpoint"
+            >
+              <Icon name="edit" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              title="新建一条空接入点"
+              aria-label="新建一条空接入点"
+              @click="addEndpoint"
+            >
+              <Icon name="plus" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              :title="
+                isOfficialEndpoint
+                  ? '照官方复制一条,复制出来的地址可以改'
+                  : '复制当前接入点(含地址与密钥)'
+              "
+              aria-label="复制当前接入点"
+              @click="duplicateEndpoint"
+            >
+              <Icon name="copy" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op art-remove"
+              type="button"
+              :disabled="isOfficialEndpoint"
+              :title="isOfficialEndpoint ? '官方接入点不可删除' : '删除当前接入点'"
+              aria-label="删除当前接入点"
+              @click="endpointDeleteOpen = true"
+            >
+              <Icon name="trash" :size="14" />
+            </button>
+          </span>
+        </div>
+
         <div class="bbi-field">
           <div class="bbi-field-head">
             <span class="bbi-field-label">接口地址</span>
@@ -718,11 +875,19 @@ async function removeVibe(vibe: NaiVibe) {
           <input
             class="bbi-input"
             type="text"
-            v-model="settings.nai.url"
-            placeholder="https://image.novelai.net"
+            v-model="endpoint.url"
+            :readonly="isOfficialEndpoint"
+            :placeholder="NAI_OFFICIAL_URL"
             spellcheck="false"
+            :title="isOfficialEndpoint ? '官方接入点地址固定,不可修改' : ''"
           />
-          <p class="bbi-field-hint">默认官方;第三方站填域名即可,自动补全 /ai 端点。</p>
+          <p class="bbi-field-hint">
+            {{
+              isOfficialEndpoint
+                ? '官方接入点,地址固定;要用第三方站请点上方「+」新建一条。'
+                : '第三方站填域名即可,自动补全 /ai 端点。'
+            }}
+          </p>
         </div>
 
         <div class="bbi-field">
@@ -733,7 +898,7 @@ async function removeVibe(vibe: NaiVibe) {
             <input
               class="bbi-input"
               :type="showKey ? 'text' : 'password'"
-              v-model="settings.nai.key"
+              v-model="endpoint.key"
               placeholder="nai-..."
               spellcheck="false"
             />
@@ -746,7 +911,14 @@ async function removeVibe(vibe: NaiVibe) {
               <Icon :name="showKey ? 'eye-off' : 'eye'" />
             </button>
           </div>
-          <p class="bbi-field-hint">官方站在 NovelAI 设置页生成。</p>
+          <!-- key 随条目走而非渠道级共用:公益站各有各的 key,共用一份等于每次换站都要重填 -->
+          <p class="bbi-field-hint">
+            {{
+              isOfficialEndpoint
+                ? '在 NovelAI 设置页生成。每条接入点各存各的 key。'
+                : '该站自己的 key;每条接入点各存各的,切回官方不会串。'
+            }}
+          </p>
         </div>
 
         <div class="conn-actions">
@@ -927,9 +1099,12 @@ async function removeVibe(vibe: NaiVibe) {
           <div class="bbi-field-head">
             <span class="bbi-field-label">模型</span>
           </div>
-          <select class="bbi-input bbi-select" v-model="settings.nai.model">
-            <option v-for="m in NAI_MODELS" :key="m.value" :value="m.value">{{ m.label }}</option>
-          </select>
+          <BbiSelect
+            class="be-select"
+            v-model="modelSel"
+            :options="NAI_MODELS"
+            aria-label="NAI 模型"
+          />
         </div>
 
         <div class="be-row">
@@ -977,19 +1152,23 @@ async function removeVibe(vibe: NaiVibe) {
             <div class="bbi-field-head">
               <span class="bbi-field-label">采样器</span>
             </div>
-            <select class="bbi-input bbi-select" v-model="settings.nai.sampler">
-              <option v-for="s in samplerOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
-            </select>
+            <BbiSelect
+              class="be-select"
+              v-model="settings.nai.sampler"
+              :options="samplerOptions"
+              aria-label="采样器"
+            />
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
               <span class="bbi-field-label">噪声表</span>
             </div>
-            <select class="bbi-input bbi-select" v-model="settings.nai.noiseSchedule">
-              <option v-for="s in NAI_NOISE_SCHEDULES" :key="s.value" :value="s.value">
-                {{ s.label }}
-              </option>
-            </select>
+            <BbiSelect
+              class="be-select"
+              v-model="settings.nai.noiseSchedule"
+              :options="NAI_NOISE_SCHEDULES"
+              aria-label="噪声表"
+            />
           </div>
         </div>
 
@@ -1403,6 +1582,17 @@ async function removeVibe(vibe: NaiVibe) {
     <NaiArtistManager v-model:open="artistManagerOpen" />
 
     <ConfirmDialog
+      v-model:open="endpointDeleteOpen"
+      title="删除接入点"
+      confirm-text="删除"
+      confirm-icon="trash"
+      tone="danger"
+      @confirm="confirmRemoveEndpoint"
+    >
+      确定删除接入点「{{ endpoint.name || '未命名接入点' }}」？地址与 API Key 会一并删除。
+    </ConfirmDialog>
+
+    <ConfirmDialog
       v-model:open="artistDeleteOpen"
       title="删除画师串"
       confirm-text="删除"
@@ -1475,6 +1665,12 @@ async function removeVibe(vibe: NaiVibe) {
 
 .be-row .bbi-field {
   margin-bottom: 0;
+}
+
+/* 参数区的自绘下拉吃满字段宽:与同行的 .bbi-input(模型名/尺寸)左右对齐,
+   子组件根类默认 180px/flex:none,这里压过去。 */
+.be-select {
+  width: 100%;
 }
 
 .be-row--nums {

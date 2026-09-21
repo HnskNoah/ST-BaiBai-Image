@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
-import { cancelFloorTags, requestSlotTag } from '@/autoTag/runner';
+import { cancelFloorTags } from '@/autoTag/runner';
 import type { Orientation } from '@/backends/size';
 import Icon from '@/components/Icon.vue';
 import { confirmDialog } from '@/components/confirm';
@@ -33,7 +33,7 @@ import {
   saveImageResult,
   type BbiImageEntry,
 } from '@/floor/storage';
-import { beginTagPlan, endTagPlan, isTagPlanning } from '@/floor/tagPlanState';
+import { isTagPlanning } from '@/floor/tagPlanState';
 import { activeComfyPreset, settings } from '@/state/settings';
 import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
 import { copyText } from '@/st/clipboard';
@@ -127,7 +127,7 @@ const menuOpen = ref(false);
 const record = computed(() => getGenRecord(key.value));
 
 /**
- * 「AI 重选画面」的提示词规划在途(模块级 store,见 floor/tagPlanState.ts)。
+ * 「AI 重写提示词」的请求在途(模块级 store,见 floor/tagPlanState.ts)。
  * 与出图运行态刻意分开:它跑的是 LLM 请求,取消/并发语义与出图各自独立。
  */
 const planning = computed(() => isTagPlanning(key.value));
@@ -217,7 +217,7 @@ const statusLabel = computed(() => {
 
 /** 折叠条主文案:生成中报进度;出错报原因;有图给提示词摘要(区分同楼多图);空槽位显示待生成。 */
 const barText = computed(() => {
-  if (planning.value) return '重新规划提示词…';
+  if (planning.value) return 'AI 重写提示词…';
   if (busy.value) return statusLabel.value;
   if (phase.value === 'error') return error.value || '生成失败';
   if (shownEntry.value) return props.prompt || props.nl || '图片';
@@ -359,34 +359,13 @@ function openEditor(): void {
 }
 
 /**
- * 「AI 重选画面」:重新阅读本楼正文,为这一张另选一个画面并重写提示词。
+ * 取消在途的「AI 重写提示词」。
  *
- * 与「重绘」的区别:重绘用同一条提示词再出一张;这里是让 AI 重写提示词本身。
- * 写回由 runner 按 seq 原位替换(本楼其它 tag 与图片一字不动),旧图落进本槽位的
- * 「旧提示词」桶。规划在途时本组件随时可能被重水合销毁,故运行态存模块级 store,
- * 重建后的卡片照常显示「重新规划中…」并保留取消入口。
+ * 入口在提示词编辑弹窗里(floor/promptEditor.ts),不在卡片上 —— 手改与 AI 改是同一件事。
+ * 但**请求不属于那个弹窗**:用户关掉弹窗后重写照跑,故卡片这边仍要显示进度并留取消口,
+ * 否则关了窗就只剩一张悄悄变化的图、没处叫停。展示态读 tagPlanState,中止靠 runner
+ * 的每楼请求锁。
  */
-async function replan(): Promise<void> {
-  if (planning.value || busy.value || !configured.value) return;
-  // 确认窗是异步的,期间本组件可能已被重水合销毁——楼层坐标先快照(同灯箱/编辑弹窗纪律)
-  const messageId = props.messageId;
-  const seq = props.seq;
-  const slot = key.value;
-  const ok = await confirmDialog({
-    title: 'AI 重选画面',
-    text: 'AI 会重新阅读本楼正文，为这张图另选画面并重写提示词；当前图片会保留在「旧提示词」里，本楼其它图片不受影响。',
-    confirmText: '重新选择',
-  });
-  if (!ok) return;
-  const handle = beginTagPlan(slot);
-  try {
-    await requestSlotTag(messageId, seq);
-  } finally {
-    endTagPlan(slot, handle);
-  }
-}
-
-/** 取消在途的「重选画面」:中止 LLM 请求;展示态收尾由 replan 的 finally 完成。 */
 function cancelReplan(): void {
   cancelFloorTags(props.messageId);
 }
@@ -507,11 +486,11 @@ onMounted(() => {
         <button class="bbi-figure__cancel" type="button" @click="cancel">取消</button>
       </div>
 
-      <!-- 提示词规划遮罩(AI 重选画面):还是同一张图,只盖一层进度与取消;
+      <!-- 提示词重写遮罩(AI 重写提示词):还是同一张图,只盖一层进度与取消;
            与出图遮罩互斥(replan/generate 的守卫保证两者不同时在途) -->
       <div v-else-if="planning" class="bbi-figure__busy">
         <span class="bbi-figure__spin" />
-        <span class="bbi-figure__busy-text">重新规划提示词…</span>
+        <span class="bbi-figure__busy-text">AI 重写提示词…</span>
         <button class="bbi-figure__cancel" type="button" @click="cancelReplan">取消</button>
       </div>
 
@@ -557,16 +536,6 @@ onMounted(() => {
             @click="menuOpen = false; generate()"
           >
             <Icon name="refresh" :size="15" />
-          </button>
-          <button
-            v-if="shownEntry"
-            class="bbi-fab"
-            type="button"
-            :disabled="!configured"
-            :title="configured ? 'AI 重选画面（重写提示词）' : '请先在柏宝绘「渠道」页完成配置'"
-            @click="menuOpen = false; replan()"
-          >
-            <Icon name="sparkles" :size="15" />
           </button>
           <button
             v-if="shownEntry"

@@ -107,7 +107,8 @@ export async function buildAutoTagMessages(
   /** 角色固定外貌库文本(charAnchors.ts 产出);空/null = 本轮无库,示例改用自行补特征的口径。 */
   library?: string | null,
   /**
-   * 追加给模型的任务备注(单槽重规划时说明「只重选第 N 张」并列出已占用画面)。
+   * 追加给模型的任务备注(单槽重写时说明「只重写第 N 张的提示词、画面不变」,
+   * 并带上该槽位当前提示词作锚点与其余画面清单)。
    * 空串/缺省时不占消息位;放在角色参考与上下文之后、目标正文之前。
    */
   taskNote?: string,
