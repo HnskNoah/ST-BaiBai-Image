@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { generateComfyImage } from '@/backends/comfyui';
-import { LATENT_DEFAULT_UNDESIRED_CONTENT, generateNaiImage } from '@/backends/nai';
+import { generateNaiImage } from '@/backends/nai';
 import { acquireNaiSlot } from '@/floor/genQueue';
 import { backendStatus, decideSeed, generateImage } from '@/generate';
 import { settings, type NaiModel } from '@/state/settings';
@@ -225,15 +225,27 @@ describe('latent 渠道', () => {
     });
   });
 
-  it('负面 = 渠道级(留空回落 Anima 默认)+ 本画面追加,不被顶掉', async () => {
+  it('负面 = 链值 + 本画面追加:追加走 negativeExtra,不提前拼进链(绑定值会短路它)', async () => {
     latentReady();
     await generateImage({ prompt: 'x', negative: 'outdoor', seed: 1 });
-    expect(vi.mocked(generateNaiImage).mock.calls[0][0].undesiredContent).toBe(
-      `${LATENT_DEFAULT_UNDESIRED_CONTENT}, outdoor`,
-    );
+    // 链值由 buildNaiParameters 求值,这里只传渠道级原值 + Anima 分册回落 + 本画面追加
+    expect(vi.mocked(generateNaiImage).mock.calls[0][0].undesiredContent).toBe('');
+    expect(vi.mocked(generateNaiImage).mock.calls[0][1].negativeExtra).toBe('outdoor');
+    expect(vi.mocked(generateNaiImage).mock.calls[0][1].negativeFallback).toContain('score_1');
 
     settings.latent.negativePrompt = 'lowres';
     await generateImage({ prompt: 'x', negative: 'crowd', seed: 1 });
-    expect(vi.mocked(generateNaiImage).mock.calls[1][0].undesiredContent).toBe('lowres, crowd');
+    expect(vi.mocked(generateNaiImage).mock.calls[1][0].undesiredContent).toBe('lowres');
+    expect(vi.mocked(generateNaiImage).mock.calls[1][1].negativeExtra).toBe('crowd');
+
+    // 画师串绑定负面生效时,本画面负面照旧传下去(旧实现被 bound 短路吞掉,载荷只剩绑定值)
+    settings.latent.artistPresets = [
+      { id: 'a1', name: 'Anima 画风', prompt: '@some_artist', quality: '', negative: 'boundneg' },
+    ];
+    settings.latent.activeArtistId = 'a1';
+    await generateImage({ prompt: 'x', negative: 'outdoor', seed: 1 });
+    expect(vi.mocked(generateNaiImage).mock.calls[2][1].negativeExtra).toBe('outdoor');
+    settings.latent.artistPresets = [];
+    settings.latent.activeArtistId = '';
   });
 });

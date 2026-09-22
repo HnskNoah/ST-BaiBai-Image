@@ -30,7 +30,6 @@ import {
   latentDefaultUndesired,
   naiRandomSeed,
   naiSupportsCharacterPrompts,
-  naiUndesiredContent,
 } from '@/backends/nai';
 import type { Orientation } from '@/backends/size';
 import { acquireNaiSlot } from '@/floor/genQueue';
@@ -201,18 +200,13 @@ export async function generateImage(
 
   // Latent 渠道:完全复用 NAI 机器(latentAsNai 映射后走 generateNaiImage),站点原生面
   // 的差异全在这一段兜住(别搬回调用方——卡片与公开接口共用本函数)。
-  // 负面 = naiUndesiredContent 取值(画师串绑定词 > 渠道级 negativePrompt > Anima 推荐默认
-  // latentDefaultUndesired,启用画师串时自动剔掉 artist name),再追加本画面 <negative>
-  // ——是追加不是顶掉。无本地长度上限(站长确认站点支持超 2000 字符)。
+  // 负面 = naiUndesiredContent 链(画师串绑定词 > 渠道级 negativePrompt > Anima 推荐默认
+  // latentDefaultUndesired,启用画师串时自动剔掉 artist name);本画面 <negative> **不在这里拼**
+  // ——链在 buildNaiParameters 里才求值,提前拼进 undesiredContent 会被画师串绑定值短路掉
+  // (`bound || …`),本画面负面整个丢失(实测:绑定 boundneg + 本画面 outdoor → 载荷只剩 boundneg)。
+  // 改由 values.negativeExtra 在链值之后合并 + 去重(见 nai.ts 的 mergeNegativePrompts)。
+  // 无本地长度上限(站长确认站点支持超 2000 字符)。
   const latentView = isLatent ? latentAsNai(settings.latent) : null;
-  if (latentView) {
-    latentView.undesiredContent = [
-      naiUndesiredContent(latentView, latentDefaultUndesired(latentView)),
-      (input.negative ?? '').trim(),
-    ]
-      .filter(Boolean)
-      .join(', ');
-  }
 
   let release: (() => void) | null = null;
   try {
@@ -235,7 +229,17 @@ export async function generateImage(
       : latentView
         ? await generateNaiImage(
             latentView,
-            { prompt: input.prompt, nl: input.nl ?? '', characters, seed: input.seed, size },
+            {
+              prompt: input.prompt,
+              nl: input.nl ?? '',
+              characters,
+              seed: input.seed,
+              size,
+              // 本画面负面:在链值之后合并 + 去重,不会被画师串绑定值顶掉
+              negativeExtra: (input.negative ?? '').trim(),
+              // Anima 分册回落:留空时替换「模型官方词」那一级(链在 buildNaiParameters 里求值)
+              negativeFallback: latentDefaultUndesired(latentView),
+            },
             signal,
             {
               // 站点 429 = 周配额耗尽(openapi quota_exhausted),退避等不来额度,与配置

@@ -269,6 +269,18 @@ export interface NaiGenerateValues {
   seed?: number;
   /** 画幅方向;缺省竖屏(与改动前的固定默认一致)。 */
   size?: Orientation;
+  /**
+   * 本画面追加的负面(每图 <negative>)。拼在负面解析链的**最终值之后**并去重,故不会
+   * 被画师串绑定值短路掉;NAI 官方渠道不传(它的负面只来自渠道级链,见 prompt.ts 的 negativeOn)。
+   */
+  negativeExtra?: string;
+  /**
+   * 负面解析链的注入回落值(留空时替换「内置默认」那一级)。latent 传 Anima 分册默认
+   * (latentDefaultUndesired,启用画师串时已剔掉 artist name);NAI 官方渠道不传,走模型官方词。
+   * ⚠ 必须走这个参数而不是提前写回 undesiredContent:链在这里才求值,写回的值会被
+   * 画师串绑定值短路掉(`bound || …`),回落与追加一起失效。
+   */
+  negativeFallback?: string;
 }
 
 /**
@@ -373,6 +385,28 @@ export function naiUndesiredContent(nai: NaiSettings, fallback?: string): string
 }
 
 /**
+ * 合并两段负面提示词:base 在前、extra 在后,按逗号拆分后**大小写不敏感去重**(保留首次出现)。
+ *
+ * 用途与时机:本画面 <negative> 必须拼在解析链的**最终值之后**。链本身在 buildNaiParameters 里
+ * 才求值(`bound || 渠道级 || 回落 || 默认`),提前拼进 undesiredContent 会被画师串绑定值短路掉
+ * ——本画面负面整个丢失(实测:绑定 boundneg + 本画面 outdoor → 载荷只有 boundneg)。
+ * 去重是为了「绑定值 lowres + 本画面 lowres」这类重复不白占权重与长度。
+ */
+export function mergeNegativePrompts(base: string, extra: string): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const piece of `${base},${extra}`.split(',')) {
+    const word = piece.trim();
+    if (!word) continue;
+    const key = word.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(word);
+  }
+  return out.join(', ');
+}
+
+/**
  * 正向完整 prompt:画师串在最前,画面 tag 居中,质量词在最后。
  * - 画师串 = 画风配方库当前选中条目(未选则无)。放最前是因为它决定整幅画的画风基调,
  *   NAI 对靠前 tag 的权重更高;
@@ -422,11 +456,12 @@ function characterCaption(character: ImageCharacterPrompt): string {
 }
 
 /**
- * 负面完整 prompt = 配方绑定值 → 渠道覆盖值(undesiredContent)→ 模型官方负面词
+ * 负面完整 prompt = 配方绑定值 → 渠道覆盖值(undesiredContent)→ 注入回落(可省)→ 模型官方负面词
  * (见 naiUndesiredContent)。想额外排除什么,往任一级的值里接即可。
+ * fallback 由调用方按渠道分册给(latent 传 latentDefaultUndesired);缺省走模型官方词。
  */
-export function fullNegativePrompt(nai: NaiSettings): string {
-  return naiUndesiredContent(nai);
+export function fullNegativePrompt(nai: NaiSettings, fallback?: string): string {
+  return naiUndesiredContent(nai, fallback);
 }
 
 /**
@@ -447,7 +482,10 @@ export function buildNaiParameters(
   // 显式传入 > 面板固定种子 > 随机
   const seed = values.seed ?? (nai.seed > 0 ? nai.seed : naiRandomSeed());
   const prompt = fullPositivePrompt(nai, values.prompt, values.nl);
-  const negative = fullNegativePrompt(nai);
+  const negative = mergeNegativePrompts(
+    fullNegativePrompt(nai, values.negativeFallback),
+    values.negativeExtra ?? '',
+  );
   const skipCfg = skipCfgAboveSigma(width, height, nai.model, nai.varietyBoost);
   const sampler = isNai5(nai.model) && !NAI_V5_SAMPLERS.has(nai.sampler) ? 'k_euler_ancestral' : nai.sampler;
 

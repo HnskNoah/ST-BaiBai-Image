@@ -10,6 +10,7 @@ import {
   isBuiltinNaiArtist,
   LATENT_DEFAULT_QUALITY_TAGS,
   latentDefaultUndesired,
+  mergeNegativePrompts,
   naiArtistPrompt,
   naiDefaultQualityTags,
   naiDefaultUndesired,
@@ -437,6 +438,44 @@ describe('NAI V5 support', () => {
     );
     expect(withArtist).not.toContain('artist name');
     expect(withArtist).toContain('score_1');
+  });
+
+  // 实跑暴露的缺口:画师串绑定负面生效时,本画面 <negative> 被顶掉——链在
+  // buildNaiParameters 里才求值(`bound || …`),提前拼进 undesiredContent 的追加值读不到。
+  it('mergeNegativePrompts: 追加值拼在链值之后,大小写不敏感去重', () => {
+    expect(mergeNegativePrompts('lowres, boundneg', 'outdoor, Lowres')).toBe(
+      'lowres, boundneg, outdoor',
+    );
+    expect(mergeNegativePrompts('lowres', '')).toBe('lowres');
+    expect(mergeNegativePrompts('', 'outdoor')).toBe('outdoor');
+    expect(mergeNegativePrompts('', '')).toBe('');
+    // 带权重语法的词与裸词是不同的词,不去重
+    expect(mergeNegativePrompts('(lowres:1.2)', 'lowres')).toBe('(lowres:1.2), lowres');
+  });
+
+  it('buildNaiParameters: 画师串绑定负面 + 本画面负面同时进载荷,negative_prompt 与 v4 caption 同源', () => {
+    const settings = nai({
+      artistPresets: [
+        { id: 'a1', name: 'Anima 画风', prompt: '@some_artist', quality: '', negative: 'boundneg, lowres' },
+      ],
+      activeArtistId: 'a1',
+    });
+    const params = buildNaiParameters(settings, { prompt: 'x', negativeExtra: 'outdoor, Lowres' });
+    expect(params.negative_prompt).toBe('boundneg, lowres, outdoor');
+    // JsonObject 无类型,断言形状后读取(与同文件既有 v4 断言同款)
+    const v4 = params.v4_negative_prompt as { caption: { base_caption: string } };
+    expect(v4.caption.base_caption).toBe('boundneg, lowres, outdoor');
+  });
+
+  it('buildNaiParameters: negativeFallback 替换「内置默认」那一级,缺省仍走模型官方词', () => {
+    const view = nai({ model: 'nai-diffusion-4-5-full' });
+    const withFallback = buildNaiParameters(view, {
+      prompt: 'x',
+      negativeFallback: 'worst quality, score_1',
+    });
+    expect(withFallback.negative_prompt).toBe('worst quality, score_1');
+    const withoutFallback = buildNaiParameters(view, { prompt: 'x' });
+    expect(String(withoutFallback.negative_prompt)).toContain('lowres');
   });
 
   it('maps Base Tag + NL and native Character Prompts into the V5 caption schema', () => {
