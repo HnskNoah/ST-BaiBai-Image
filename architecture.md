@@ -112,7 +112,6 @@ src/
 ├── menu.ts           # 魔杖菜单入口注入(轮询等懒加载)
 ├── topbar.ts         # ST 顶栏快速打开按钮(受 ui.showTopBar 开关控制)
 └── version.ts        # 版本号(__BBI_VERSION__)+ 带 ver 的资源 URL
-└── update.ts         # 更新检测:远端 manifest 版本对比 + /api/extensions/update 自动更新
 ```
 
 ## 3. 启动与挂载(读 index.ts)
@@ -124,8 +123,7 @@ src/
 3. `hydrateWhenReady()`:轮询 `window.SillyTavern.getContext`(最多 ~20s),就绪后依次:
    `hydrateSettings()` → `initGlobalCharTags()` → `bindCharTagSync()` →
    `ensureImageTagRegexRegistered()` → `bindAutoTagging()` → `bindFloorHydration()` →
-   `bindTagActionButtons()` → `registerPublicInterface()` → `checkForUpdate()`
-   (每会话只查一次远端版本,不阻塞其余初始化)。
+   `bindTagActionButtons()` → `registerPublicInterface()`。
    各 bind 函数均**幂等**(内部 `bound` 标志),可安全重复调用。
    **顺序里有两处不能动**:`initGlobalCharTags()` 必须在 `bindCharTagSync()` 之前
    (首次重算就要把全局条目合进派生库);`registerPublicInterface()` 必须在
@@ -153,7 +151,6 @@ src/
 | `globalThis.STBaiBaiBook` | autoTag/bookMemory.ts | 柏宝书角色状态(apiVersion 1;不可用返回 null 降级) |
 | `globalThis.STBaiBaiImage` + window 事件 | public/register.ts | **我们自己挂出去的**公开接口(§9);`st-baibai-image:ready` / `:changed` 派发在 window 上 |
 | HTTP 代理 | api/client.ts、backends/comfyui.ts、floor/upload.ts、st/images.ts | `/api/backends/chat-completions/generate`、`/api/backends/chat-completions/status`、`/api/sd/comfy/*`、`/api/files/upload|delete`、`/api/images/upload|delete|folders|list` |
-| 扩展更新 API | src/update.ts | `GET /api/extensions/discover`(查类型)+ `POST /api/extensions/update`(自动更新);远端版本读 GitHub raw manifest.json(8s 超时,失败静默) |
 | 注入 DOM | menu.ts、topbar.ts、floor/actionButton.ts | 魔杖菜单 / 顶栏按钮 / 楼层按钮(不进 shadow) |
 
 注意:三处 UI 的隔离层次不同,样式约定各不一样 ——
@@ -935,8 +932,8 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 主题 | src/styles/theme.css + state/ui.ts 的 THEMES |
 | 图标 | src/components/Icon.vue(新增图标 + PATHS) |
 | 新增页面 | src/pages/<id>/index.vue + pages/registry.ts 注册 + Icon.vue 加图标 |
-| 版本号 | package.json(build 自动同步到 manifest.json;更新对比源 = 远端 GitHub manifest.json 的 version) |
-| 更新检测 / 自动更新 | src/update.ts(红点/按钮在 NavBar.vue + settings/index.vue;仅 `isNewer` 有单测) |
+| 版本号 | package.json(build 自动同步到 manifest.json;设置页标题行右端纯展示) |
+| 更新检测(**已撤,勿贸然恢复**) | 原实现(src/update.ts)拿上游 `baibai-git/ST-BaiBai-Image` 的 manifest 比对版本,而本 fork 的更新源与上游不同:上游一发新版就误报「有新版本」,用户点「更新」走 ST 扩展更新 API 拉的是扩展目录自己的 git remote,会把上游原版覆盖进来、本地改动全丢。恢复前必须三处一起改:`REMOTE_MANIFEST_URL` 指向本仓库的 raw manifest(发布分支)、`manifest.json` 的 `homePage`、README 的安装地址,并保证本仓库版本号 ≥ 上游(参考四段式 `0.2.8.13`:前三段锚定上游同步基线,小修只动末段)。 |
 
 ## 11. 测试与构建
 

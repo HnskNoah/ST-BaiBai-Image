@@ -32,8 +32,8 @@ import {
   type OrbShape,
   type ThemeName,
 } from '@/state/ui';
-import { checkForUpdate, performUpdate, updateState } from '@/update';
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { PLUGIN_VERSION } from '@/version';
+import { computed, nextTick, ref } from 'vue';
 
 const NAV_OPTIONS: { value: NavPosition; label: string }[] = [
   { value: 'auto', label: '自动' },
@@ -489,51 +489,16 @@ function closeModelMenuSoon() {
     modelQuery.value = '';
   }, 150);
 }
-
-const updateConfirmOpen = ref(false);
-onMounted(() => void checkForUpdate(true));
-
-function openUpdateConfirm() {
-  if (updateState.available) updateConfirmOpen.value = true;
-}
-
-async function confirmUpdate() {
-  updateConfirmOpen.value = false;
-  const toastr = (globalThis as Record<string, any>).toastr;
-  try {
-    await performUpdate();
-    toastr?.success?.('更新成功,正在刷新页面…', '柏宝绘');
-  } catch (error) {
-    toastr?.error?.(`更新失败:${error instanceof Error ? error.message : String(error)}`, '柏宝绘');
-  }
-}
 </script>
 
 <template>
   <section class="bbi-page">
-    <!-- 标题行右端显示版本号;有更新时旁边出现更新按钮。 -->
+    <!-- 标题行右端显示版本号(纯展示:更新检测已撤——本 fork 的更新源与上游不同,
+         指回上游的比对会误报「有新版本」并诱导用户把上游覆盖进来,见 architecture.md) -->
     <div class="bbi-page-head">
       <h2 class="bbi-title bbi-title-sub">设置</h2>
       <div class="bbi-ver-row">
-        <button
-          class="bbi-ver"
-          type="button"
-          :disabled="updateState.checking"
-          :title="updateState.checking ? '正在检查更新' : '点击检查更新'"
-          @click="checkForUpdate(true)"
-        >
-          v{{ updateState.current || '—' }}
-        </button>
-        <button
-          v-if="updateState.available"
-          class="bbi-btn bbi-btn-primary bbi-btn-sm"
-          type="button"
-          :disabled="updateState.updating"
-          :title="`更新到 v${updateState.latest}`"
-          @click="openUpdateConfirm"
-        >
-          {{ updateState.updating ? '更新中…' : '更新' }}
-        </button>
+        <span class="bbi-ver">v{{ PLUGIN_VERSION }}</span>
       </div>
     </div>
     <hr class="bbi-rule" />
@@ -1140,18 +1105,6 @@ async function confirmUpdate() {
         </footer>
       </div>
     </ModalMask>
-
-    <ConfirmDialog
-      v-model:open="updateConfirmOpen"
-      title="发现新版本"
-      confirm-text="更新并刷新"
-      busy-text="更新中…"
-      :busy="updateState.updating"
-      @confirm="confirmUpdate"
-    >
-      当前版本 v{{ updateState.current || '—' }},最新版本 v{{ updateState.latest }}。<br />
-      现在更新吗?更新完成后会自动刷新页面生效。
-    </ConfirmDialog>
   </section>
 </template>
 
@@ -1162,22 +1115,16 @@ async function confirmUpdate() {
   gap: 8px;
 }
 
-/* —— 版本标签:实心强调底 + 反白字,点击可重新检查 —— */
+/* —— 版本标签:实心强调底 + 反白字,纯展示(更新检测已撤,不再可点) —— */
 .bbi-ver {
-  border: 0;
   padding: 7px 12px;
   border-radius: var(--bbi-radius-pill);
   background: var(--bbi-accent);
   color: var(--bbi-accent-ink);
-  cursor: pointer;
   font-family: var(--bbi-font-mono);
   font-size: 13px;
   font-weight: 600;
   line-height: 1;
-}
-.bbi-ver:disabled {
-  cursor: wait;
-  opacity: 0.7;
 }
 
 /* —— 总开关主控卡 —— */

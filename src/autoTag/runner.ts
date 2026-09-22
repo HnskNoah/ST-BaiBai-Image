@@ -8,8 +8,9 @@ import {
 } from '@/autoTag/charAnchors';
 import { prepareTargetText } from '@/autoTag/clean';
 import { beginGeneration, clearGeneration, consumeGeneration } from '@/autoTag/generationGate';
-import { buildAutoTagMessages } from '@/autoTag/prompt';
+import { buildAutoTagMessages, tagLintMode } from '@/autoTag/prompt';
 import { rebaseImagePositions, type RebaseReport } from '@/autoTag/rebase';
+import { lintImagePlan } from '@/autoTag/taglint';
 import {
   BBI_CHAR_EXTRA_KEY,
   CHAR_TAG_FIELDS,
@@ -440,6 +441,14 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       }
       for (const n of tagRes.unknown) unknownNames.add(n);
     }
+
+    // 出图前的机械兜底(见 autoTag/taglint.ts):不该接 on 的词 / 锚点自我绑定 / size 词混进串 /
+    // nl 中文 / 同人括号未转义。放在 @占位符替换**之后**是必须的——库里的 fandom 存的是未转义
+    // 原文(存储形态,见 DEFAULT_NAI_THINKING 的 B 段),落 tag 才转义;替换进来的库值也得过网,
+    // 否则「只写 @角色名」这条路径会绕过转义。
+    const lintRes = lintImagePlan(plan.images, { mode: tagLintMode(), where: `第 ${floor} 楼` });
+    if (lintRes.fixed) console.info(`[柏宝绘] tag lint 修正 ${lintRes.fixed} 处`, lintRes.details);
+
     if (unknownNames.size) {
       // 模型认为这是角色、却没给它建档 —— 该角色在图里将完全没有外貌。
       // 这是漏建档唯一的确定性信号,藏进控制台等于没有,必须让用户看见。

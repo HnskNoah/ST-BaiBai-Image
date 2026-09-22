@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAutoTagMessages, characterPromptsOn } from '@/autoTag/prompt';
+import { buildAutoTagMessages, characterPromptsOn, tagLintMode } from '@/autoTag/prompt';
 import {
   activeComfyPreset,
   settings,
@@ -834,6 +834,30 @@ describe('auto tag prompt', () => {
       expect(characterPromptsOn()).toBe(true);
       settings.nai.model = 'nai-diffusion-3';
       expect(characterPromptsOn()).toBe(false);
+    } finally {
+      settings.defaultBackend = oldBackend;
+      settings.nai.model = oldNaiModel;
+    }
+  });
+
+  // taglint 的模式判据(见 autoTag/taglint.ts):与 backendPromptSpec 同源,按规范族分流。
+  // 顺序承重——characterPromptsOn 只对 nai 为真,先判 NAI 系会把 V5 送进单串规则。
+  it('tagLintMode: routes by spec family (v5 / latent / comfyui)', () => {
+    const oldBackend = settings.defaultBackend;
+    const oldNaiModel = settings.nai.model;
+    try {
+      settings.defaultBackend = 'latent';
+      expect(tagLintMode()).toBe('latent');
+
+      settings.defaultBackend = 'comfyui';
+      expect(tagLintMode()).toBe('comfyui');
+
+      settings.defaultBackend = 'nai';
+      settings.nai.model = 'nai-diffusion-5-full';
+      expect(tagLintMode()).toBe('v5');
+      // 已下线模型的遗留单串分支与 latent 共用 DEFAULT_NAI_SPEC,故同走 latent 规则
+      settings.nai.model = 'nai-diffusion-4-full';
+      expect(tagLintMode()).toBe('latent');
     } finally {
       settings.defaultBackend = oldBackend;
       settings.nai.model = oldNaiModel;

@@ -16,6 +16,7 @@ import {
   fetchWorldInfo,
 } from '@/autoTag/context';
 import type { BookMemoryContext } from '@/autoTag/bookMemory';
+import type { TagLintMode } from '@/autoTag/taglint';
 import { isAiStoryMessage, isStoryMessage, type STContext } from '@/st/context';
 import type { AutoTagSettings } from '@/state/settings';
 import {
@@ -56,6 +57,21 @@ export function isNaiFamilyBackend(): boolean {
  */
 export function characterPromptsOn(): boolean {
   return settings.defaultBackend === 'nai' && naiSupportsCharacterPrompts(settings.nai.model);
+}
+
+/**
+ * 出图前 tag 机械修正的模式(见 autoTag/taglint.ts)。判据与 backendPromptSpec 同源——
+ * 按**规范族**分流,不按渠道名:
+ * - characterPromptsOn()(nai + 4.5/V5)→ 'v5'(Base + Character Prompts;角色名与 nl 允许中文原名);
+ * - 其余 NAI 系(latent 与 NAI 遗留单串共用 DEFAULT_NAI_SPEC)→ 'latent'(单串 + tag 区禁止归属);
+ * - 其他(comfyui / webui)→ 'comfyui'(单串 + 邻接绑定是刚需)。
+ * ⚠ 顺序承重:必须先判 characterPromptsOn 再判 isNaiFamilyBackend——characterPromptsOn 只对
+ * nai 为真,先判 NAI 系会把 NAI V5 送进单串规则;而漏判 latent 则会让 comfyui 的邻接绑定规则
+ * 去剥 latent 的 tag(那里的归属全在 nl,不在 tag)。
+ */
+export function tagLintMode(): TagLintMode {
+  if (characterPromptsOn()) return 'v5';
+  return isNaiFamilyBackend() ? 'latent' : 'comfyui';
 }
 
 /**
