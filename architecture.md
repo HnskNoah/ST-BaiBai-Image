@@ -1052,7 +1052,7 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 主题 | src/styles/theme.css + state/ui.ts 的 THEMES |
 | 图标 | src/components/Icon.vue(新增图标 + PATHS) |
 | 新增页面 | src/pages/<id>/index.vue + pages/registry.ts 注册 + Icon.vue 加图标 |
-| 版本号 | package.json(build 自动同步到 manifest.json;设置页标题行右端纯展示) |
+| 版本号 | `package.json`(build 自动同步到 `manifest.json` 的 `?ver=`;设置页标题行右端纯展示)。**约定:跟随上游基线** —— 合并上游后用上游那版号,不自行加本地段(历史上 0.1.x→0.2.8→0.3.0 全是对齐上游的)。§10 提到的四段式只是"以后恢复更新检测时"的备选,不是现行做法 |
 | 更新检测(**已撤,勿贸然恢复**) | 原实现(src/update.ts)拿上游 `baibai-git/ST-BaiBai-Image` 的 manifest 比对版本,而本 fork 的更新源与上游不同:上游一发新版就误报「有新版本」,用户点「更新」走 ST 扩展更新 API 拉的是扩展目录自己的 git remote,会把上游原版覆盖进来、本地改动全丢。恢复前必须三处一起改:`REMOTE_MANIFEST_URL` 指向本仓库的 raw manifest(发布分支)、`manifest.json` 的 `homePage`、README 的安装地址,并保证本仓库版本号 ≥ 上游(参考四段式 `0.2.8.13`:前三段锚定上游同步基线,小修只动末段)。 |
 
 ## 11. 测试与构建
