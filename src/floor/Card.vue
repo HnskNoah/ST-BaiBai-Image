@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
-
+import { cancelFloorTags } from '@/autoTag/runner';
 import type { Orientation } from '@/backends/size';
 import Icon from '@/components/Icon.vue';
 import { confirmDialog } from '@/components/confirm';
@@ -33,6 +33,7 @@ import {
   saveImageResult,
   type BbiImageEntry,
 } from '@/floor/storage';
+import { isTagPlanning } from '@/floor/tagPlanState';
 import { activeComfyPreset, settings } from '@/state/settings';
 import { filterCharTagByName } from '@/state/charTags';
 import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
@@ -131,6 +132,12 @@ const menuOpen = ref(false);
 /** 运行态记录(可能为 undefined = 无在途任务)。 */
 const record = computed(() => getGenRecord(key.value));
 
+/**
+ * 「AI 重写提示词」的请求在途(模块级 store,见 floor/tagPlanState.ts)。
+ * 与出图运行态刻意分开:它跑的是 LLM 请求,取消/并发语义与出图各自独立。
+ */
+const planning = computed(() => isTagPlanning(key.value));
+
 const phase = computed<Phase>(() => {
   const running = record.value;
   if (running) return running.phase;
@@ -194,8 +201,8 @@ const downloadFileName = (entry: BbiImageEntry): string => {
 const isStale = computed(() => !liveHistory.value.length && !!liveStale.value);
 /** 生成中/排队中仍显示上一张(若有),避免卡片塌空;骨架叠在其上。 */
 const busy = computed(() => phase.value === 'generating' || phase.value === 'queued');
-/** 历史翻页:多于一张且不在生成中才给(按存活张数,破指针不占格)。 */
-const pageable = computed(() => liveHistory.value.length > 1 && !busy.value);
+/** 历史翻页:多于一张且不忙才给(按存活张数,破指针不占格)。 */
+const pageable = computed(() => liveHistory.value.length > 1 && !busy.value && !planning.value);
 
 /** 有过结果、但文件已被删光(通常是在图库里删的)。据此给一句说明,免得像凭空丢图。 */
 const filesGone = computed(
@@ -218,6 +225,7 @@ const statusLabel = computed(() => {
 
 /** 折叠条主文案:生成中报进度;出错报原因;有图给提示词摘要(区分同楼多图);空槽位显示待生成。 */
 const barText = computed(() => {
+  if (planning.value) return 'AI 重写提示词…';
   if (busy.value) return statusLabel.value;
   if (phase.value === 'error') return error.value || '生成失败';
   if (shownEntry.value) return props.prompt || props.nl || '图片';
@@ -241,7 +249,7 @@ const pendingHint = computed(() => {
 });
 
 async function generate(): Promise<void> {
-  if (busy.value || !configured.value) return;
+  if (busy.value || planning.value || !configured.value) return;
   const slot = key.value;
   const currentHash = hash.value;
   // 本次任务的输入全部就地取值:请求在途时本组件很可能已被重水合销毁
@@ -379,6 +387,18 @@ function openEditor(): void {
   });
 }
 
+/**
+ * 取消在途的「AI 重写提示词」。
+ *
+ * 入口在提示词编辑弹窗里(floor/promptEditor.ts),不在卡片上 —— 手改与 AI 改是同一件事。
+ * 但**请求不属于那个弹窗**:用户关掉弹窗后重写照跑,故卡片这边仍要显示进度并留取消口,
+ * 否则关了窗就只剩一张悄悄变化的图、没处叫停。展示态读 tagPlanState,中止靠 runner
+ * 的每楼请求锁。
+ */
+function cancelReplan(): void {
+  cancelFloorTags(props.messageId);
+}
+
 /** 删除当前展示的这一条结果(DESIGN-FLOOR-UI.md §8.2)。 */function removeCurrent(): void {
   const target = shownEntry.value;
   if (!target) return;
@@ -459,9 +479,9 @@ onMounted(() => {
       title="展开图片"
       @click="collapsed = false"
     >
-      <span v-if="busy" class="bbi-figure__bar-spin" aria-hidden="true" />
+      <span v-if="busy || planning" class="bbi-figure__bar-spin" aria-hidden="true" />
       <Icon v-else name="generate" :size="14" class="bbi-figure__bar-icon" />
-      <span class="bbi-figure__bar-text" :data-error="phase === 'error' && !busy ? '1' : ''">
+      <span class="bbi-figure__bar-text" :data-error="phase === 'error' && !busy && !planning ? '1' : ''">
         {{ barText }}
       </span>
       <span v-if="liveHistory.length > 1 && !busy" class="bbi-figure__bar-count">
@@ -495,6 +515,14 @@ onMounted(() => {
         <button class="bbi-figure__cancel" type="button" @click="cancel">取消</button>
       </div>
 
+      <!-- 提示词重写遮罩(AI 重写提示词):还是同一张图,只盖一层进度与取消;
+           与出图遮罩互斥(replan/generate 的守卫保证两者不同时在途) -->
+      <div v-else-if="planning" class="bbi-figure__busy">
+        <span class="bbi-figure__spin" />
+        <span class="bbi-figure__busy-text">AI 重写提示词…</span>
+        <button class="bbi-figure__cancel" type="button" @click="cancelReplan">取消</button>
+      </div>
+
       <!-- 无图且空闲:生成入口 / 配置引导 -->
       <div v-if="!imageSrc && !busy" class="bbi-figure__pending">
         <button v-if="configured" class="bbi-figure__generate" type="button" @click="generate">
@@ -505,11 +533,11 @@ onMounted(() => {
       </div>
 
       <!-- 提示词已改:角标提示,不再整图压暗 -->
-      <span v-if="isStale && !busy" class="bbi-figure__badge">旧提示词</span>
+      <span v-if="isStale && !busy && !planning" class="bbi-figure__badge">旧提示词</span>
 
       <!-- 悬浮操作组:⋯ 收纳钮钉在右上角常驻淡显;桌面 hover 在其左侧横向浮现一排,
            触屏点开在其下方竖排展开,点任意操作后自动收起(图片平时只有一颗小点) -->
-      <span v-if="!busy" class="bbi-figure__actions" :data-open="menuOpen ? '1' : ''">
+      <span v-if="!busy && !planning" class="bbi-figure__actions" :data-open="menuOpen ? '1' : ''">
         <button
           class="bbi-fab bbi-figure__more"
           type="button"
@@ -600,7 +628,7 @@ onMounted(() => {
         重试
       </button>
     </p>
-    <p v-else-if="isStale && !busy" class="bbi-figure__status bbi-figure__status--warn">
+    <p v-else-if="isStale && !busy && !planning" class="bbi-figure__status bbi-figure__status--warn">
       提示词已修改,上图由旧提示词生成;点右上角重绘按新提示词出图
     </p>
     <!-- 文件被删(通常是在图库里删的):记录还在但图没了,明说一句免得像凭空丢图 -->

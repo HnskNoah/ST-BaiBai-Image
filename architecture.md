@@ -55,7 +55,8 @@ src/
 │   ├── context.ts     # 世界书激活(条目级渲染:展宏+EJS)、角色卡、user 人设
 │   ├── bookMemory.ts  # 读「柏宝书」全局 API,解析成角色参考块
 │   ├── charAnchors.ts # 角色库:库文本注入 → 兜底替换残留 @占位符(AI 照抄字段值,不用占位符)
-│   └── rebase.ts      # 插入位置重定位:请求时正文 → 落盘时正文(文本 LCS 骨架 + 顺延)
+│   ├── rebase.ts      # 插入位置重定位:请求时正文 → 落盘时正文(文本 LCS 骨架 + 顺延)
+│   └── slotPlan.ts    # 单槽重写提示备注(只重写第 N 张 + 当前提示词锚点 + 其余画面清单)
 ├── backends/          # 出图后端(链路 B 的生成端)+ 共享尺寸工具
 │   ├── comfyui.ts     # ComfyUI:工作流模板 %占位符% 渲染、浏览器直连/ST 转发自动回退
 │   ├── comfyTemplates.ts # 简易模式:模板族(checkpoint/flux/anima) + 参数组装 API JSON(无占位符)
@@ -80,13 +81,17 @@ src/
 │   ├── Card.vue       # 卡片本体(**纯展示层**,运行态在 genState.ts)+ 历史翻页
 │   ├── genState.ts    # ★ 生成运行态 store(模块级,跨卡片重建存活)——改卡片状态先读它
 │   ├── genQueue.ts    # NAI 并发闸门 + 节奏等待(ComfyUI 靠服务端队列,不经过这里)
+│   ├── tagPlanState.ts # 「AI 重写提示词」请求运行态 store(模块级,与 genState 分开;
+│   │                  # 存 {票据, promise}——关掉弹窗不中断重写,重开 await 回同一个接着等)
 │   ├── collapseState.ts # 卡片折叠态模块级 store(按槽位 key 认领;手动折叠覆盖默认设置)
 │   ├── missingImages.ts # ★ 「文件已不在」路径册(模块级 reactive):图库删文件留下的破指针,
 │   │                  # 由卡片 <img> @error → HEAD 确认 404 才落册(分不清一律不记)
 │   ├── Lightbox.vue   # 图片放大层(含长按保存的三条约束,改前必读顶部注释)
 │   ├── lightbox.ts    # 命令式打开灯箱(挂插件 shadow root,非卡片 shadow)
-│   ├── PromptEditor.vue # 手动改提示词的弹窗(结构化字段,非展示串;自带 Esc 捕获)
-│   ├── promptEditor.ts# 命令式打开编辑弹窗 + 写回正文(applyMessageText → 重水合)
+│   ├── PromptEditor.vue # 改提示词的弹窗(结构化字段,非展示串;自带 Esc 捕获)——手改与
+│   │                  # 「AI 重写提示词」同处一窗
+│   ├── promptEditor.ts# 命令式打开编辑弹窗 + 写回正文(applyMessageText → 重水合);
+│   │                  # 兼管 AI 重写的托管/续上与落盘后回填(rawTag 要一起刷新)
 │   ├── download.ts    # 另存图片(卡片右上角 ⋯ 菜单与灯箱共用,同源文件走 <a download>)
 │   ├── storage.ts     # 结果存储:extra 元数据(swipeId→promptHash→历史)+ 文件命名 + 侧写 json(图库提示词)
 │   ├── upload.ts      # ST /api/files/upload|delete 封装(不用未公开的 uploadFileAttachment)
@@ -459,6 +464,45 @@ release 后立刻 `pump()`,下一个任务在同一 tick 就发出去;而错误�
   `history.length > 1`,翻页器整个不出现)。旧提示词下有 N 张时改提示词 → 只剩最新一张可见
   (文件与指针都没删,改回原样即全部找回)。弹窗里据此给了明确提示。
 
+**「AI 重写提示词」(入口在编辑弹窗里;runner.ts 的 `requestSlotTag` + slotPlan.ts)**:与「重绘」
+的区别——重绘用**同一条提示词**再出一张,这里是让 AI 重读本楼正文、**重写这一条 tag 的内容**。
+画的还是原来那个瞬间,只是提示词写得更准、更全。这条纪律的落点是写回侧
+硬按 seq 原位替换、**模型返回的 position 压根不参与写回**,所以「换不换画面」实际只由
+`buildSlotTaskNote` 的措辞决定——旧版那句「另选一个与它们明显不同的瞬间」正是让按钮
+(写着"重写提示词")与模型收到的指令(其实是"换个画面")对不上的根因。
+分析与写回都只围着一个槽位转,不碰本楼其它 tag 与图片:
+- 分析基底是 `stripImageTags(整楼)`(AI 不该把 tag 当正文),并靠 `buildSlotTaskNote` 把**该槽位
+  当前的提示词原样喂回去当锚点**(不截断:不给全文,模型只能从正文猜这张画的是哪个瞬间,
+  猜偏就又成了换画面);其余槽位摘要仍然带上,但用途是「别抢它们的画面」而非「别选中它们」;
+- 强制 `min=max=1`(build 的规则文案与 `parseImagePlan` 校验要同时覆盖,只改一处自相矛盾);
+- 库文本取 `charTagsBeforeFloor(floor + 1)`（含本楼已落档增量),否则 AI 会把首轮建档的角色
+  当新人重写;**本次 AI 的 changes 一律丢弃**(首轮全量分析已为整楼建档,重复应用只会污染历史);
+- 写回是 `replaceImageTagAt` 原位替换第 seq 条(同 PromptEditor),写前按 `rawTag` 核对 seq
+  还指着同一条;成功后 `markForAutoGenerate(..., 'force')` 让本槽位自动按新提示词出图,
+  旧图落进该槽位 stale 桶,其余槽位走差量水合、图片零重建;
+- **入口在提示词编辑弹窗里,不是独立按钮**:手改与 AI 改是同一件事的两种手段,放一起用户
+  才能「让 AI 写一版 → 看着不顺手就手动接着改」。三条约束(用户明确要求)及其落点:
+  - **弹窗不自动关**——点一下就闪退像是崩了。跑完只回填输入框 + 面上给一行说明;
+  - **仍然直接落盘**——落盘与出图是 runner 干的,与弹窗无关,关不关窗都照做;
+  - **关窗不中断、重开能续上**——请求交给 `floor/tagPlanState.ts` 的 `runTagPlan` 托管,
+    生命周期归 store 不归弹窗;重开时 `awaitTagPlan(key)` 取回**同一个在途 promise** 接着等
+    (存的是 {票据, promise} 而非布尔,就是为了这个)。收尾后从**当前正文**重读第 seq 条,
+    同时刷新 `content`(回填草稿)与 `rawTag`(否则用户接着点「应用」会撞上「这条 tag 已被
+    改动」——而改动它的正是我们自己)。
+  - ⚠ **卸载后绝不能再 render**(`closed` 闸门,0.3.0 开发期踩过的真实回归):重写活得比弹窗长,
+    它的收尾回调必然在关窗之后才到,而 `paint()` 是无条件 `render(...)` 的。关键在于
+    **容器 `remove()` 了并不等于看不见**——`ModalMask` 把内容 `<Teleport>` 到 `modalHost`,
+    往脱档容器里渲一次,弹窗就原地复活贴回屏幕;复活的还是**全新实例**(`closing` 的 watch
+    没有 `immediate`,顶着 `closing=true` 挂载也不会自行隐藏),而 `requestClose` / `onApply`
+    又都在 `closing` 上早退 → 叉、取消、应用**全部点不动,窗再也关不掉**。
+    故 `paint()` 首行 `if (closed) return;`,且 `closed = true` 必须排在 `render(null)` **之前**
+    (两者之间插进一次迟到的 paint,卸载掉的就是它刚挂上的新实例,等于白关)。
+- 卡片这边仍然显示「AI 重写提示词…」遮罩并留取消钮:关了弹窗重写照跑,没有这个口子
+  就只剩一张悄悄变化的图、没处叫停。展示态读 `isTagPlanning`,取消走 `cancelFloorTags`
+  (与全量分析共用「每楼一把」的在途锁)。
+  ※ 想**换一个画面**(而不是重写同一画面的提示词)走的是另一个入口:ST ⋯ 菜单里的
+  调色盘按钮(`floor/actionButton.ts` → `requestFloorTags({replace})`),整楼重新分析。
+
 **卡片折叠(collapseState.ts + Card.vue)**:折叠态是「临时遮蔽」性质的 UI 态,不是数据——
 存模块级 store、**不写 message.extra**(每次折叠都 saveChat 落盘,代价与语义都不合适),刷新后
 回落设置项 `settings.ui.autoCollapseImages`(「楼层图片默认折叠」)。与 genState 同理必须放
@@ -596,6 +640,30 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
     `workflow` 为空串也照样建这一条。靠字段有无判断,无 schemaVersion。
   - 工作流 JSON 随设置整体进 `settings.json`(单套数 KB–数十 KB)。刻意**没有**像 Vibe 那样搬去 `user/files`:
     量级差两个数量级。若日后设置保存变慢,这里是第一嫌疑人。
+- **NAI 接入点库**:`settings.nai.endpoints`(`NaiEndpoint[]`)+ `activeEndpointId`。
+  一条接入点 = 名字 + 接口地址 + 该站的 API Key,**仅此三项**。起因是「公益站换着用」:
+  同一套出图参数要在多个出口之间切,故模型/采样器/尺寸/vibe/画师串/并发一概留在渠道级 ——
+  换站不该逼人把参数重配一遍。key 随条目走而非渠道级共用一份,因为各站各有各的 key。
+  - **不变式:`endpoints` 恒非空,且恒含内置官方那条**(`OFFICIAL_NAI_ENDPOINT_ID = 'nep_official'`,
+    url 恒为 `NAI_OFFICIAL_URL`)。`activeEndpointId` 悬空时回落 `[0]`。这三条**与工作流库同侧、
+    与画师串库相反**:地址是必需品(空了直接出不了图),回落只是换个出口且出错会当场报连接失败,
+    不像画师串回落那样静默改变每张图的样子。
+  - **官方条只读**:UI 禁掉改名/改址/删除,`normalizeNaiEndpoint` 遇 `nep_official` 一律重建成内置值
+    (手改 settings.json 也拗不过);只有 key 保留 —— 内置的是地址与名字,不是别人的密钥。
+    要用官方镜像就点「复制」得到一条普通条目,那条随便改。
+  - **存量迁移**(`migrateNaiEndpoints`,靠字段有无判断,无 schemaVersion):老配置的平铺
+    `url`/`key` 收成第一条。url 为空或就是官方地址(绝大多数)→ key 直接折进官方那条,不多出重复行;
+    是第三方站 → 建一条「我的接入点」放**首位**并保持选中,官方条**追加在后**(官方排前面会把
+    用户正在用的出口挤到第二行,看起来像被换掉了)。老字段 `nai.url`/`nai.key` **原样留着只为回滚**,
+    出图链路一律不读。`settings.naiEndpointMigration.test.ts` 锁住全部上述口径。
+  - 消费方一律走 `activeNaiEndpoint()` / `effectiveNai()`(= 渠道级全部参数 + 当前接入点的 url/key),
+    不直接摸数组。`backends/nai.ts` 三个入口(`testNaiConnection` / `generateNaiImage` /
+    `encodeVibeImage`)签名不变,吃的就是这个窄化结果 —— 同 `effectiveComfyConn()` 的理由。
+    ⚠ 漏走一处的症状很隐蔽:那处会用上存量 `nai.url`/`nai.key`,老用户仍然是通的,
+    只有切到第二个接入点的人才会发现某个功能还在往老地址发。
+  - ⚠ `backendStatus().reason` **刻意不带接入点名字**:它经 `getBackendStatus()` 原样递给第三方,
+    而名字是用户自己敲的 —— 有人就拿站点域名当名字,带上等于把地址漏进公开返回值
+    (`public/api.ts` 的白名单正是为挡这个)。面板自己的 toast 标题不受此限,那是本地 UI。
 - **NAI 画师串库**:`settings.nai.artistPresets`(`NaiArtistPreset[]`)+ `activeArtistId`。
   一条配方 = 名字 + 画师串(prompt,拼在正向提示词**最前面**) + 可选绑定的正面质量词(quality)
   + 可选绑定的负面提示词(negative);绑定值留空 = 跟随渠道级 → 模型官方词(三级回落,见
@@ -640,18 +708,28 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
     勾选框只服务批量删除;内置条无勾选框、只读。「复制」是内置条唯一下自定义入口。
   - **存量迁移**:纯加法,无老字段可折。老配置 hydrate 后得空库 + 空 id,正向提示词输出
     与上线前逐字节一致。
-- **NAI 连接配置库**:`settings.nai.connPresets`(`NaiConnPreset[]`)+ `activeConnId`。
-  一条配置 = 名字 + 接口地址 + API Key,给官方站/第三方镜像各存一套、一键切换;只管
-  「连上谁」,模型/采样器等出图参数不进配置(那是渠道级)。**顶层 `nai.url/key` 恒为生效值**:
-  nai.ts 各请求方只读它们、零改动;切换 = 配置→顶层拷贝,面板输入框编辑 = 写顶层 + 回写
-  当前选中条(单一编辑面,不存在「配置里存的」和「实际生效的」两套真相)。
-  - 空串 `activeConnId` = 「手动填写」(不存档),同画师串的「不使用」哨兵;悬空 id 由
-    `normalizeNai` 清成空串,刻意**不**回落第一条(静默换一个接口地址没法排查)。
-  - 与画师串库相反,`naiDefaults()` **播种**一条「默认配置」并选中(comfyDefaults 同理:
-    只用一套的人看不见「库」,手填自动有地方存档);老用户由 `normalizeNai` 按存量 url/key
-    播种同一条接管,升级前后生效值零变化。播种判定用「键不存在」而非「数组为空」——
-    键一旦落盘,用户删光的配置不会被再播种(否则删不掉)。有单测锁定
-    (`settings.naiConnMigration.test.ts`)。
+- **旧「连接配置库」→ 接入点折叠(一次性,本分支存量)**:并入上游接入点库后,旧字段
+  `settings.nai.connPresets`(`NaiConnPreset[]`)+ `activeConnId` **不再是功能**,只在两处出现:
+  `foldConnPresetsIntoEndpoints()` 的输入(老用户升级时折一遍)与**回滚载体**(persist 原样带过,
+  装回旧版本时库还在)。零消费:任何生效值都不读它,`settings.naiConnFold.test.ts` 锁死。
+  - **折叠规则**:库内每条原样成一条接入点,**id 不变**(`activeConnId → activeEndpointId` 直接对位);
+    地址是官方的条目并进内置官方条(只取其 key);当前生效值取**顶层 url/key**(旧版不变式:
+    顶层恒为生效值,`activeConnId` 只用于识别已废弃的「手动填写」);「手动填写」的第三方站合成一条
+    「我的接入点」排**最前**并选中;官方条若不在库内,补在**列表末尾**,不抢当前那条的位置。
+  - **出口零变化是硬承诺**:折叠后 `effectiveNai()` 必须与升级前顶层 url/key 逐字相同(测试靶心)。
+  - **折叠判据唯一出处** `connPresetsNeedFold()`(有旧库 + 无活着的接入点列表),hydrate 与折叠本体共用。
+    列表非空绝不重折——载体随时躺在写回里,重折会把条目重复塞进来。
+  - **必须在 hydrate 当场落盘**:回写门要到 ready 之后第一次设置变更才开(deep watch),不主动写就会留下
+    「内存已折叠、服务器还是旧形态」的中间态;迁移前先把原样存储快照写进
+    `extension_settings['baibai_image_pre_endpoint_backup']`(只写一次、存在即不覆盖,代码不读,
+    纯手工回滚用)。顺带:**回滚载体不是双向兼容** —— 旧版写回会抹掉 `endpoints`(它的 normalize 逐字段
+    重建),新版下次载入会从载体重新折一遍,故旧版期间的改动不丢,而**新版期间的改动会丢**(新版删掉的
+    条目会作为幽灵条目回到候选列表,官方条由折叠无条件补回、连接不会断)。纪律:升级后统一刷新所有设备,
+    别在新旧两版同时开着时改 NAI 连接。
+- **Latent 视图的出口纪律**:`latentAsNai()` 造出的 NaiSettings 视图**自带一条接入点**
+  (`nep_latent_view`,地址/key 就是 latent 自己的),因为视图是 `{...settings.nai, ...latent}`:
+  不覆盖的话 `endpoints/activeEndpointId` 会是 NAI 渠道的,谁把视图喂给 `effectiveNai()` 就把
+  latent 的图发到官方站/镜像站去了。把纪律做进结构,不靠注释。
 - **Vibe 大文件**:
   - `extensionSettings['baibai_image'].nai.vibes`:仅存 `NaiVibe` 小型索引，不存原图、缩略图 dataURL 或编码正文;
   - `user/files/bbi-vibe-*.json`:原图与各模型编码正文;
@@ -815,6 +893,14 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 - **abort 贯通**:AbortController 从 runner 一路传到 fetch/轮询(comfyui 的 abortableDelay);
 - **纯函数可测**:解析/协议/参数构造均为纯函数,配 `*.test.ts`(vitest,与被测文件同目录)。
   改协议/后端参数时跑 `pnpm test` 保底;
+- **本地字段必须在上游的「逐字段重建」表里有位置**(合并/升级纪律):`normalize()` 是
+  `{...默认值, ...存储}` 的 spread + **定点重建**若干嵌套对象(`ui`/`nai`/`comfyui`/`channels`/
+  `assignments`/`autoTag`(含 `prompts`)/`excludes`/`storage`)。spread 保得住顶层新键,
+  但**重建表里的字段只认表里列出的那些** —— 本地独有的字段若落在这些对象里又没被列进表,
+  载入即被剥掉,并在 ready 后**第一次任意设置变更**触发 deep watch → `persist()` 时永久写回。
+  两个真实案例:`nai.connPresets`(见 §7 的折叠)、`autoTag.prompts.latentSpec/latentThinking`
+  (§7 的 Latent 提示词)。加字段时,顺手在对应 normalize 里接住并配一条「改过 → hydrate 后还在」的用例。
+  历史形态的字段变更还要配迁移 + 回滚载体(见 §7 的折叠与 Vibe 搬迁两例)。
 - **渠道二选一**:`getTagGenChannel()` 有指派 → 副 API(服务端代理);否则跟随主 API(generateRaw)。
 - **随机段一律走 `randomUuid()`**(src/randomUuid.ts):ST 常在非安全上下文(http)下运行,
   那里 `crypto.randomUUID` 直接抛错;vibe 缓存键/文件名随机段只是防撞,不需要密码学强度。
@@ -904,8 +990,10 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | ComfyUI 工作流库(多套保存/切换) | src/state/settings.ts 的 `ComfyWorkflowPreset` + `activeComfyPreset` / `effectiveComfyConn`(UI 在 ComfyUIPanel.vue) |
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe / 智绘姬提示词预设导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
-| Latent 渠道(第三方站 NAI 兼容面精简适配) | state/settings.ts 的 `LatentSettings` + `latentAsNai`(面板 LatentPanel.vue;生成复用 generateNaiImage,画师串库独立分册,多人归属由 nl 承担) |
+| Latent 渠道(第三方站 NAI 兼容面精简适配) | state/settings.ts 的 `LatentSettings` + `latentAsNai`(面板 LatentPanel.vue;生成复用 generateNaiImage,画师串库独立分册,多人归属由 nl 承担;视图自带一条 `nep_latent_view` 接入点,保证出口不串到 NAI 渠道) |
 | 画师串显示名盖章(<artist> 展示元数据,不进提示词) | st/imageTagRegex.ts 的 `ImageTagContent.artist` + settings.activeNaiArtistName()(盖章位 runner/promptEditor;展示在 Card.vue promptText) |
+| NAI 接入点库(多站地址+密钥切换) | src/state/settings.ts 的 `NaiEndpoint` + `activeNaiEndpoint` / `effectiveNai`(内置官方条 `nep_official` 只读,UI 在 NaiPanel.vue「接入点」区) |
+| 旧「连接配置库」→ 接入点折叠(一次性存量迁移) | src/state/settings.ts 的 `foldConnPresetsIntoEndpoints` + `connPresetsNeedFold`(hydrate 时先落备份快照并当场落盘;`connPresets`/`activeConnId` 此后只作回滚载体,零消费) |
 | NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
 | 画师串库管理器(搜索/预览图/批量删除) | src/pages/backend/panels/NaiArtistManager.vue(纯逻辑在 backends/naiArtistLib.ts;内置只读库在 backends/nai.ts 的 `BUILTIN_NAI_ARTISTS`) |
 | 画师串预览图(user/images 上传/删除) | src/st/images.ts + imageFile.ts(文件夹常量 `ARTIST_PREVIEW_FOLDER`) |
@@ -916,6 +1004,7 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |
 | 手动编辑生图提示词(卡片 ⋯ 铅笔) | src/floor/PromptEditor.vue + promptEditor.ts(序列化在 st/imageTagRegex.ts) |
+| 「AI 重写提示词」(只重写某一槽位的提示词,画的仍是原来那个瞬间) | src/autoTag/runner.ts 的 `requestSlotTag` + src/autoTag/slotPlan.ts;入口在编辑弹窗(PromptEditor.vue + promptEditor.ts);运行态与「关窗不中断/重开续上」src/floor/tagPlanState.ts |
 | 写 tag 后自动出图的握手 / 判定 | src/floor/autoGenerate.ts 的 `shouldAutoGenerate`(纯函数,Card 无单测) |
 | 卡片折叠(默认折叠 / 手动折叠态) | src/floor/collapseState.ts + Card.vue(默认值 = settings.ui.autoCollapseImages) |
 | 卡片「生成中」状态 / 取消 / 并发 | src/floor/genState.ts(运行态)+ genQueue.ts(NAI 闸门与节奏等待) |

@@ -20,6 +20,7 @@ import {
   vibeMetaFromData,
 } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
+import type { ImageTagContent } from '@/st/imageTagRegex';
 import { reactive, watch } from 'vue';
 
 /**
@@ -216,29 +217,71 @@ export interface NaiArtistPreset {
   previewPath?: string;
 }
 
+/** 官方站地址。内置那条接入点的 url 恒为它(UI 禁改,normalize 也把脏数据纠回来)。 */
+export const NAI_OFFICIAL_URL = 'https://image.novelai.net';
+
+/** 内置官方接入点的固定 id。靠它认人而非靠 url 比对(与内置画师串 `bi_*` 同套路)。 */
+export const OFFICIAL_NAI_ENDPOINT_ID = 'nep_official';
+
+/** 这条是不是内置官方接入点(url 只读、不可删、不可改名)。 */
+export function isOfficialNaiEndpoint(id: string): boolean {
+  return id === OFFICIAL_NAI_ENDPOINT_ID;
+}
+
 /**
- * 一条具名 NAI 连接配置:接口地址 + API Key 成对保存,给官方站/第三方镜像各存一套、一键切换。
- * 只管「连上谁」——模型/采样器等出图参数不进配置,那是渠道级设置(「默认参数」区)。
+ * 一条 NAI 接入点:只有地址与密钥。
  *
- * 顶层 `NaiSettings.url/key` 恒为**生效值**(nai.ts 各请求方只读它们,与库解耦):
- * 切换配置 = 把该条的 url/key 拷到顶层;面板输入框编辑 = 写顶层的同时回写当前选中的
- * 配置。单一编辑面,不存在「配置里存的」和「实际生效的」两套真相。
+ * 为什么**只**把 url/key 拆成多条、模型/采样器/尺寸一概留在渠道级:公益站之间换的是
+ * 「从哪儿发、用谁的额度」,协议与参数完全一致。参数若跟着接入点走,换个站就得把
+ * 步数/画师串/vibe 重配一遍,而用户要的恰恰是「同一套设置换个出口」。
+ */
+export interface NaiEndpoint {
+  id: string;
+  /** 显示名(下拉切换用;允许重名,以 id 为键)。 */
+  name: string;
+  /** 接口地址;内置官方那条恒为 NAI_OFFICIAL_URL。 */
+  url: string;
+  /** 该站的 API Key(公益站各有各的 key,故随条目走而非渠道级共用一份)。 */
+  key: string;
+}
+
+/**
+ * 【存量类型,只服务于迁移与回滚载体】本分支曾经唯一的「连接配置库」条目:接口地址 +
+ * API Key 成对保存,官方站/第三方镜像一键切换。接入点特性并入上游后**不再新建、不再由
+ * UI 编辑**,只出现在两处:
+ *   ① `foldConnPresetsIntoEndpoints` 的输入(老用户的库折进 endpoints);
+ *   ② `NaiSettings.connPresets` 这个回滚载体(见该字段注释)。
+ * 折叠后两者的关系就断开了——别再拿这个类型去接新数据。
  */
 export interface NaiConnPreset {
   id: string;
-  /** 显示名(下拉列表与切换用;允许重名,以 id 为键)。 */
+  /** 显示名;折叠后原样成为接入点名字。 */
   name: string;
-  /** 接口地址;留空**不会**回落官方——请求时 naiEndpoint 对空串直接抛
-   *  「请先填写 NAI 接口地址」(nai.ts 不猜默认值;「新建配置」产生的空条目就是这个
-   *  状态,填上域名即可;官方域名作为默认值只存在于顶层 nai.url 的出生值里)。 */
+  /** 接口地址;老数据里允许空串(旧版「新建配置」的出生态),折叠时按空地址处理。 */
   url: string;
   /** API Key。 */
   key: string;
 }
 
-/** NAI 连接与出图参数。url 可改:填第三方兼容站即走第三方(协议与官方一致)。 */
+/** NAI 连接与出图参数。接入点(地址+密钥)可存多条,见 endpoints。 */
 export interface NaiSettings extends BackendConn {
-  /** API Key(与副 API 渠道同口径,随设置落盘)。 */
+  /**
+   * 接入点列表。**不变式:恒非空,且必含内置官方那条**(normalize 缺则补回列表末尾,
+   * 不抢当前那条的位置)。
+   * 官方条不可删,故 UI 不必处理「删空了怎么办」——与 ComfyUI 工作流库的恒非空同构,
+   * 与画师串库的「允许为空」相反:没有地址就出不了图,它是必需品。
+   */
+  endpoints: NaiEndpoint[];
+  /** 当前使用的接入点 id;悬空时由 normalize 回落到第一条(地址是必需品,不能落空)。 */
+  activeEndpointId: string;
+  /**
+   * 【存量字段,已不参与出图】老版本的单一渠道密钥。
+   *
+   * 出图一律走 effectiveNai()(取 endpoints 里当前那条),这两个键(key 与继承自
+   * BackendConn 的 url)留着**只为回滚**:装回旧版本时配置还在。迁移是纯加法、不清空
+   * ——与 negativePrompt 并框那次刻意不同:那边是「同一个框换了位置」,留着会让人以为
+   * 两份都生效;这里 UI 上压根不再显示它们,不存在误解。
+   */
   key: string;
   model: NaiModel;
   /** 负面提示词覆盖值;留空 = 按模型取官方负面词(见 nai.ts naiDefaultUndesired)。 */
@@ -281,16 +324,23 @@ export interface NaiSettings extends BackendConn {
    */
   activeArtistId: string;
   /**
-   * 连接配置库(接口地址 + API Key 成对保存,官方/第三方镜像一键切换)。允许为空——
-   * 与画师串库同口径:配置不给照样能连(顶层 url/key 还在),是可选项。
+   * 【存量字段,已不参与出图】本分支曾经唯一的「连接配置库」(地址 + API Key 成对多条,
+   * 官方站/第三方镜像一键切换)。并入上游接入点后,`foldConnPresetsIntoEndpoints`
+   * 在载入时把它**一次性折进 endpoints**(见 migrateNaiEndpoints)。
+   *
+   * 现在它只是**回滚载体**:persist 原样带过,装回旧版本时用户的库还在。零消费——
+   * 任何生效值都不读它,改它不影响出图/测试连接/状态判定(测试锁死)。
+   *
+   * ## 新旧两版同时开着时的已知取舍(刻意不做双向镜像)
+   * 折叠是幂等的:旧版写回会抹掉 endpoints,新版下次载入从这份载体重新折叠,
+   * 故**旧版期间的改动不会丢**。反之,新版期间新建/切换的接入点只存在于 endpoints 里,
+   * 被旧端写回抹掉后会从这份**陈旧载体**恢复旧库:新版期间的改动会丢,新版删掉的条目
+   * 会作为幽灵条目回到候选列表(官方条由折叠无条件补回,连接不会因此断)。
+   * 纪律:升级后统一刷新所有设备,别在新旧两版同时开着时改 NAI 连接(见 architecture.md)。
    */
-  connPresets: NaiConnPreset[];
-  /**
-   * 当前使用的连接配置 id。**空串 = 手动填写**(顶层 url/key 不归任何配置存档)。
-   * 合法值域:{''} ∪ connPresets id;悬空 id 由 normalizeNai 清成空串——刻意**不**回落
-   * 第一条:静默换一个接口地址,比「画师串不使用」严重得多。
-   */
-  activeConnId: string;
+  connPresets?: NaiConnPreset[];
+  /** 【存量字段,已不参与出图】见 connPresets。 */
+  activeConnId?: string;
 }
 
 /**
@@ -1079,6 +1129,13 @@ export interface ImageSettings {
 // extension_settings 里的命名空间键。
 const SETTINGS_KEY = 'baibai_image';
 
+/**
+ * 折叠(旧连接配置库 → 接入点)之前的**原样存储快照**键。只在首次折叠前写一次,存在即不覆盖。
+ * 代码从不读它——留着是给「迁移出问题要手工捞回」用的最后一道保险(settings.json 跨设备
+ * 同一份,一旦被新版写回,旧形态就没有别的副本了)。
+ */
+const PRE_ENDPOINT_BACKUP_KEY = 'baibai_image_pre_endpoint_backup';
+
 /** 内置默认条目名规则:共享存储创建时播种(与柏宝书 DEFAULT_WI_PATTERNS 同值)。 */
 const DEFAULT_WI_PATTERNS = ['\\[mvu[\\s\\S]*?\\]'];
 
@@ -1150,22 +1207,26 @@ export function newNaiArtist(name = DEFAULT_ARTIST_NAME): NaiArtistPreset {
   return { id: `art_${Date.now()}_${artistSeq}`, name, prompt: '', quality: '', negative: '' };
 }
 
-let connSeq = 0;
+/** 内置官方接入点。key 随用户填(内置的只是地址与名字,不是别人的密钥)。 */
+function officialNaiEndpoint(key = ''): NaiEndpoint {
+  return { id: OFFICIAL_NAI_ENDPOINT_ID, name: 'NovelAI 官方', url: NAI_OFFICIAL_URL, key };
+}
 
-/** 新建一条连接配置(id 口径同 newNaiArtist;conn_ 前缀不与 art_/wf_/ch_/bi_ 撞)。 */
-export function newNaiConn(name: string, url = '', key = ''): NaiConnPreset {
-  connSeq += 1;
-  return { id: `conn_${Date.now()}_${connSeq}`, name, url, key };
+let naiEpSeq = 0;
+
+/** 新建一条空接入点(id 前缀 nep_,不与 art_/wf_/ch_ 的 id 空间相撞)。 */
+export function newNaiEndpoint(name = '新接入点'): NaiEndpoint {
+  naiEpSeq += 1;
+  return { id: `nep_${Date.now()}_${naiEpSeq}`, name, url: '', key: '' };
 }
 
 function naiDefaults(): NaiSettings {
-  // 新装即带一条「默认配置」并选中(官方地址 + 空 key),与 comfyDefaults 出生即带一条
-  // 工作流同理——只用一套配置的人不会看见「库」,手填的地址/密钥自动有地方存档。
-  // 老用户不走这里:normalizeNai 按「connPresets 键不存在」用存量 url/key 播种,行为零变化。
-  const preset = newNaiConn('默认配置', 'https://image.novelai.net', '');
   return {
-    ...backendDefaults(preset.url),
+    ...backendDefaults(NAI_OFFICIAL_URL),
     resolution: '832×1216',
+    // 新装即带内置官方那条并选中它:地址是必需品,空列表会让「测试连接」无处可点
+    endpoints: [officialNaiEndpoint()],
+    activeEndpointId: OFFICIAL_NAI_ENDPOINT_ID,
     key: '',
     model: 'nai-diffusion-5-full',
     undesiredContent: '',
@@ -1186,8 +1247,6 @@ function naiDefaults(): NaiSettings {
     // hydrate 时旧用户的 stored.nai.activeArtistId 已存在(哪怕空串),会被
     // normalizeNai 原样保留,不受影响。
     activeArtistId: BUILTIN_NAI_ARTISTS[0]?.id ?? '',
-    connPresets: [preset],
-    activeConnId: preset.id,
   };
 }
 
@@ -1407,15 +1466,23 @@ export function activeNaiArtistName(): string {
 }
 
 /**
- * 当前选中的连接配置;**空串 / 指向已删条目时返回 null(= 手动填写)**。
- * 悬空 id 在 normalizeNai 已清,这里再兜一层是防「UI 运行中把库改坏」的时序。
- * 刻意只读不写(同 activeNaiArtist):本函数在 computed 里被调用,写 settings 会递归求值。
+ * 给一条待落盘的 tag 盖上「当前生效画师串名」(纯展示元数据,生成侧不读)。
+ *
+ * **所有写回路径都必须走这里**(runner 的批量注入、runner 的单槽 AI 重写、promptEditor 的
+ * 「应用」):漏一条,那条路径产出的 tag 就会缺 `<artist>`,症状很偏——正常出图的图有名、
+ * 重写/手改过的图没名。空串 = 非 NAI 后端或未选画师串,序列化时整段省略。
+ *
+ * 泛型保形:调用方传 ImageInsertion 就拿回 ImageInsertion,不丢 position/sourceLine。
  */
-export function activeNaiConn(): NaiConnPreset | null {
-  const id = settings.nai.activeConnId;
-  if (!id) return null;
-  return settings.nai.connPresets.find(c => c.id === id) ?? null;
+export function stampArtist<T extends ImageTagContent>(image: T): T & { artist: string } {
+  return { ...image, artist: activeNaiArtistName() };
 }
+
+/**
+ * latentAsNai 视图里那条「自己的接入点」的 id。前缀 nep_ 与真实接入点同域,但加了 `_latent`
+ * 后缀且只出现在视图对象里(永不落盘),撞不上 settings.nai.endpoints 的真实条目。
+ */
+const LATENT_VIEW_ENDPOINT_ID = 'nep_latent_view';
 
 /**
  * 把 Latent 渠道设置映射成 NaiSettings 视图,生成完全复用 NAI 机器
@@ -1430,6 +1497,12 @@ export function latentAsNai(latent: LatentSettings = settings.latent): NaiSettin
   return {
     ...settings.nai,
     ...latent,
+    // 出口自洽:视图里的接入点列表**只有一条**——latent 自己的地址与 key,且由它激活。
+    // 这样即使有人把本视图喂给 effectiveNai(),取到的仍是 latent 的出口,而不是被
+    // `...settings.nai` 带进来的 NAI 渠道接入点(那会把 latent 的图发到官方站/镜像站去)。
+    // 把「两渠道出口不互串」这条纪律做进结构,而不是只写在注释里。
+    endpoints: [{ id: LATENT_VIEW_ENDPOINT_ID, name: 'Latent 站点', url: latent.url, key: latent.key }],
+    activeEndpointId: LATENT_VIEW_ENDPOINT_ID,
     undesiredContent: latent.negativePrompt,
     // 独立画师串库:视图指向 Latent 自己的库与激活项(画师串/绑定词/盖章全链经
     // naiActivePreset 的视图解析自动生效);spread 虽已带上,显式写明以防上游键漂移
@@ -1444,6 +1517,32 @@ export function latentAsNai(latent: LatentSettings = settings.latent): NaiSettin
 
 /** 站点原生分辨率枚举(openapi GenerationRequest.resolution;square 不暴露,面板两档即两枚举)。 */
 export type LatentResolution = 'portrait' | 'landscape';
+
+/**
+ * 当前使用的接入点。
+ *
+ * 不返回 null(同 activeComfyPreset,与 activeNaiArtist 的「可为 null」相反):
+ * endpoints 恒非空、id 悬空也在 normalize 阶段回落过,这里再兜一层是为了
+ * 「UI 运行中把列表改坏」这种时序,让调用方不必到处判空。
+ * 刻意只读不写:本函数在 computed 里被调用,写 settings 会引起递归求值。
+ */
+export function activeNaiEndpoint(): NaiEndpoint {
+  const list = settings.nai.endpoints;
+  return list.find(e => e.id === settings.nai.activeEndpointId) ?? list[0] ?? officialNaiEndpoint();
+}
+
+/**
+ * 出图/测试连接/vibe 编码用的 NaiSettings:渠道级全部参数 + 当前接入点的 url/key。
+ *
+ * **后端层一律吃这个,不吃 settings.nai**(同 effectiveComfyConn 的理由):
+ * backends/nai.ts 关心的是「这一次往哪儿发、用谁的 key」,而不是「用户存了几个站」。
+ * 漏走一处的症状很隐蔽——那处会用上存量的 nai.url/nai.key(老用户还是通的),
+ * 只有切到第二个接入点的人才会发现某个功能还在往老地址发。
+ */
+export function effectiveNai(): NaiSettings {
+  const ep = activeNaiEndpoint();
+  return { ...settings.nai, url: ep.url, key: ep.key };
+}
 
 /**
  * 存量迁移:老配置只有单一 resolution(NAI 默认竖版 832×1216)。
@@ -1664,7 +1763,24 @@ function normalizeArtistPreset(raw: unknown, seq: number): NaiArtistPreset {
   };
 }
 
-/** 单条连接配置清洗:缺字段/类型不符逐项回退;url/key 允许空串(空配置不是垃圾数据)。 */
+/**
+ * 单条接入点清洗。官方条的 name/url 一律纠回内置值:UI 已禁掉改名与改址,
+ * 还能出现别的值只有手改 settings.json 一途;纠回去也顺带让内置名随插件版本更新。
+ * key 例外 —— 那是用户自己的密钥,内置的只是地址与名字。
+ */
+function normalizeNaiEndpoint(raw: unknown, seq: number): NaiEndpoint {
+  const o = (raw ?? {}) as Partial<NaiEndpoint>;
+  const id = typeof o.id === 'string' && o.id ? o.id : `nep_${Date.now()}_${seq}`;
+  if (isOfficialNaiEndpoint(id)) return officialNaiEndpoint(typeof o.key === 'string' ? o.key : '');
+  return {
+    id,
+    name: typeof o.name === 'string' && o.name ? o.name : `接入点 ${seq + 1}`,
+    url: typeof o.url === 'string' ? o.url : '',
+    key: typeof o.key === 'string' ? o.key : '',
+  };
+}
+
+/** 【存量】旧「连接配置库」条目的容错清洗:只服务于折叠与回滚载体,id 原样保留以便对位。 */
 function normalizeConnPreset(raw: unknown, seq: number): NaiConnPreset {
   const o = (raw ?? {}) as Partial<NaiConnPreset>;
   return {
@@ -1673,6 +1789,89 @@ function normalizeConnPreset(raw: unknown, seq: number): NaiConnPreset {
     url: typeof o.url === 'string' ? o.url : '',
     key: typeof o.key === 'string' ? o.key : '',
   };
+}
+
+/** 地址是否指向官方站(忽略末尾斜杠);空串不算——「没填地址」与「填了官方」是两种状态。 */
+function isOfficialNaiUrl(url: string): boolean {
+  return url.trim().replace(/\/+$/, '') === NAI_OFFICIAL_URL;
+}
+
+/**
+ * 折叠判据(**唯一出处**:hydrate 的「要不要先备份再当场落盘」与折叠本体共用一份,
+ * 免得两处判据漂移):有旧库(`connPresets` 数组)、且还没有**活着的**接入点列表
+ * (`endpoints` 缺失或为空)。列表非空就绝不折第二遍——回滚载体随时躺在写回里,
+ * 重折会把条目重复塞进列表。
+ *
+ * 参数类型是 unknown 而非 Partial<NaiSettings>:hydrate 手上是 ST 存储里的原始对象,
+ * 还没经过任何校验,这里就地窄化。
+ */
+function connPresetsNeedFold(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  if ('endpoints' in raw && Array.isArray(raw.endpoints) && raw.endpoints.length) return false;
+  return 'connPresets' in raw && Array.isArray(raw.connPresets);
+}
+
+/**
+ * 【本分支存量迁移】旧「连接配置库」一次性折进接入点列表,并给出该选中哪条。
+ *
+ * 触发条件(缺一不可,且天然幂等):
+ * - 存储里有旧库(`connPresets` 数组);
+ * - 没有**活着的**接入点列表(`endpoints` 缺失或为空)。列表非空就绝不折第二遍——
+ *   回滚载体随时躺在写回里,重折会把条目重复塞进列表。反过来,旧版写回抹掉新形态后
+ *   (`normalizeNai` 逐字段重建,不认 `endpoints`),新版下次载入会从载体重新折一遍,
+ *   载体是旧版刚更新的那份,故**旧版期间的改动不会丢**。
+ *
+ * 折叠规则:
+ * - 库内每条原样成为一条接入点,**id 不变**:`activeConnId → activeEndpointId` 才能直接对位;
+ * - 地址指向官方站的那条并进内置官方条(只取其 key):两条同址没意义,且官方条必须保住
+ *   「不可删/不可改名/地址锁定」的待遇;
+ * - **当前生效值取顶层 url/key**——旧版不变式是「顶层恒为生效值」(切换配置 = 拷到顶层,
+ *   编辑 = 写顶层 + 回写条目),`activeConnId` 只用于识别已废弃的「手动填写」状态;
+ * - 顶层层级是官方地址或空串 → 落在官方条;与库内某条同址同 key → 落在它上面;
+ * - 其余(旧版「手动填写」填了第三方站)→ 按上游 legacy 套路合成一条「我的接入点」并排在
+ *   列表**最前**(当前出口优先,与上游纯渠道级迁移同姿势),免得升级静默换出口;
+ * - 官方条若不在库内,补在列表**末尾**,不抢当前那条的位置(与 migrateNaiEndpoints 同纪律)。
+ *
+ * 返回 null = 用户没有旧库,交回上游那条纯渠道级 url/key 的迁移路径。
+ */
+function foldConnPresetsIntoEndpoints(
+  o: Partial<NaiSettings>,
+): { endpoints: NaiEndpoint[]; activeEndpointId: string } | null {
+  if (!connPresetsNeedFold(o)) return null;
+  const legacy = o.connPresets;
+  if (!Array.isArray(legacy)) return null;
+
+  const endpoints: NaiEndpoint[] = [];
+  let officialKey = '';
+  for (const preset of legacy.map(normalizeConnPreset)) {
+    // 按 id 认人而非只看 url:手改 settings.json 造出的 `nep_official` 条目也得并进官方条,
+    // 否则列表里会出现一条劫持了官方 id 的普通条目,而真正的官方条反而被当成「缺」。
+    if (isOfficialNaiUrl(preset.url) || isOfficialNaiEndpoint(preset.id)) {
+      if (!officialKey) officialKey = preset.key;
+      continue;
+    }
+    endpoints.push({ id: preset.id, name: preset.name, url: preset.url, key: preset.key });
+  }
+
+  const url = typeof o.url === 'string' ? o.url.trim() : '';
+  const key = typeof o.key === 'string' ? o.key : '';
+  const onOfficial = !url || isOfficialNaiUrl(url);
+  if (onOfficial && !officialKey) officialKey = key;
+
+  let activeEndpointId = OFFICIAL_NAI_ENDPOINT_ID;
+  if (!onOfficial) {
+    const matched = endpoints.find(e => e.url.trim() === url && e.key === key);
+    if (matched) {
+      activeEndpointId = matched.id;
+    } else {
+      // 旧版「手动填写」的第三方站:排在**最前**,与上游纯渠道级迁移把当前出口放首位同姿势。
+      endpoints.unshift({ id: 'nep_legacy', name: '我的接入点', url, key });
+      activeEndpointId = 'nep_legacy';
+    }
+  }
+  if (!endpoints.some(e => isOfficialNaiEndpoint(e.id))) endpoints.push(officialNaiEndpoint(officialKey));
+
+  return { endpoints, activeEndpointId };
 }
 
 /**
@@ -1731,6 +1930,31 @@ function normalizeLatent(raw: unknown, def: LatentSettings): LatentSettings {
   };
 }
 
+/**
+ * 接入点列表的存量迁移与不变式兜底(**不含**旧「连接配置库」——那条在
+ * foldConnPresetsIntoEndpoints 里,由 normalizeNai 先行调用,两者互斥)。
+ *
+ * 老配置只有渠道级 url/key 一对:收成第一条(名字按它指向官方还是第三方分别取),
+ * 并保证内置官方那条一定在列——用户当初填的若是第三方站,官方条补在**其后**,
+ * 免得静默把当前使用的那条挤到第二位、还顺手换了出图出口。
+ */
+function migrateNaiEndpoints(o: Partial<NaiSettings>): NaiEndpoint[] {
+  const list = Array.isArray(o.endpoints) ? o.endpoints.map(normalizeNaiEndpoint) : [];
+
+  if (!list.length) {
+    // 存量:渠道级 url/key 收成第一条。url 恰是官方地址(绝大多数人)时直接并入官方条,
+    // 不另起一条,否则列表一上来就是两条内容相同的。
+    const url = typeof o.url === 'string' ? o.url.trim() : '';
+    const key = typeof o.key === 'string' ? o.key : '';
+    if (!url || isOfficialNaiUrl(url)) return [officialNaiEndpoint(key)];
+    return [{ id: `nep_legacy`, name: '我的接入点', url, key }, officialNaiEndpoint()];
+  }
+
+  // 官方条被删掉了(手改 settings.json,或以后版本回滚往返):补回去,但不抢当前那条的位置
+  if (!list.some(e => isOfficialNaiEndpoint(e.id))) list.push(officialNaiEndpoint());
+  return list;
+}
+
 function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   const conn = normalizeBackend(raw, def);
   const o = (raw ?? {}) as Partial<NaiSettings>;
@@ -1746,6 +1970,11 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
   const artistPresets = Array.isArray(o.artistPresets)
     ? o.artistPresets.map(normalizeArtistPreset)
     : def.artistPresets;
+  // 接入点:先试本分支旧「连接配置库」的折叠(一次性、幂等),没有旧库才走上游那条
+  // 纯渠道级 url/key 的迁移。folded 还带回「该选中哪条」——折叠要保的是「升级前生效的
+  // 那个出口」,不能交给「悬空回落第一条」去猜。
+  const folded = foldConnPresetsIntoEndpoints(o);
+  const endpoints = folded?.endpoints ?? migrateNaiEndpoints(o);
   // 悬空 id 一律清成空串(= 不使用)。**不**照抄 normalizeComfyUI 的「回落第一条」:
   // 用户删掉当前画师串后本该「什么都不加」,回落会给他静默换一套画风,而下拉显示的
   // 也正是那一条(看起来就是自己设的),几乎无法排查。
@@ -1756,25 +1985,33 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
       ? o.activeArtistId
       : '';
 
-  // 连接配置库:老数据没有 connPresets 键 → 按存量 url/key 播种一条「默认配置」并接管
-  // (与 normalizeComfyUI 的 foldLegacyWorkflow 同口径:升级前后生效值零变化)。
-  // 判定用「键不存在」而非「数组为空」:键一旦落盘,哪怕 [],用户删光的配置也不会被再播种。
-  const rawConnPresets = o.connPresets;
-  const connPresets: NaiConnPreset[] = Array.isArray(rawConnPresets)
-    ? rawConnPresets.map(normalizeConnPreset)
-    : [newNaiConn('默认配置', conn.url, typeof o.key === 'string' ? o.key : '')];
-  // 悬空 id 一律清成空串(= 手动填写),不回落第一条——静默换一个接口地址比什么都难排查。
-  // 播种路径例外:种子就是存量 url/key 本身,直接接管为当前配置。
-  const activeConnId = Array.isArray(rawConnPresets)
-    ? typeof o.activeConnId === 'string' && connPresets.some(c => c.id === o.activeConnId)
+  // 回滚载体:旧版「连接配置库」原样带过——只做类型清洗,**不参与任何生效值计算**
+  // (出图/测试连接/状态判定一律走 endpoints,见 effectiveNai)。
+  // 只在存储里本来就有这个键时才写回:新装用户不该长出它。
+  // 载体是「装回旧版本时库还在」的唯一保证:服务器 settings.json 跨设备同一份,
+  // 新版写回时若把它抹掉,降级就再也读不回用户的站列表了。
+  const connPresets = Array.isArray(o.connPresets)
+    ? o.connPresets.map(normalizeConnPreset)
+    : undefined;
+  const activeConnId = connPresets
+    ? typeof o.activeConnId === 'string'
       ? o.activeConnId
       : ''
-    : connPresets[0].id;
+    : undefined;
 
   return {
     ...conn,
     // 「附加负面」已并入 undesiredContent 一个框,存量值折进去(见 foldLegacyNegative)
     negativePrompt: '',
+    // 接入点:恒非空且必含官方条(见 migrateNaiEndpoints / foldConnPresetsIntoEndpoints)。
+    // 悬空 id 回落第一条——与画师串「悬空清空」相反:地址是必需品,清空就出不了图了。
+    // 折叠路径例外:那条要选的是「升级前生效的出口」,按折叠结果落位而不是回落第一条。
+    endpoints,
+    activeEndpointId:
+      typeof o.activeEndpointId === 'string' && endpoints.some(e => e.id === o.activeEndpointId)
+        ? o.activeEndpointId
+        : (folded?.activeEndpointId ?? endpoints[0].id),
+    // 存量字段:出图已不读它(走 effectiveNai),原样留着只为回滚时配置不丢
     key: typeof o.key === 'string' ? o.key : def.key,
     model,
     // 覆盖值:空串是有意义的存储值(=跟随模型官方词),故不能用 `&& o.x` 那种把 '' 吞掉的守卫
@@ -1795,8 +2032,8 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
       : def.vibes,
     artistPresets,
     activeArtistId,
-    connPresets,
-    activeConnId,
+    // 回滚载体(见上方注释):键本来不存在就不写回,避免给新装用户长出死数据
+    ...(connPresets ? { connPresets, activeConnId } : {}),
   };
 }
 
@@ -2270,8 +2507,16 @@ export async function hydrateSettings(): Promise<void> {
       if (migration.migrated) ctx.saveSettingsDebounced?.();
       throw migration.error;
     }
+    // 旧「连接配置库」→ 接入点的折叠(见 foldConnPresetsIntoEndpoints)只能做一次,
+    // 且必须**当场落盘**:回写门要到 ready 之后第一次设置变更才开(deep watch),不主动写
+    // 就会留下「内存已折叠、服务器还是旧形态」的中间态,另一台设备从旧形态再折一次并写回,
+    // 于是两台设备互相覆盖一轮。先留一份原样快照再落盘。
+    const folding = connPresetsNeedFold('nai' in stored ? stored.nai : undefined);
+    if (folding && !ctx.extensionSettings[PRE_ENDPOINT_BACKUP_KEY]) {
+      ctx.extensionSettings[PRE_ENDPOINT_BACKUP_KEY] = JSON.parse(JSON.stringify(stored));
+    }
     applyInto(settings, normalize(stored));
-    if (migration.migrated) {
+    if (migration.migrated || folding) {
       ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(settings));
       ctx.saveSettingsDebounced?.();
     }

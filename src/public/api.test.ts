@@ -15,7 +15,7 @@ import {
   setGlobalCharTagSource,
   type CharTagEntry,
 } from '@/state/charTags';
-import { settings } from '@/state/settings';
+import { activeNaiEndpoint, settings } from '@/state/settings';
 
 vi.mock('@/generate', () => ({
   backendStatus: vi.fn(),
@@ -111,8 +111,10 @@ describe('getCharacters', () => {
 
 describe('getBackendStatus', () => {
   it('exposes readiness without the api key or service url', () => {
-    settings.nai.key = 'pst-secret-key';
-    settings.nai.url = 'https://image.novelai.net';
+    // 凭据挂在**当前接入点**上:渠道级 url/key 已是存量字段,往里写测不到生效路径
+    const endpoint = activeNaiEndpoint();
+    endpoint.key = 'pst-secret-key';
+    endpoint.url = 'https://image.novelai.net';
     settings.comfyui.url = 'http://127.0.0.1:8188';
     ready();
 

@@ -11,6 +11,7 @@ import { beginGeneration, clearGeneration, consumeGeneration } from '@/autoTag/g
 import { buildAutoTagMessages, tagLintMode } from '@/autoTag/prompt';
 import { rebaseImagePositions, type RebaseReport } from '@/autoTag/rebase';
 import { lintImagePlan } from '@/autoTag/taglint';
+import { buildSlotTaskNote } from '@/autoTag/slotPlan';
 import {
   BBI_CHAR_EXTRA_KEY,
   CHAR_TAG_FIELDS,
@@ -27,15 +28,25 @@ import {
   type CharTagField,
 } from '@/state/charTags';
 import { injectImageTags, parseImagePlan, type ImagePlan } from '@/autoTag/protocol';
-import { clearAutoGenerateForFloor, markForAutoGenerate } from '@/floor/autoGenerate';
+import {
+  clearAutoGenerateForFloor,
+  consumeAutoGenerate,
+  markForAutoGenerate,
+} from '@/floor/autoGenerate';
 import { applyMessageText, type ApplyMessageResult } from '@/st/messageEdit';
 import { getContext, isAiStoryMessage, type STMessage } from '@/st/context';
-import { hasImageTagTrace, stripImageTags } from '@/st/imageTagRegex';
 import {
-  activeNaiArtistName,
+  hasImageTagTrace,
+  parseImageTags,
+  replaceImageTagAt,
+  serializeImageTag,
+  stripImageTags,
+} from '@/st/imageTagRegex';
+import {
   getTagGenChannel,
   isCurrentChatExcluded,
   settings,
+  stampArtist,
 } from '@/state/settings';
 import { triageAssistantText } from '@/autoTag/triage';
 
@@ -102,6 +113,13 @@ interface RunOptions {
   manual?: boolean;
   /** 重新生成:先把已有 tag 从正文剔除再分析/注入;旧图片保留在卡片历史里。 */
   replace?: boolean;
+  /**
+   * 单槽位提示词重写(卡片「AI 重写提示词」):只替换该 seq 的 tag,其余 tag 与图片一字不动。
+   * **画面不变**——写回按 seq 原位替换,模型返回的 position 压根不参与写回,措辞口径见
+   * slotPlan.buildSlotTaskNote。分析基底同样剔除全部旧 tag,但强制输出恰好 1 张,
+   * 且忽略本次 AI 的 changes(首次全量分析已为整楼建过档)。
+   */
+  slot?: { seq: number };
 }
 
 /** 放弃写入的用户可读原因。文本变化已不在其中——那是正常情况,会 rebase 后照常写入。 */
@@ -172,6 +190,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     floor,
     manual: Boolean(opts.manual),
     replace: Boolean(opts.replace),
+    slotSeq: opts.slot?.seq ?? null,
     chatId: context?.getCurrentChatId?.() ?? '',
     extensionEnabled: settings.enabled,
     autoTagEnabled: settings.autoTag.enabled,
@@ -211,9 +230,23 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     return;
   }
   const rawSource = message.mes;
+  const slot = opts.slot;
+  // 单槽重写的目标:开跑时快照第 seq 条 tag 的原文,写回前用它确认 seq 指的还是同一条
+  // (同提示词编辑弹窗的纪律)。正文这会儿已经没这条 tag = 期间被删/换 swipe,直接放弃。
+  const slotRawTag = slot ? parseImageTags(rawSource)[slot.seq] : undefined;
+  if (slot && slotRawTag === undefined) {
+    abort(
+      floor,
+      'slot-missing',
+      true,
+      `第 ${slot.seq + 1} 张图片的提示词已不存在（可能已换 swipe 或被编辑），本次没有重写`,
+    );
+    return;
+  }
   // 探测口径与按钮层同源(imageTagRegex.hasImageTagTrace):两侧漂移过一次——
   // 按钮只认开标签、这里认开也认闭,只剩 `</bbi_image>` 的楼就卡成「点了没反应」。
-  if (hasImageTagTrace(rawSource) && !opts.replace) {
+  // 单槽重写以「本楼已有 tag」为前提,不受此闸门拦截。
+  if (hasImageTagTrace(rawSource) && !opts.replace && !slot) {
     abort(
       floor,
       'already-has-image-tag',
@@ -223,12 +256,14 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     if (!opts.manual) console.debug(`[柏宝绘] 第 ${floor} 楼已经含有 bbi_image tag，跳过自动分析`);
     return;
   }
-  // replace:分析和注入都基于剔除旧 tag 后的正文;写回时旧 tag 随之消失
-  const source = opts.replace ? stripImageTags(rawSource) : rawSource;
+  // replace / slot:分析都基于剔除旧 tag 后的正文。写回时 replace 让旧 tag 随之消失,
+  // slot 按 seq 原位替换——别的 tag 在写回基底里原样保留。
+  const source = opts.replace || slot ? stripImageTags(rawSource) : rawSource;
   // 空回 / API 错误文本直接放弃:这样的楼层没有可分析的正文,发去副 API 只会把
   // 「[API错误：无可用渠道]」当故事配图。判定与 ST-Quicker-Api 同源(autoTag/triage.ts)。
+  // 单槽重写也吃这道门:它读的是同一份正文,不因为换了入口就放行。
   const triage = triageAssistantText(source);
-  if (triage.kind === 'empty') {
+  if (!source.trim() || triage.kind === 'empty') {
     abort(floor, 'empty-source', opts.manual, '本楼正文是空的（或只剩生图 tag），没有可分析的内容');
     return;
   }
@@ -277,27 +312,36 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     segmentCount: preparedTarget.segments.length,
   });
 
-  const slot = `${chatId}\u0000${floor}`;
-  running.get(slot)?.abort();
+  const runKey = `${chatId}\u0000${floor}`;
+  running.get(runKey)?.abort();
   const controller = new AbortController();
-  running.set(slot, controller);
+  running.set(runKey, controller);
 
   try {
     const memory = readBookMemory(floor, context.chat[floor]?.mes ?? '', context.name1);
-    const entriesBefore = charTagsBeforeFloor(floor);
+    // 单槽重写:库文本要包含本楼已落档的增量(首次全量分析建的档),否则 AI 会把
+    // 已建档角色当新人重写。charTagsBeforeFloor(floor + 1) 正好含本楼(swipe 匹配时生效)。
+    const entriesBefore = slot ? charTagsBeforeFloor(floor + 1) : charTagsBeforeFloor(floor);
     // 锁定名(全局库 ⊖ 本聊天基线):AI 的 changes 对这些名字一律无效,库文本里带 [locked] 标记
     const lockedNames = lockedCharTagNames();
     // 屏蔽片段解析器:库文本与 @占位符替换共用同一份(见 charAnchors/formatEntryForPrompt)
     const blockedOf = (name: string) => blockedTagSet(name);
     // 纯本地渲染:建档由主请求在同一次输出里完成(changes 的 field="new")
     const anchors = resolveCharAnchors(entriesBefore, lockedNames, blockedOf);
+    // 单槽重写:协议强制「恰好 1 张」,并把该槽位当前提示词与其余槽位摘要带给模型
+    // (锚住同一个画面、别抢别人的画面)。min/max 要同时覆盖 build 的规则文案与下面的
+    // parse 校验,只改一处会自相矛盾。
+    const promptOptions = slot
+      ? { ...settings.autoTag, minImages: 1, maxImages: 1 }
+      : settings.autoTag;
     const messages = await buildAutoTagMessages(
       context,
       floor,
-      settings.autoTag,
+      promptOptions,
       memory,
       preparedTarget,
       anchors.text,
+      slot ? buildSlotTaskNote(rawSource, slot.seq) : '',
     );
     const channel = getTagGenChannel();
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
@@ -320,8 +364,8 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           const candidate = parseImagePlan(
             raw,
             preparedTarget.segments,
-            settings.autoTag.minImages,
-            settings.autoTag.maxImages,
+            promptOptions.minImages,
+            promptOptions.maxImages,
           );
           // NAI 官方 4.5/V5 的 Character Prompts 协议要求 new 建档必须带 nl 外貌描述:
           // 三条件缺一不可——渠道是 NAI、模型支持 CP(与 newCharacterNlRule 下发判据
@@ -329,7 +373,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           // latent 不在此列:它不收 v4_prompt 双层结构(见 prompt.ts characterPromptsOn
           // 注释),档案 nl 只是给 nl 段供素材的可选记录,协议不强制——若在这里拦,
           // 每条建档都会被拒,自动 tag 必然失败。
+          // 单槽重写(!slot)同样不在此列:本次 changes 会被丢弃,校验它只白耗重试次数。
           if (
+            !slot &&
             settings.defaultBackend === 'nai' &&
             naiSupportsCharacterPrompts(settings.nai.model) &&
             candidate.changes.some(change => change.field === 'new' && !change.nl?.trim())
@@ -339,8 +385,11 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           parsed.plan = candidate;
         };
         // 有重试时给 source 带上第几次,历史里两条记录一眼看出是重试关系
-        const source =
-          retries > 0 ? `自动 tag(第 ${floor} 楼 · 第 ${attempt + 1} 次)` : `自动 tag(第 ${floor} 楼)`;
+        const source = slot
+          ? `重写提示词(第 ${floor} 楼 · 第 ${slot.seq + 1} 张${retries > 0 ? ` · 第 ${attempt + 1} 次` : ''})`
+          : retries > 0
+            ? `自动 tag(第 ${floor} 楼 · 第 ${attempt + 1} 次)`
+            : `自动 tag(第 ${floor} 楼)`;
         if (channel) {
           await requestCompletion(channel, messages, {
             signal: controller.signal,
@@ -378,7 +427,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       return;
     }
 
-    const planOps = planChangeOps(plan);
+    // 单槽重写不落 changes:首次全量分析已为整楼建过档,这里再应用一次只会产生
+    // 重复的建档/变更记录;库文本已含本楼增量(见上面 entriesBefore),AI 照抄即可。
+    const planOps = slot ? [] : planChangeOps(plan);
     // 锁定角色(全局库)不接受 AI changes:丢弃,不写入楼层、不参与 @替换。
     // 重放侧 applyCharTagOps 也会按锁定名再拦一次(旧消息里可能已存这类 ops)。
     const effectiveOps = lockedNames.size
@@ -457,6 +508,11 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       toastr.warning(`角色「${names}」没有建档，本次画面中缺少其外貌`, '柏宝绘');
     }
 
+    // 单槽重写没给出新提示词:保留原提示词与原图,不替换(空 images 不是错误)。
+    if (slot && !plan.images.length) {
+      toastr.info('模型没有给出新的提示词，本张保持原样', '柏宝绘');
+      return;
+    }
     // 没有图片、没有角色变化、也没有旧楼层变化要清理时,保持原来的无写入早退。
     if (!plan.images.length && !floorOps.length && !previousDelta) {
       if (opts.manual) toastr.info('模型认为本楼没有值得插图的画面', '柏宝绘');
@@ -466,11 +522,17 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
 
     // 触发 MESSAGE_EDITED / MESSAGE_UPDATED,卡片水合挂载时消费标记并自动开始生成
     // (见 floor/autoGenerate.ts);写回失败则撤销标记。
-    const marked = plan.images.length > 0 && settings.autoTag.autoGenerate;
+    // 单槽重写是用户在卡片上的显式意图(同提示词编辑弹窗的「应用并重新生成」),
+    // 不受 autoTag.autoGenerate 开关约束,一律 force 出图。
+    const markSwipeId = message.swipe_id ?? 0;
+    const marked = plan.images.length > 0 && (settings.autoTag.autoGenerate || !!slot);
     if (marked) {
-      const markSwipeId = message.swipe_id ?? 0;
-      for (let seq = 0; seq < plan.images.length; seq++) {
-        markForAutoGenerate(chatId, floor, markSwipeId, seq);
+      if (slot) {
+        markForAutoGenerate(chatId, floor, markSwipeId, slot.seq, 'force');
+      } else {
+        for (let seq = 0; seq < plan.images.length; seq++) {
+          markForAutoGenerate(chatId, floor, markSwipeId, seq);
+        }
       }
     }
     // 正文在 buildNext 里基于「落盘那一刻的真实正文」现算:分析期间别的插件对正文的修改
@@ -479,6 +541,15 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const result = await applyMessageText(
       floor,
       currentText => {
+        // 单槽重写:只替换第 seq 条 tag,正文与其它 tag 一字不动,也不需要位置重定位。
+        // 模型返回的 position 在这里刻意不参与——画面钉死在原位,它只负责重写内容。
+        // 开跑时快照的原文对不上 = 期间被用户/别的流程改过,放弃覆盖(同提示词编辑弹窗)。
+        if (slot) {
+          if (parseImageTags(currentText)[slot.seq] !== slotRawTag) return null;
+          // 盖章走共享助手(与下方批量路径同一口径):单槽重写换的是内容,不该顺手丢掉
+          // `<artist>` —— 否则「重写过的图不显示画师串名」。
+          return replaceImageTagAt(currentText, slot.seq, serializeImageTag(stampArtist(plan.images[0])));
+        }
         // replace 路径同样以当前正文为基底剔除旧 tag,不能用旧快照
         const base = opts.replace ? stripImageTags(currentText) : currentText;
         if (!plan.images.length) return base;
@@ -494,21 +565,24 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         rebaseNote = describeRebase(rebased.report);
         // 盖章:写进正文的每条 tag 记下当前生效画师串名(纯展示,生成侧不读;
         // 空 = 非 NAI 后端 / 未选画师串,序列化时整段省略)
-        const artist = activeNaiArtistName();
-        return injectImageTags(
-          base,
-          rebased.images.map(image => ({ ...image, artist })),
-        );
+        return injectImageTags(base, rebased.images.map(stampArtist));
       },
       chatId,
       swipeId,
       message,
-      {
-        key: BBI_CHAR_EXTRA_KEY,
-        value: makeCharTagFloorDelta(floorOps, swipeId ?? 0),
-      },
+      // 单槽不写法:本楼角色增量与其它槽位图片都不归它管,不传 extraUpdate 即保持原样。
+      slot
+        ? undefined
+        : {
+            key: BBI_CHAR_EXTRA_KEY,
+            value: makeCharTagFloorDelta(floorOps, swipeId ?? 0),
+          },
     );
     if (result === 'saved') {
+      if (slot) {
+        toastr.success(`已重写第 ${slot.seq + 1} 张的提示词，正在按新提示词出图`, '柏宝绘');
+        return;
+      }
       recomputeCharTags();
       if (rebaseNote) console.info(`[柏宝绘] 第 ${floor} 楼 tag 位置重定位:${rebaseNote}`);
       if (plan.images.length) {
@@ -520,20 +594,31 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       }
       return;
     }
-    if (marked) clearAutoGenerateForFloor(chatId, floor);
+    // 撤销标记只撤自己那一枚:clearAutoGenerateForFloor 会连累同楼其它槽位的待消费标记。
+    if (marked) {
+      if (slot) consumeAutoGenerate(chatId, floor, markSwipeId, slot.seq);
+      else clearAutoGenerateForFloor(chatId, floor);
+    }
     console.info(`[柏宝绘] 第 ${floor} 楼放弃写入生图 tag：${result}`);
-    toastr.warning(ABANDON_REASON[result] ?? '本次没有写入生图 tag', '柏宝绘');
+    // 单槽重写的放弃原因与全量不同:正文其它部分改没改不重要,关键是这一条 tag 被改过
+    if (slot && result === 'build-failed') {
+      toastr.warning('这张图的提示词在生成期间已被改动，本次没有覆盖它', '柏宝绘');
+    } else {
+      toastr.warning(ABANDON_REASON[result] ?? '本次没有写入生图 tag', '柏宝绘');
+    }
   } catch (error) {
     // 请求失败或被切换聊天取消时允许同一正文在后续重新渲染后重试。
     processed.delete(identity);
-    // 异常发生在挂标记之后时(如保存失败回滚),撤销本楼标记,不留残留
-    clearAutoGenerateForFloor(chatId, floor);
+    // 异常发生在挂标记之后时(如保存失败回滚),撤销本楼标记,不留残留。
+    // 单槽只撤自己那一枚:clearAutoGenerateForFloor 会连累同楼其它槽位的待消费标记。
+    if (slot) consumeAutoGenerate(chatId, floor, swipeId ?? 0, slot.seq);
+    else clearAutoGenerateForFloor(chatId, floor);
     if (controller.signal.aborted) return;
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[柏宝绘] 第 ${floor} 楼自动生成 tag 失败`, error);
     toastr.error(message, '柏宝绘自动 tag 失败');
   } finally {
-    if (running.get(slot) === controller) running.delete(slot);
+    if (running.get(runKey) === controller) running.delete(runKey);
   }
 }
 
@@ -564,6 +649,28 @@ function scheduleForGeneratedFloor(floor: number, chatId: string): void {
  */
 export async function requestFloorTags(floor: number, opts: { replace?: boolean } = {}): Promise<void> {
   await runForFloor(floor, { manual: true, replace: opts.replace });
+}
+
+/**
+ * 「AI 重写提示词」的手动入口:只重写并替换第 seq 条 tag(0-based)。
+ *
+ * 入口在提示词编辑弹窗里(floor/promptEditor.ts)——手改与 AI 改是同一件事的两种手段。
+ * 调用方把本函数交给 floor/tagPlanState.ts 的 runTagPlan 托管:请求的生命周期归那个
+ * store,**关掉弹窗不中断重写**。
+ *
+ * 画的仍是原来那个瞬间:写回按 seq 原位替换,模型返回的 position 不参与,措辞口径见
+ * slotPlan.buildSlotTaskNote(把该槽位当前提示词喂回去当锚点)。
+ * 分析基底剔除全部旧 tag(AI 不该把 tag 当正文),强制输出 1 张;本楼其它 tag 与图片
+ * 一字不动,旧图留在该槽位历史里。本次 AI 输出的 changes 一律忽略(首次全量分析时已建档)。
+ */
+export async function requestSlotTag(floor: number, seq: number): Promise<void> {
+  await runForFloor(floor, { manual: true, slot: { seq } });
+}
+
+/** 中止某楼在途的 tag 请求(全量分析与单槽重写共用同一把「每楼一把」的锁)。 */
+export function cancelFloorTags(floor: number): void {
+  const chatId = getContext()?.getCurrentChatId?.() ?? '';
+  running.get(`${chatId}\u0000${floor}`)?.abort();
 }
 
 /** Only pair automatic tagging with the final render of a real ST generation. */

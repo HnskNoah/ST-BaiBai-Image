@@ -53,12 +53,16 @@ import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { getContext } from '@/st/context';
 import {
-  activeNaiConn,
+  activeNaiEndpoint,
   artistForTarget,
-  newNaiConn,
+  effectiveNai,
+  isOfficialNaiEndpoint,
+  newNaiEndpoint,
   NAI_MODELS,
+  NAI_OFFICIAL_URL,
   settings,
   type NaiArtistPreset,
+  type NaiEndpoint,
   type NaiVibe,
 } from '@/state/settings';
 import { computed, nextTick, onMounted, ref } from 'vue';
@@ -78,124 +82,84 @@ async function onTestConnection() {
   if (testing.value) return;
   testing.value = true;
   try {
-    const result = await testNaiConnection(settings.nai);
-    toastr.success(result.message, 'NAI 连接');
+    // 测当前选中那条接入点(而非渠道级存量 url/key),与出图同一份连接
+    const result = await testNaiConnection(effectiveNai());
+    toastr.success(result.message, `NAI 连接 · ${endpoint.value.name}`);
   } catch (error) {
-    toastr.error(errorMessage(error), 'NAI 连接失败');
+    toastr.error(errorMessage(error), `NAI 连接失败 · ${endpoint.value.name}`);
   } finally {
     testing.value = false;
   }
 }
 
-/* ============ 连接配置库(接口地址 + API Key 成对保存,形制照搬画师串库) ============ */
+/* ============ 接入点库(地址 + 密钥;形制照搬下方画师串行) ============ */
 
 /**
- * 当前选中的连接配置;null = 手动填写(库为空或未选)。
- * 顶层 settings.nai.url/key 恒为生效值(请求方只读它们):切换 = 配置→顶层拷贝,
- * 输入框编辑 = 写顶层 + 回写当前配置(单一编辑面,不存在两套真相)。
+ * 多条接入点解决的是「公益站换着用」:同一套出图参数,换个出口。
+ * 故这里只管 url/key,模型/采样器/尺寸一概留在渠道级,切站不用重配。
  */
-const conn = computed(() => activeNaiConn());
+const endpoint = computed<NaiEndpoint>(() => activeNaiEndpoint());
 
-/** 「手动填写」的下拉值:空串 = 顶层 url/key 不归任何配置存档。 */
-const NO_CONN = '';
+/** 官方那条只读:名字/地址不给改、不给删,复制出来的副本才随便改。 */
+const isOfficialEndpoint = computed(() => isOfficialNaiEndpoint(endpoint.value.id));
 
-const connOptions = computed(() => [
-  { value: NO_CONN, label: '手动填写' },
-  ...settings.nai.connPresets.map(c => ({ value: c.id, label: c.name || '未命名配置' })),
-]);
+const endpointOptions = computed(() =>
+  settings.nai.endpoints.map(e => ({ value: e.id, label: e.name || '未命名接入点' })),
+);
 
-/**
- * 切换配置:把该条的地址/密钥拷进顶层生效值;选「手动填写」则保留当前值不动。
- * get 走 activeNaiConn() 而非直读存的 id:悬空 id(运行中改坏库等时序)显示
- * 「手动填写」而非空白下拉——与画师串的 `artist.value?.id ?? NO_ARTIST` 同口径。
- */
-const activeConnId = computed<string>({
-  get: () => conn.value?.id ?? NO_CONN,
+/** 下拉取「实际生效的那条」而非存的 id:悬空时 activeNaiEndpoint 回落首条,下拉要跟着显示。 */
+const activeEndpointId = computed<string>({
+  get: () => endpoint.value.id,
   set: id => {
-    settings.nai.activeConnId = id;
-    const c = settings.nai.connPresets.find(x => x.id === id);
-    if (c) {
-      settings.nai.url = c.url;
-      settings.nai.key = c.key;
-    }
+    settings.nai.activeEndpointId = id;
   },
 });
 
-/** 输入框双向绑定:写顶层生效值;选中了配置就同步回写,改动跟着配置存档。 */
-const connUrl = computed<string>({
-  get: () => settings.nai.url,
-  set: v => {
-    settings.nai.url = v;
-    const c = conn.value;
-    if (c) c.url = v;
-  },
-});
-const connKey = computed<string>({
-  get: () => settings.nai.key,
-  set: v => {
-    settings.nai.key = v;
-    const c = conn.value;
-    if (c) c.key = v;
-  },
-});
+/** 改名低频:平时只显示下拉,点「改名」才把选择器原地换成输入框(同画师串行)。 */
+const renamingEndpoint = ref(false);
+const endpointNameDraft = ref('');
+const endpointNameInput = ref<HTMLInputElement | null>(null);
+const endpointDeleteOpen = ref(false);
 
-/** 改名/删除都只对「真的选中了一条」有意义;手动填写时一律禁用。 */
-const hasConn = computed(() => conn.value !== null);
-
-/** 改名是低频操作:平时只显示下拉,点「改名」才把选择器原地换成输入框(与画师串库同款)。 */
-const renamingConn = ref(false);
-const connNameDraft = ref('');
-const connNameInput = ref<HTMLInputElement | null>(null);
-const connDeleteOpen = ref(false);
-
-function startRenameConn() {
-  if (!conn.value) return;
-  connNameDraft.value = conn.value.name;
-  renamingConn.value = true;
-  nextTick(() => connNameInput.value?.focus());
+function startRenameEndpoint() {
+  if (isOfficialEndpoint.value) return; // 官方条只读(按钮已禁用,双保险)
+  endpointNameDraft.value = endpoint.value.name;
+  renamingEndpoint.value = true;
+  nextTick(() => endpointNameInput.value?.focus());
 }
 
-/** Enter / 失焦都算确认;Esc 直接置 renamingConn=false 不经过这里,即为取消。 */
-function commitRenameConn() {
-  if (renamingConn.value && conn.value) conn.value.name = connNameDraft.value.trim();
-  renamingConn.value = false;
-}
-
-/** 新建一套空配置并切换过去:地址/密钥清空重填。 */
-function addConn() {
-  // 手动填写模式下有未存档的改动 → 先确认,别一键清空(选中配置时改动已实时回写,无此风险)
-  if (!hasConn.value && (settings.nai.url.trim() || settings.nai.key.trim())) {
-    if (!window.confirm('当前填写的地址/密钥尚未存进任何配置,新建将清空它们。继续?')) return;
+/** Enter / 失焦都算确认;Esc 直接置 false 不经过这里,即为取消。 */
+function commitRenameEndpoint() {
+  if (renamingEndpoint.value && !isOfficialEndpoint.value) {
+    endpoint.value.name = endpointNameDraft.value.trim() || endpoint.value.name;
   }
-  const preset = newNaiConn(`配置 ${settings.nai.connPresets.length + 1}`);
-  settings.nai.connPresets.push(preset);
-  activeConnId.value = preset.id;
+  renamingEndpoint.value = false;
 }
 
-/** 把当前填写的地址/密钥存成一套新配置(选中配置时等价于「复制当前」)。 */
-function saveConnAs() {
-  const fallback = `配置 ${settings.nai.connPresets.length + 1}`;
-  const suggested = conn.value ? `${conn.value.name} 副本` : fallback;
-  const raw = window.prompt('配置名称', suggested);
-  if (raw === null) return; // 取消
-  const preset = newNaiConn(raw.trim() || fallback, settings.nai.url, settings.nai.key);
-  settings.nai.connPresets.push(preset);
-  activeConnId.value = preset.id;
-  toastr.success(`已保存配置「${preset.name}」`, '连接配置');
+function addEndpoint() {
+  const preset = newNaiEndpoint(`接入点 ${settings.nai.endpoints.length + 1}`);
+  settings.nai.endpoints.push(preset);
+  settings.nai.activeEndpointId = preset.id;
 }
 
-/**
- * 删除当前配置:条目移除即可,没有文件要清(与画师串删除不同)。
- * 删的是选中条 → 退回手动填写,但地址/密钥原样留在输入框里(连接不断,只是不再存档)。
- */
-function confirmRemoveConn() {
-  connDeleteOpen.value = false;
-  const list = settings.nai.connPresets;
-  const id = conn.value?.id;
-  const index = list.findIndex(c => c.id === id);
+function duplicateEndpoint() {
+  // 官方条也走这里:复制出来的是普通条目,地址可改 —— 这是「照着官方改个镜像」的捷径
+  const src = endpoint.value;
+  const preset: NaiEndpoint = { ...newNaiEndpoint(), name: `${src.name} 副本`, url: src.url, key: src.key };
+  settings.nai.endpoints.push(preset);
+  settings.nai.activeEndpointId = preset.id;
+}
+
+function confirmRemoveEndpoint() {
+  endpointDeleteOpen.value = false;
+  if (isOfficialEndpoint.value) return; // 官方条不可删:endpoints 恒非空靠它保底
+  const list = settings.nai.endpoints;
+  const index = list.findIndex(e => e.id === endpoint.value.id);
   if (index < 0) return;
   list.splice(index, 1);
-  if (id && settings.nai.activeConnId === id) settings.nai.activeConnId = '';
+  // 接位到原位置那一条(已是最后一条则退一格)。**不**像画师串那样回落空串:
+  // 地址是必需品,空了就出不了图 —— 与工作流库同口径。
+  settings.nai.activeEndpointId = list[Math.min(index, list.length - 1)].id;
 }
 
 /* ============ 画师串库(行内工具条与库管理弹窗在 ArtistLibraryRow 共享组件里) ============ */
@@ -402,6 +366,16 @@ const currentVibeKey = computed(() => vibeModelKey(settings.nai.model));
 const vibesSupported = computed(() => naiSupportsVibes(settings.nai.model));
 const samplerOptions = computed(() => naiSamplers(settings.nai.model));
 
+/** BbiSelect 的 modelValue 是 string,而 nai.model 是字面量联合;这层 get/set 只为搭桥。
+ *  写入前对一遍 NAI_MODELS:下拉本就只发合法值,但少了这句类型断言就是空口无凭。 */
+const modelSel = computed<string>({
+  get: () => settings.nai.model,
+  set: v => {
+    const hit = NAI_MODELS.find(m => m.value === v);
+    if (hit) settings.nai.model = hit.value;
+  },
+});
+
 /** 生成 vibe 列表缩略图(最长边 96px 的 jpeg dataURL);失败回空串,由入库方按「无缩略图」处理。 */
 async function makeThumbnail(dataUrl: string): Promise<string> {
   try {
@@ -421,7 +395,7 @@ async function makeThumbnail(dataUrl: string): Promise<string> {
 async function encodeVibeGated(imageBase64: string): Promise<string> {
   const release = await acquireNaiSlot();
   try {
-    return await encodeVibeImage(settings.nai, imageBase64, settings.nai.model);
+    return await encodeVibeImage(effectiveNai(), imageBase64, settings.nai.model);
   } finally {
     release();
   }
@@ -732,74 +706,75 @@ async function removeVibe(vibe: NaiVibe) {
 
     <div class="bbi-sections">
       <Collapsible title="配置" :open="false">
-        <!-- 连接配置库:接口地址 + API Key 成对保存,官方/第三方镜像一键切换。
-             形制与画师串库一致:下拉切换 + 图标操作,低频操作全部退到 title/aria-label。 -->
+        <!-- 接入点库:公益站换着用的人不止一个出口,但换站只换地址+密钥,
+             模型/采样器/尺寸等出图参数一概留在下面,渠道级共用,切站不用重配 -->
         <div class="art-row">
-          <span class="bbi-field-label">配置管理</span>
+          <span class="bbi-field-label">接入点</span>
           <input
-            v-if="renamingConn"
-            ref="connNameInput"
+            v-if="renamingEndpoint"
+            ref="endpointNameInput"
             class="bbi-input"
             type="text"
-            v-model="connNameDraft"
-            placeholder="配置名称"
+            v-model="endpointNameDraft"
+            placeholder="接入点名称"
             spellcheck="false"
             title="Enter 确认，Esc 取消"
-            @keydown.enter.prevent="commitRenameConn"
-            @keydown.esc.stop.prevent="renamingConn = false"
-            @blur="commitRenameConn"
+            @keydown.enter.prevent="commitRenameEndpoint"
+            @keydown.esc.stop.prevent="renamingEndpoint = false"
+            @blur="commitRenameEndpoint"
           />
           <BbiSelect
             v-else
             class="art-select"
-            v-model="activeConnId"
-            :options="connOptions"
-            aria-label="当前连接配置"
+            v-model="activeEndpointId"
+            :options="endpointOptions"
+            aria-label="当前接入点"
           />
-          <span v-if="!renamingConn" class="art-ops">
+          <span v-if="!renamingEndpoint" class="art-ops">
             <button
               class="bbi-icon-btn art-op"
               type="button"
-              title="新建一套空配置(会清空下方地址/密钥重填)"
-              aria-label="新建配置"
-              @click="addConn"
+              :disabled="isOfficialEndpoint"
+              :title="isOfficialEndpoint ? '官方接入点不可改名' : '重命名当前接入点'"
+              aria-label="重命名当前接入点"
+              @click="startRenameEndpoint"
+            >
+              <Icon name="edit" :size="14" />
+            </button>
+            <button
+              class="bbi-icon-btn art-op"
+              type="button"
+              title="新建一条空接入点"
+              aria-label="新建一条空接入点"
+              @click="addEndpoint"
             >
               <Icon name="plus" :size="14" />
             </button>
             <button
               class="bbi-icon-btn art-op"
               type="button"
-              title="把当前填写的地址/密钥存成一套新配置"
-              aria-label="存为新配置"
-              @click="saveConnAs"
+              :title="
+                isOfficialEndpoint
+                  ? '照官方复制一条,复制出来的地址可以改'
+                  : '复制当前接入点(含地址与密钥)'
+              "
+              aria-label="复制当前接入点"
+              @click="duplicateEndpoint"
             >
               <Icon name="copy" :size="14" />
             </button>
             <button
-              class="bbi-icon-btn art-op"
-              type="button"
-              :disabled="!hasConn"
-              :title="!hasConn ? '当前是手动填写,没有可改名的配置' : '重命名当前配置'"
-              aria-label="重命名当前配置"
-              @click="startRenameConn"
-            >
-              <Icon name="edit" :size="14" />
-            </button>
-            <button
               class="bbi-icon-btn art-op art-remove"
               type="button"
-              :disabled="!hasConn"
-              :title="!hasConn ? '当前是手动填写,没有可删除的配置' : '删除当前配置'"
-              aria-label="删除当前配置"
-              @click="connDeleteOpen = true"
+              :disabled="isOfficialEndpoint"
+              :title="isOfficialEndpoint ? '官方接入点不可删除' : '删除当前接入点'"
+              aria-label="删除当前接入点"
+              @click="endpointDeleteOpen = true"
             >
               <Icon name="trash" :size="14" />
             </button>
           </span>
         </div>
-        <p class="bbi-field-hint">
-          多套「接口地址 + API Key」成对保存,一键切换官方/第三方;当前填写的改动会实时同步进选中的配置,选「手动填写」则不存档。
-        </p>
 
         <div class="bbi-field">
           <div class="bbi-field-head">
@@ -808,12 +783,18 @@ async function removeVibe(vibe: NaiVibe) {
           <input
             class="bbi-input"
             type="text"
-            v-model="connUrl"
-            placeholder="https://image.novelai.net"
+            v-model="endpoint.url"
+            :readonly="isOfficialEndpoint"
+            :placeholder="NAI_OFFICIAL_URL"
             spellcheck="false"
+            :title="isOfficialEndpoint ? '官方接入点地址固定,不可修改' : ''"
           />
           <p class="bbi-field-hint">
-            默认官方;第三方兼容站填到兼容前缀为止,自动补全 /ai/xxx 端点(个别站点的兼容面不止域名,带一段路径前缀,按站点说明填写)。这类站点可能没有订阅查询(测试连接会提示跳过)或 Vibe,生图参数由站点侧映射。
+            {{
+              isOfficialEndpoint
+                ? '官方接入点,地址固定;要用第三方站请点上方「+」新建一条。'
+                : '第三方站填域名即可,自动补全 /ai 端点。'
+            }}
           </p>
         </div>
 
@@ -825,7 +806,7 @@ async function removeVibe(vibe: NaiVibe) {
             <input
               class="bbi-input"
               :type="showKey ? 'text' : 'password'"
-              v-model="connKey"
+              v-model="endpoint.key"
               placeholder="nai-..."
               spellcheck="false"
             />
@@ -838,7 +819,14 @@ async function removeVibe(vibe: NaiVibe) {
               <Icon :name="showKey ? 'eye-off' : 'eye'" />
             </button>
           </div>
-          <p class="bbi-field-hint">官方站在 NovelAI 设置页生成。</p>
+          <!-- key 随条目走而非渠道级共用:公益站各有各的 key,共用一份等于每次换站都要重填 -->
+          <p class="bbi-field-hint">
+            {{
+              isOfficialEndpoint
+                ? '在 NovelAI 设置页生成。每条接入点各存各的 key。'
+                : '该站自己的 key;每条接入点各存各的,切回官方不会串。'
+            }}
+          </p>
         </div>
 
         <div class="conn-actions">
@@ -929,9 +917,12 @@ async function removeVibe(vibe: NaiVibe) {
           <div class="bbi-field-head">
             <span class="bbi-field-label">模型</span>
           </div>
-          <select class="bbi-input bbi-select" v-model="settings.nai.model">
-            <option v-for="m in NAI_MODELS" :key="m.value" :value="m.value">{{ m.label }}</option>
-          </select>
+          <BbiSelect
+            class="be-select"
+            v-model="modelSel"
+            :options="NAI_MODELS"
+            aria-label="NAI 模型"
+          />
         </div>
 
         <div class="be-row">
@@ -979,19 +970,23 @@ async function removeVibe(vibe: NaiVibe) {
             <div class="bbi-field-head">
               <span class="bbi-field-label">采样器</span>
             </div>
-            <select class="bbi-input bbi-select" v-model="settings.nai.sampler">
-              <option v-for="s in samplerOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
-            </select>
+            <BbiSelect
+              class="be-select"
+              v-model="settings.nai.sampler"
+              :options="samplerOptions"
+              aria-label="采样器"
+            />
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
               <span class="bbi-field-label">噪声表</span>
             </div>
-            <select class="bbi-input bbi-select" v-model="settings.nai.noiseSchedule">
-              <option v-for="s in NAI_NOISE_SCHEDULES" :key="s.value" :value="s.value">
-                {{ s.label }}
-              </option>
-            </select>
+            <BbiSelect
+              class="be-select"
+              v-model="settings.nai.noiseSchedule"
+              :options="NAI_NOISE_SCHEDULES"
+              aria-label="噪声表"
+            />
           </div>
         </div>
         <div class="be-row be-row--nums">
@@ -1403,14 +1398,14 @@ async function removeVibe(vibe: NaiVibe) {
 
 
     <ConfirmDialog
-      v-model:open="connDeleteOpen"
-      title="删除连接配置"
+      v-model:open="endpointDeleteOpen"
+      title="删除接入点"
       confirm-text="删除"
       confirm-icon="trash"
       tone="danger"
-      @confirm="confirmRemoveConn"
+      @confirm="confirmRemoveEndpoint"
     >
-      确定删除配置「{{ conn?.name || '未命名配置' }}」？地址和密钥会保留在下方输入框,只是不再存档、改名后无法找回。
+      确定删除接入点「{{ endpoint.name || '未命名接入点' }}」？地址与 API Key 会一并删除。
     </ConfirmDialog>
 
     <!-- ===== 质量词 / 负面词编辑弹窗(与设置页自定义提示词同款) ===== -->
@@ -1475,6 +1470,12 @@ async function removeVibe(vibe: NaiVibe) {
 
 .be-row .bbi-field {
   margin-bottom: 0;
+}
+
+/* 参数区的自绘下拉吃满字段宽:与同行的 .bbi-input(模型名/尺寸)左右对齐,
+   子组件根类默认 180px/flex:none,这里压过去。 */
+.be-select {
+  width: 100%;
 }
 
 .be-row--nums {

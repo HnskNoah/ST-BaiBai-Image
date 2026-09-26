@@ -4,7 +4,7 @@ import { generateComfyImage } from '@/backends/comfyui';
 import { generateNaiImage } from '@/backends/nai';
 import { acquireNaiSlot } from '@/floor/genQueue';
 import { backendStatus, decideSeed, generateImage } from '@/generate';
-import { settings, type NaiModel } from '@/state/settings';
+import { activeNaiEndpoint, newNaiEndpoint, settings, type NaiModel } from '@/state/settings';
 
 vi.mock('@/backends/nai', async importOriginal => ({
   ...(await importOriginal<typeof import('@/backends/nai')>()),
@@ -27,11 +27,16 @@ beforeEach(() => {
   vi.mocked(generateComfyImage).mockResolvedValue(fakeResult());
 });
 
-/** 把设置调成「NAI 已配齐」。 */
+/**
+ * 把设置调成「NAI 已配齐」。地址与 key 落在**当前接入点**上——渠道级那两个是存量字段。
+ * settings 是模块级单例,用例之间会串,故这里把接入点库整个复位成「只有官方一条」。
+ */
 function naiReady(model: NaiModel = 'nai-diffusion-4-5-full'): void {
   settings.defaultBackend = 'nai';
-  settings.nai.url = 'https://image.novelai.net';
-  settings.nai.key = 'k';
+  settings.nai.endpoints = [
+    { id: 'nep_official', name: 'NovelAI 官方', url: 'https://image.novelai.net', key: 'k' },
+  ];
+  settings.nai.activeEndpointId = 'nep_official';
   settings.nai.model = model;
   settings.nai.seed = 0;
 }
@@ -61,16 +66,63 @@ describe('backendStatus', () => {
     naiReady();
     expect(backendStatus()).toMatchObject({ configured: true, reason: '' });
 
-    settings.nai.key = '  ';
-    expect(backendStatus()).toMatchObject({ configured: false, reason: '未填写 NAI API Key' });
+    activeNaiEndpoint().key = '  ';
+    expect(backendStatus()).toMatchObject({
+      configured: false,
+      reason: '当前 NAI 接入点未填写 API Key',
+    });
 
-    settings.nai.url = '  ';
-    expect(backendStatus()).toMatchObject({ configured: false, reason: '未填写 NAI 服务地址' });
+    activeNaiEndpoint().url = '  ';
+    expect(backendStatus()).toMatchObject({
+      configured: false,
+      reason: '当前 NAI 接入点未填写服务地址',
+    });
+  });
+
+  it('keeps the endpoint name out of reason (it goes to third parties, and users name rows after URLs)', () => {
+    // reason 经 getBackendStatus 原样递给第三方,而公开返回值里绝不能出现地址
+    naiReady();
+    const named = newNaiEndpoint('https://my-secret-proxy.example');
+    settings.nai.endpoints.push(named);
+    settings.nai.activeEndpointId = named.id;
+    expect(backendStatus().reason).not.toContain('my-secret-proxy');
+  });
+
+  it('judges readiness by the active endpoint, not the legacy channel-level url/key', () => {
+    // 存量字段留着只为回滚,出图一律不看它 —— 否则切到没填 key 的公益站会「看起来能点」
+    naiReady();
+    settings.nai.url = 'https://image.novelai.net';
+    settings.nai.key = 'legacy';
+
+    const blank = newNaiEndpoint('公益站 A');
+    settings.nai.endpoints.push(blank);
+    settings.nai.activeEndpointId = blank.id;
+    expect(backendStatus()).toMatchObject({
+      configured: false,
+      reason: '当前 NAI 接入点未填写服务地址',
+    });
+  });
+
+  it('sends the active endpoint down to the backend (switching outlets keeps every other param)', async () => {
+    naiReady();
+    settings.nai.steps = 33;
+    const alt = newNaiEndpoint('公益站 A');
+    alt.url = 'https://a.example';
+    alt.key = 'ka';
+    settings.nai.endpoints.push(alt);
+    settings.nai.activeEndpointId = alt.id;
+
+    await generateImage({ prompt: 'x', seed: 1 }, undefined, {});
+    expect(vi.mocked(generateNaiImage).mock.calls[0][0]).toMatchObject({
+      url: 'https://a.example',
+      key: 'ka',
+      steps: 33,
+    });
   });
 
   it('answers supportsCharacters from the model alone, even before the key is filled in', () => {
     naiReady();
-    settings.nai.key = '';
+    activeNaiEndpoint().key = '';
     // 第三方要在出图**前**就知道该不该传 characters,不能等配好了才知道
     expect(backendStatus().supportsCharacters).toBe(true);
   });
@@ -160,8 +212,8 @@ describe('generateImage', () => {
 
   it('refuses to fire a doomed request when the backend is not configured', async () => {
     naiReady();
-    settings.nai.key = '';
-    await expect(generateImage({ prompt: 'x', seed: 1 })).rejects.toThrow('未填写 NAI API Key');
+    activeNaiEndpoint().key = '';
+    await expect(generateImage({ prompt: 'x', seed: 1 })).rejects.toThrow('未填写 API Key');
     expect(vi.mocked(generateNaiImage)).not.toHaveBeenCalled();
   });
 

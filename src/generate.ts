@@ -35,7 +35,9 @@ import type { Orientation } from '@/backends/size';
 import { acquireNaiSlot } from '@/floor/genQueue';
 import {
   activeComfyPreset,
+  activeNaiEndpoint,
   effectiveComfyConn,
+  effectiveNai,
   latentAsNai,
   settings,
   type BackendId,
@@ -107,8 +109,17 @@ export function backendStatus(): BackendStatus {
     // 支持与否只看模型,与配没配齐无关:第三方要在出图前就知道该不该传 characters
     const supportsCharacters = naiSupportsCharacterPrompts(model);
     const base = { backend, model, supportsCharacters };
-    if (!settings.nai.url.trim()) return { ...base, configured: false, reason: '未填写 NAI 服务地址' };
-    if (!settings.nai.key.trim()) return { ...base, configured: false, reason: '未填写 NAI API Key' };
+    // 地址与 key 取**当前接入点**那一份(见 effectiveNai);渠道级 nai.url/nai.key 是存量字段。
+    // reason 里刻意**不带接入点名字**:它会经 getBackendStatus 原样递给第三方,而名字是用户
+    // 自己敲的——有人就拿站点域名当名字,带上等于把地址漏进公开返回值(见 public/api.ts 白名单)。
+    // 少了名字也不难定位:面板下拉里选中的就是这条。
+    const conn = activeNaiEndpoint();
+    if (!conn.url.trim()) {
+      return { ...base, configured: false, reason: '当前 NAI 接入点未填写服务地址' };
+    }
+    if (!conn.key.trim()) {
+      return { ...base, configured: false, reason: '当前 NAI 接入点未填写 API Key' };
+    }
     return { ...base, configured: true, reason: '' };
   }
 
@@ -219,7 +230,7 @@ export async function generateImage(
     const size = input.size ?? 'portrait';
     const result = isNai
       ? await generateNaiImage(
-          settings.nai,
+          effectiveNai(),
           // characters 原样透传:不支持的模型由 buildNaiParameters 自己滤掉(同一口径
           // naiSupportsCharacterPrompts),在这儿再滤一遍只会多一处会漂的判据
           { prompt: input.prompt, nl: input.nl ?? '', characters, seed: input.seed, size },

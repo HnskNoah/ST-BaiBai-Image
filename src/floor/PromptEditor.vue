@@ -31,6 +31,13 @@ const props = defineProps<{
   /** 忙碌中(写回正在进行):禁用底部按钮,避免连点写两次。 */
   busy?: boolean;
   /**
+   * AI 重写提示词在途(运行态在 floor/tagPlanState.ts,**不属于本弹窗**)。
+   * 关窗不中断重写,重开的弹窗照样看到它亮着 —— 故由调用方按 store 传进来。
+   */
+  rewriting?: boolean;
+  /** 本窗内已有过一次 AI 重写落盘:下面输入框里的是**已保存**的版本,明说一句。 */
+  rewritten?: boolean;
+  /**
    * 调用方要求关闭:置 true 后本组件播离场动画。
    * **不能反过来用 ref 拿组件实例**——本组件是 render(h(...)) 命令式挂载的,
    * 没有父组件实例,`ref` 的 owner 为 null:挂载时 Vue 静默跳过(有 parentComponent 护栏),
@@ -43,6 +50,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** 应用;regenerate=true 表示写回后直接开跑出图。 */
   (e: 'apply', value: ImageTagContent, regenerate: boolean): void;
+  /** 请求 AI 重写这一张的提示词(落盘与出图由调用方做,本组件只负责把结果读回草稿)。 */
+  (e: 'rewrite'): void;
+  /** 取消在途的 AI 重写。 */
+  (e: 'cancel-rewrite'): void;
   /** 草稿是否已改动(调用方据此决定关窗前要不要问「放弃修改?」)。 */
   (e: 'dirty', value: boolean): void;
   (e: 'close'): void;
@@ -129,7 +140,26 @@ const error = computed(() => {
   return '';
 });
 
-const canApply = computed(() => !error.value && !props.busy);
+const canApply = computed(() => !error.value && !props.busy && !props.rewriting);
+
+/**
+ * AI 重写落盘后,把新提示词读回输入框。
+ *
+ * 重写是**真落盘**的(runner 写正文 + 出图),所以 content 变了就意味着「正文里现在
+ * 是这一份」;弹窗里的草稿必须跟着换,否则用户点「应用」会拿旧草稿把刚重写的覆盖掉。
+ * 刻意不问「要不要丢弃草稿」:重写是用户自己点的,且草稿内容原样躺在下面的输入框里,
+ * 他看得见、随时能再改。
+ */
+watch(
+  () => props.content,
+  next => {
+    tag.value = next.tag;
+    nl.value = next.nl;
+    negative.value = next.negative;
+    size.value = next.size;
+    characters.value = next.characters.map(character => ({ ...character }));
+  },
+);
 
 function addCharacter(): void {
   characters.value.push({ name: '', tag: '', nl: '' });
@@ -144,7 +174,16 @@ function apply(regenerate: boolean): void {
   emit('apply', draft.value, regenerate);
 }
 
-/** 关闭前的丢弃确认交给调用方(它有 confirmDialog,且要按 dirty 决定问不问)。 */
+function rewrite(): void {
+  if (props.busy || props.rewriting || !props.configured) return;
+  emit('rewrite');
+}
+
+/**
+ * 关闭前的丢弃确认交给调用方(它有 confirmDialog,且要按 dirty 决定问不问)。
+ * 重写在途时照常允许关闭:请求属于 tagPlanState 而非本弹窗,关窗不中断它,
+ * 重开时还能接上(见 promptEditor.ts 的 rejoin)。
+ */
 function requestClose(): void {
   if (props.busy) return;
   emit('close');
@@ -194,6 +233,43 @@ onBeforeUnmount(() => {
           <Icon name="close" />
         </button>
       </header>
+
+      <!-- AI 重写:手改与 AI 改是同一件事的两种手段,故聚在同一个弹窗里。
+           跑完直接落盘并出图(见 promptEditor.ts),结果回填到下面的输入框。 -->
+      <div class="bbi-rewrite-row">
+        <button
+          v-if="!rewriting"
+          class="bbi-btn bbi-btn-sm"
+          type="button"
+          :disabled="busy || !configured"
+          :title="
+            configured
+              ? '让 AI 重读本楼正文，把这一张的提示词重写一遍'
+              : '请先在柏宝绘「渠道」页完成配置'
+          "
+          @click="rewrite"
+        >
+          <Icon name="sparkles" /> AI 重写提示词
+        </button>
+        <template v-else>
+          <span class="bbi-rewrite-busy">
+            <span class="bbi-rewrite-spin" />
+            AI 正在重写提示词…
+          </span>
+          <button class="bbi-btn bbi-btn-sm" type="button" @click="emit('cancel-rewrite')">
+            取消重写
+          </button>
+        </template>
+      </div>
+      <p v-if="rewriting" class="bbi-editor-note">
+        重写完成后会直接保存并按新提示词出图，结果填回下面的输入框。
+        现在关掉这个窗口也不会中断，回头再打开还能看到进度。
+      </p>
+      <!-- 已落盘却没关窗:下面的输入框与「用户自己打了一半」长得一样,不说清哪份已生效,
+           用户会以为还得再点一次「应用」(或反过来以为草稿也存了)。 -->
+      <p v-else-if="rewritten" class="bbi-editor-note">
+        AI 重写完成，新提示词已保存并开始出图，下面填的就是它。还想再调整就直接改，改完点「应用」。
+      </p>
 
       <div class="bbi-modal-field">
         <span class="bbi-modal-label">画面 tag(danbooru 短 tag,逗号分隔)</span>
@@ -380,6 +456,37 @@ onBeforeUnmount(() => {
 .bbi-char-add {
   align-self: flex-start;
   margin-top: 8px;
+}
+
+/* —— AI 重写行:钉在标题下方,与下面的字段区拉开 —— */
+.bbi-rewrite-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.bbi-rewrite-busy {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--bbi-ink-soft);
+}
+
+.bbi-rewrite-spin {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--bbi-line-strong);
+  border-top-color: var(--bbi-accent);
+  border-radius: 50%;
+  animation: bbi-rewrite-spin 0.7s linear infinite;
+}
+
+@keyframes bbi-rewrite-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .bbi-editor-note {

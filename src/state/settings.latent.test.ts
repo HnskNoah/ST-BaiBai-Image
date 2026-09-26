@@ -181,8 +181,10 @@ describe('Latent 渠道设置', () => {
   });
 
   it('generateNaiImage latentResolution:载荷去 width/height 换 resolution 枚举', async () => {
-    const { settings, latentAsNai } = await hydrateWithLatent({});
-    settings.nai.key = 'k';
+    const { latentAsNai, activeNaiEndpoint } = await hydrateWithLatent({});
+    // NAI 渠道那把 key 挂在当前接入点上(渠道级字段已是存量);本用例只关心视图装配,
+    // 这里放一把「别的渠道的钥匙」是为了让任何误读渠道级设置的实现露馅。
+    activeNaiEndpoint().key = 'nai-channel-key';
     const view = latentAsNai();
     view.key = 'k';
     const { buildNaiParameters } = await import('@/backends/nai');
@@ -308,6 +310,32 @@ describe('Latent 渠道设置', () => {
     expect(activeNaiArtistName()).toBe('水彩');
     settings.defaultBackend = 'comfyui';
     expect(activeNaiArtistName()).toBe('');
+  });
+
+  it('stampArtist:所有写回路径共用的盖章助手保形且只改 artist', async () => {
+    const { settings, stampArtist } = await hydrateWithLatent({});
+    settings.latent.artistPresets = [
+      { id: 'l1', name: '厚涂', prompt: '@test', quality: '', negative: '' },
+    ];
+    settings.latent.activeArtistId = 'l1';
+    settings.defaultBackend = 'latent';
+
+    // 保形:原对象一个字段不丢(正文本地重写/单槽重写传的就是这种带位置信息的对象)
+    const entire = {
+      position: 'p1',
+      sourceLine: 7,
+      tag: '1girl, solo',
+      nl: '',
+      negative: 'outdoor',
+      characters: [],
+      size: 'portrait' as const,
+    };
+    expect(stampArtist(entire)).toEqual({ ...entire, artist: '厚涂' });
+    expect(entire).not.toHaveProperty('artist'); // 不改原对象
+
+    // 非 NAI 系渠道盖空串 = 序列化时整段省略(与 activeNaiArtistName 同口径)
+    settings.defaultBackend = 'comfyui';
+    expect(stampArtist(entire).artist).toBe('');
   });
 
   it('端到端:站点固定档 920×1536/1536×920 经 multipleOf64 豁免通过参数构建', async () => {

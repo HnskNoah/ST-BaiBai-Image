@@ -606,6 +606,41 @@ function closeModelMenuSoon() {
         </Collapsible>
       </Collapsible>
 
+      <!-- 副 API:生成画图 tag 用的模型渠道(与柏宝书共享渠道列表) -->
+      <Collapsible title="副 API" :open="false">
+        <!-- 任务指派:只有一个任务——生成 tag -->
+        <div class="bbi-field bbi-assign">
+          <label class="bbi-assign-row">
+            <span class="bbi-field-label">生成 tag 使用</span>
+            <select v-model="settings.assignments.tagGen" class="bbi-input bbi-select">
+              <option value="">跟随主 API</option>
+              <option v-for="c in settings.channels" :key="c.id" :value="c.id">{{ c.name }}</option>
+            </select>
+          </label>
+        </div>
+        <p class="bbi-field-hint">不指派渠道时跟随主 API:直接借用你主界面当前正在用的 API(聊天补全/文本补全)来生成画图 tag,无需额外配置。想用不同模型再在下方建副渠道指派。渠道列表与柏宝书共享,任一端改动都会自动同步到另一端。</p>
+
+        <hr class="bbi-rule" />
+
+        <!-- 渠道:顶部添加按钮 + 紧凑只读列表(点行进弹窗编辑),不再一长列表平铺 -->
+        <div class="bbi-channel-bar">
+          <span class="bbi-field-label">渠道</span>
+          <button class="bbi-btn bbi-btn-primary bbi-btn-sm" type="button" @click="addChannel()">
+            <Icon name="plus" /> 添加渠道
+          </button>
+        </div>
+
+        <ul v-if="settings.channels.length" class="bbi-channel-list">
+          <li v-for="ch in settings.channels" :key="ch.id" class="bbi-channel-item">
+            <button class="bbi-channel-open" type="button" @click="openChannel(ch.id)">
+              <span class="bbi-channel-item-name">{{ ch.name || '未命名渠道' }}</span>
+              <span class="bbi-channel-item-model">{{ ch.model || '未设模型' }}</span>
+            </button>
+          </li>
+        </ul>
+        <p v-else class="bbi-field-hint">还没有渠道。点「添加渠道」配置生成 tag 要用的 API。</p>
+      </Collapsible>
+
       <Collapsible title="自动生成 tag" :open="false">
         <label class="bbi-switch-row">
           <span class="bbi-field-label">自动生成 tag</span>
@@ -790,41 +825,6 @@ function closeModelMenuSoon() {
             </button>
           </li>
         </ul>
-      </Collapsible>
-
-      <!-- 副 API:生成画图 tag 用的模型渠道(与柏宝书共享渠道列表) -->
-      <Collapsible title="副 API" :open="false">
-        <!-- 任务指派:只有一个任务——生成 tag -->
-        <div class="bbi-field bbi-assign">
-          <label class="bbi-assign-row">
-            <span class="bbi-field-label">生成 tag 使用</span>
-            <select v-model="settings.assignments.tagGen" class="bbi-input bbi-select">
-              <option value="">跟随主 API</option>
-              <option v-for="c in settings.channels" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </select>
-          </label>
-        </div>
-        <p class="bbi-field-hint">不指派渠道时跟随主 API:直接借用你主界面当前正在用的 API(聊天补全/文本补全)来生成画图 tag,无需额外配置。想用不同模型再在下方建副渠道指派。渠道列表与柏宝书共享,任一端改动都会自动同步到另一端。</p>
-
-        <hr class="bbi-rule" />
-
-        <!-- 渠道:顶部添加按钮 + 紧凑只读列表(点行进弹窗编辑),不再一长列表平铺 -->
-        <div class="bbi-channel-bar">
-          <span class="bbi-field-label">渠道</span>
-          <button class="bbi-btn bbi-btn-primary bbi-btn-sm" type="button" @click="addChannel()">
-            <Icon name="plus" /> 添加渠道
-          </button>
-        </div>
-
-        <ul v-if="settings.channels.length" class="bbi-channel-list">
-          <li v-for="ch in settings.channels" :key="ch.id" class="bbi-channel-item">
-            <button class="bbi-channel-open" type="button" @click="openChannel(ch.id)">
-              <span class="bbi-channel-item-name">{{ ch.name || '未命名渠道' }}</span>
-              <span class="bbi-channel-item-model">{{ ch.model || '未设模型' }}</span>
-            </button>
-          </li>
-        </ul>
-        <p v-else class="bbi-field-hint">还没有渠道。点「添加渠道」配置生成 tag 要用的 API。</p>
       </Collapsible>
     </div>
 

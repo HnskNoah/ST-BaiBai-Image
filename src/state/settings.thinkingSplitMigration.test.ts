@@ -72,4 +72,15 @@ describe('思维链按后端拆分的设置迁移', () => {
     expect(autoTag.prompts.naiV5Spec).toBe('');
     expect(autoTag.prompts.prefill).toBe('');
   });
+
+  it('本分支独有的 Latent 规范/思维链不会被 prompts 重建表吃掉', async () => {
+    // 这两个键只有本分支有(spec/latent 与 thinking/latent),而上游那份 prompts 是
+    // **逐字段重建**:合并收口时漏接它们 = 用户改过的 Latent 提示词载入即回内置默认,
+    // 并在下一次设置变更写回后永久丢。故在这里钉一条。
+    const autoTag = await hydrateWithAutoTag({
+      prompts: { latentSpec: '我的 Latent 规范', latentThinking: '我的 Latent 清单' },
+    });
+    expect(autoTag.prompts.latentSpec).toBe('我的 Latent 规范');
+    expect(autoTag.prompts.latentThinking).toBe('我的 Latent 清单');
+  });
 });
