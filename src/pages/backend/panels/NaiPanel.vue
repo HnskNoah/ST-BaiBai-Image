@@ -33,6 +33,7 @@ import {
   vibeMetaFromData,
 } from '@/backends/vibeStore';
 import ArtistLibraryRow from '@/pages/backend/panels/ArtistLibraryRow.vue';
+import TagRulesRow from '@/pages/backend/panels/TagRulesRow.vue';
 import { acquireNaiSlot } from '@/floor/genQueue';
 import { makeJpegThumbnail } from '@/st/imageFile';
 import {
@@ -909,6 +910,10 @@ async function removeVibe(vibe: NaiVibe) {
         <p class="bbi-field-hint art-hint">
           画师串里没设置正/负面词时，就会用这里的;这里也留空，则按模型取官方词。
         </p>
+
+        <hr class="art-divider" />
+        <!-- 联动加词:命中触发词就往画面 tag 追加配套词(NAI 渠道只做正面,见组件头注释) -->
+        <TagRulesRow target="nai" />
       </Collapsible>
 
       <Collapsible title="默认参数" :open="false">

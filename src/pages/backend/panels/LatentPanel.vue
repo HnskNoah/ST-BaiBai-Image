@@ -17,6 +17,7 @@ import {
   latentDefaultUndesired,
 } from '@/backends/nai';
 import ArtistLibraryRow from '@/pages/backend/panels/ArtistLibraryRow.vue';
+import TagRulesRow from '@/pages/backend/panels/TagRulesRow.vue';
 import {
   fetchLatentCaps,
   readLatentCaps,
@@ -345,6 +346,10 @@ function resetPromptDraft() {
           </li>
         </ul>
         <p class="bbi-field-hint">画师串里没设置正/负面词时，就会用这里的;这里也留空，则用 Anima 推荐默认。</p>
+
+        <hr class="art-divider" />
+        <!-- 联动加词:命中触发词就往画面 tag / 本画面负面追加配套词(本渠道正负都真生效) -->
+        <TagRulesRow target="latent" />
 
         <p class="bbi-field-hint">
           自动出图时教 AI 写 tag 的「规范/思维链」在 设置页 → 自定义提示词 → 「Latent 规范 / Latent 思维链」,留空走内置默认。

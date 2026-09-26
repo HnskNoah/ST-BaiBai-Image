@@ -19,6 +19,7 @@ import {
   vibeFingerprint,
   vibeMetaFromData,
 } from '@/backends/vibeStore';
+import { normalizeTagRules, type TagRule } from '@/autoTag/tagRules';
 import { getContext } from '@/st/context';
 import type { ImageTagContent } from '@/st/imageTagRegex';
 import { reactive, watch } from 'vue';
@@ -324,6 +325,16 @@ export interface NaiSettings extends BackendConn {
    */
   activeArtistId: string;
   /**
+   * 联动加词规则表(命中触发词 → 往正面 tag 或本画面负面追加配套词)。
+   * 注入发生在 runner 的**写回正文之前**(taglint 之后),故规则作用的是「写进正文的那份」;
+   * 手动编辑弹窗与公开接口不经这条缝(用户自己编辑的内容不重跑规则)。
+   * 语义与匹配口径见 autoTag/tagRules.ts。**NAI 面板只暴露正面**——本画面负面在 NAI 渠道
+   * 无人消费(generate.ts 的 NAI 分支不传 negativeExtra),给了负面选项等于配了不生效。
+   */
+  tagRules: TagRule[];
+  /** 规则表总开关(关掉后整表停用,规则本身保留)。默认开:空表本就是零行为。 */
+  tagRulesEnabled: boolean;
+  /**
    * 【存量字段,已不参与出图】本分支曾经唯一的「连接配置库」(地址 + API Key 成对多条,
    * 官方站/第三方镜像一键切换)。并入上游接入点后,`foldConnPresetsIntoEndpoints`
    * 在载入时把它**一次性折进 endpoints**(见 migrateNaiEndpoints)。
@@ -387,6 +398,14 @@ export interface LatentSettings extends BackendConn {
    * ——normalizeLatent 按 normalizeNai 同款不变式清洗悬空 id,面板无需再判。
    */
   activeArtistId: string;
+  /**
+   * 联动加词规则表(与 NAI 渠道那一份**完全独立**,同画师串库分家的口径)。
+   * 本渠道提供正面与负面两个目标:`<negative>` 在本渠道会被当作 negativeExtra 合并进
+   * 负面链(generate.ts 的 latent 分支),故负面注入真实生效。语义见 autoTag/tagRules.ts。
+   */
+  tagRules: TagRule[];
+  /** 规则表总开关(关掉后整表停用,规则本身保留)。默认开:空表本就是零行为。 */
+  tagRulesEnabled: boolean;
 }
 
 /** 界面偏好里要跨设备同步的部分;activePage 等纯本机临时态不在此。 */
@@ -1247,6 +1266,9 @@ function naiDefaults(): NaiSettings {
     // hydrate 时旧用户的 stored.nai.activeArtistId 已存在(哪怕空串),会被
     // normalizeNai 原样保留,不受影响。
     activeArtistId: BUILTIN_NAI_ARTISTS[0]?.id ?? '',
+    // 联动加词:出生即空表(零行为);总开关默认开——用户加规则即生效,不必先去找开关
+    tagRules: [],
+    tagRulesEnabled: true,
   };
 }
 
@@ -1286,6 +1308,9 @@ function latentDefaults(): LatentSettings {
     // 内置条 bi_anima_default 是 @ 格式模板(占位词),同样不默认塞给用户。
     artistPresets: [],
     activeArtistId: '',
+    // 联动加词:与 NAI 渠道各存一份(见 LatentSettings.tagRules);出生即空表、总开关默认开
+    tagRules: [],
+    tagRulesEnabled: true,
   };
 }
 
@@ -1542,6 +1567,23 @@ export function activeNaiEndpoint(): NaiEndpoint {
 export function effectiveNai(): NaiSettings {
   const ep = activeNaiEndpoint();
   return { ...settings.nai, url: ep.url, key: ep.key };
+}
+
+/**
+ * 当前出图渠道的联动加词规则表(runner 写回正文时取用;语义见 autoTag/tagRules.ts)。
+ *
+ * 为什么按 `defaultBackend` 取:注入发生在**写回那一刻**,而那会儿还不知道将来用哪个渠道出图
+ * (渠道是全局设置,用户之后可以改)。取「当前渠道」是与「渠道页里配的那份」最贴近的解释,
+ * 也让两渠道各自的规则互不串。ComfyUI / WebUI 没有规则表 —— 返回空表,不做任何注入。
+ */
+export function activeTagRules(): { enabled: boolean; rules: TagRule[] } {
+  if (settings.defaultBackend === 'nai') {
+    return { enabled: settings.nai.tagRulesEnabled, rules: settings.nai.tagRules };
+  }
+  if (settings.defaultBackend === 'latent') {
+    return { enabled: settings.latent.tagRulesEnabled, rules: settings.latent.tagRules };
+  }
+  return { enabled: false, rules: [] };
 }
 
 /**
@@ -1856,7 +1898,11 @@ function foldConnPresetsIntoEndpoints(
   const url = typeof o.url === 'string' ? o.url.trim() : '';
   const key = typeof o.key === 'string' ? o.key : '';
   const onOfficial = !url || isOfficialNaiUrl(url);
-  if (onOfficial && !officialKey) officialKey = key;
+  // 顶层 url/key 是**生效值**(旧版不变式:切换/编辑都写顶层):生效落在官方站时,官方条的 key
+  // 必须取顶层那把 —— 库里可能存着**多条** url 指向官方站的条目(两张月卡、或复制出来的副本),
+  // 取"库内第一条"会让用户的 key 在升级时被静默换掉(401 归因不到升级上)。库内官方条的 key
+  // 只在顶层没有时兜底(例如用户停在镜像站,官方那把只存在于库里)。
+  if (onOfficial && (key || !officialKey)) officialKey = key;
 
   let activeEndpointId = OFFICIAL_NAI_ENDPOINT_ID;
   if (!onOfficial) {
@@ -1927,6 +1973,9 @@ function normalizeLatent(raw: unknown, def: LatentSettings): LatentSettings {
         isBuiltinLatentArtist(o.activeArtistId))
         ? o.activeArtistId
         : '',
+    // 联动加词:与 NAI 渠道各一份,清洗口径同一份(见 tagRules.ts);同样必须显式接住(§8 纪律)
+    tagRules: normalizeTagRules(o.tagRules),
+    tagRulesEnabled: typeof o.tagRulesEnabled === 'boolean' ? o.tagRulesEnabled : def.tagRulesEnabled,
   };
 }
 
@@ -2032,6 +2081,10 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
       : def.vibes,
     artistPresets,
     activeArtistId,
+    // 联动加词:规则表逐条清洗(见 tagRules.ts 的 normalizeTagRules)。**必须显式列在这里**
+    // ——normalizeNai 是逐字段重建,漏掉就是「载入即剥、首次写回永久丢」(architecture.md §8 纪律)
+    tagRules: normalizeTagRules(o.tagRules),
+    tagRulesEnabled: typeof o.tagRulesEnabled === 'boolean' ? o.tagRulesEnabled : def.tagRulesEnabled,
     // 回滚载体(见上方注释):键本来不存在就不写回,避免给新装用户长出死数据
     ...(connPresets ? { connPresets, activeConnId } : {}),
   };

@@ -219,6 +219,16 @@ runForFloor(floor, opts)
      **永久变化(set)才按位置门控**,染发之前的图片用旧档。未知占位符剥除并 toast 告警。
      (v0.1.2 起主路径已撤:AI 改为直接照抄库中字段值,见 §7 角色库段——多角色多次展开
      会重复外貌导致重叠躯干,tag 预算也无法执行;applyCharRefs 系函数保留为兜底)
+  9.5 写回前的两道本地后处理(**顺序是刻意的**):先 `autoTag/taglint.ts` 的零语义机械修正
+     (不该接 on 的词 / 锚点自我绑定 / size 词混进串 / nl 中文 / 同人括号未转义,按规范族分流),
+     再 `autoTag/tagRules.ts` 的**联动加词**——按**当前出图渠道**(`activeTagRules()`,取
+     `settings.<渠道>.tagRules`)的规则表注入配套词:命中触发词 → 往该画面 `tag`(正面)或
+     `negative`(负面)末尾追加词,逗号分段整段精确匹配、大小写不敏感、单遍不链式、
+     目标串已有的词不重复加。**联动加词放在 taglint 之后**:机械规则只管纠正模型输出,
+     不该去改用户手配的词。注入结果随 tag 一起落正文,故正文、图库侧写、「复制提示词」
+     看到的都是实际用的词;**手动编辑弹窗与公开接口不经这条缝**(用户自己编辑的内容不重跑规则)。
+     NAI 面板只提供「正面」——本画面负面在 NAI 渠道无人消费(出图不传 negativeExtra);
+     ComfyUI/WebUI 没有规则表,不注入。
  10. rebase.rebaseImagePositions 把插入位置从「请求开始时的正文」平移到「落盘那一刻的正文」
      (清洗后叙事行按文本 LCS 求骨架,空隙按序号比例配对,整句消失的顺延到上一锚点),
      再由 protocol.injectImageTags 在新物理行后插入
@@ -239,6 +249,15 @@ runForFloor(floor, opts)
 
 全部可编辑提示词(破限/规范/思维链/预填充)在 `state/settings.ts` 有内置默认常量
 (`DEFAULT_*_PROMPT`/`DEFAULT_*_SPEC`),留空回落默认 —— 改默认提示词内容先看这里。
+
+⚠ **世界书扫描文本的顺序是契约:必须「最新在前」(目标楼在 index 0)**。ST 的扫描缓冲把
+**数组下标当深度**(`WorldInfoBuffer.#initDepthBuffer`: `buffer[depth] = messages[depth]`),
+关键词只匹配 `slice(0, entry.scanDepth ?? world_info_depth)` —— 也就是「数组前 N 条」;
+主对话自己组装时也是先 `.reverse()` 再传(script.js 的 chatForWI,深度 0 = 最新一楼)。
+我们曾按楼号升序传:绿灯条目于是只在**窗口最早**的那几楼里匹配,而蓝灯走 `constant` 分支、
+根本不查这段缓冲 —— 症状就是「蓝灯的书读得到、绿灯的书读不到」。`autoTag/context.test.ts` 锁死这条。
+另外要分清两个数:**绿灯的匹配窗口宽度由用户在 ST 里设的 Scan Depth 决定**(默认 2),
+不是我们的 `contextMessages`(后者只决定数组里有哪几楼)。
 
 ⚠ **设置页暴露三对规范/思维链:ComfyUI、NAI、Latent**。NAI 对存在 `naiV5Spec` / `naiV5Thinking`
 (键名带 V5 是历史命名,内容对 4.5 同样适用,面板标签已改成不提代数的「NAI 规范/思维链」);
@@ -708,6 +727,16 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
     勾选框只服务批量删除;内置条无勾选框、只读。「复制」是内置条唯一下自定义入口。
   - **存量迁移**:纯加法,无老字段可折。老配置 hydrate 后得空库 + 空 id,正向提示词输出
     与上线前逐字节一致。
+- **联动加词规则表**:`settings.nai.tagRules` / `settings.latent.tagRules`(各渠道一份,互不相通)
+  + 各自的 `tagRulesEnabled` 总开关(默认开:空表本就是零行为)。
+  一条规则 = 名字 + 触发词[] + 加词[] + 目标(`positive`/`negative`)+ enabled;清洗与匹配口径
+  全在 `autoTag/tagRules.test.ts` 与模块头注释(**词表清洗直接复用屏蔽栏那份**:trim、去空、
+  剥尖括号防伪造子标签、按小写去重)。生效时机与顺序见 §5 的步骤 9.5——注入是**一次性**的,
+  落在正文里,故图库/复制提示词看得到;代价是「注入后用户手动删掉,规则不会再加回来」(既定)。
+  - **字段必须显式列进 `normalizeNai` / `normalizeLatent` 的重建表**(§8 纪律;漏接 = 载入即剥、
+    首次写回永久丢),并有 `settings.tagRules.test.ts` 锁「改过的规则 hydrate 后仍在、两渠道不串」。
+  - 两渠道共享同一份 UI 组件 `pages/backend/panels/TagRulesRow.vue`(靠 `target` prop 选表),
+    避免第二份实现漂移;NAI 面板只暴露正面目标(理由见 §5 步骤 9.5)。
 - **旧「连接配置库」→ 接入点折叠(一次性,本分支存量)**:并入上游接入点库后,旧字段
   `settings.nai.connPresets`(`NaiConnPreset[]`)+ `activeConnId` **不再是功能**,只在两处出现:
   `foldConnPresetsIntoEndpoints()` 的输入(老用户升级时折一遍)与**回滚载体**(persist 原样带过,
@@ -899,7 +928,8 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   但**重建表里的字段只认表里列出的那些** —— 本地独有的字段若落在这些对象里又没被列进表,
   载入即被剥掉,并在 ready 后**第一次任意设置变更**触发 deep watch → `persist()` 时永久写回。
   两个真实案例:`nai.connPresets`(见 §7 的折叠)、`autoTag.prompts.latentSpec/latentThinking`
-  (§7 的 Latent 提示词)。加字段时,顺手在对应 normalize 里接住并配一条「改过 → hydrate 后还在」的用例。
+  (§7 的 Latent 提示词)。加字段时,顺手在对应 normalize 里接住并配一条「改过 → hydrate 后还在」的用例
+  (第三个例子:`nai/latent.tagRules` 与 `settings.tagRules.test.ts`,见 §7 联动加词规则表)。
   历史形态的字段变更还要配迁移 + 回滚载体(见 §7 的折叠与 Vibe 搬迁两例)。
 - **渠道二选一**:`getTagGenChannel()` 有指派 → 副 API(服务端代理);否则跟随主 API(generateRaw)。
 - **随机段一律走 `randomUuid()`**(src/randomUuid.ts):ST 常在非安全上下文(http)下运行,
@@ -994,6 +1024,7 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 画师串显示名盖章(<artist> 展示元数据,不进提示词) | st/imageTagRegex.ts 的 `ImageTagContent.artist` + settings.activeNaiArtistName()(盖章位 runner/promptEditor;展示在 Card.vue promptText) |
 | NAI 接入点库(多站地址+密钥切换) | src/state/settings.ts 的 `NaiEndpoint` + `activeNaiEndpoint` / `effectiveNai`(内置官方条 `nep_official` 只读,UI 在 NaiPanel.vue「接入点」区) |
 | 旧「连接配置库」→ 接入点折叠(一次性存量迁移) | src/state/settings.ts 的 `foldConnPresetsIntoEndpoints` + `connPresetsNeedFold`(hydrate 时先落备份快照并当场落盘;`connPresets`/`activeConnId` 此后只作回滚载体,零消费) |
+| 联动加词(命中触发词 → 给画面加配套词) | src/autoTag/tagRules.ts(纯逻辑 + 清洗口径;runner 写回前注入,见 §5 步骤 9.5)+ 渠道页共用组件 pages/backend/panels/TagRulesRow.vue(规则表存 `settings.<渠道>.tagRules`) |
 | NAI 画师串库(多套保存/切换/拼在最前) | src/state/settings.ts 的 `NaiArtistPreset` + `activeNaiArtist`(拼装在 backends/nai.ts 的 `naiArtistPrompt` / `fullPositivePrompt`,UI 在 NaiPanel.vue) |
 | 画师串库管理器(搜索/预览图/批量删除) | src/pages/backend/panels/NaiArtistManager.vue(纯逻辑在 backends/naiArtistLib.ts;内置只读库在 backends/nai.ts 的 `BUILTIN_NAI_ARTISTS`) |
 | 画师串预览图(user/images 上传/删除) | src/st/images.ts + imageFile.ts(文件夹常量 `ARTIST_PREVIEW_FOLDER`) |

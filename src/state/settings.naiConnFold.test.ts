@@ -121,6 +121,26 @@ describe('旧连接配置库 → 接入点折叠', () => {
     expect(mod.effectiveNai().key).toBe('official-key');
   });
 
+  it('库里有多条官方地址条目时,官方条的 key 取顶层生效那把(不是库内第一条)', async () => {
+    // 形状来源:旧版允许一份库里存两条同址条目(两张月卡 / 复制出来的副本),activeConnId 指向第二条。
+    // 顶层才是生效值 ⇒ 取库内第一条会把用户的 key 静默换掉,违背「出口零变化」。
+    const { mod } = await hydrateWithStored({
+      nai: {
+        url: OFFICIAL,
+        key: 'key-B',
+        connPresets: [
+          { id: 'conn_a', name: '官方 A', url: OFFICIAL, key: 'key-A' },
+          { id: 'conn_b', name: '官方 B', url: OFFICIAL, key: 'key-B' },
+        ],
+        activeConnId: 'conn_b',
+      },
+    });
+    expect(mod.settings.nai.endpoints.filter(e => e.id === 'nep_official')).toEqual([
+      { id: 'nep_official', name: 'NovelAI 官方', url: OFFICIAL, key: 'key-B' },
+    ]);
+    expect(mod.effectiveNai()).toMatchObject({ url: OFFICIAL, key: 'key-B' });
+  });
+
   it('已有接入点列表 = 绝不重折:载体里的条目不会被重复塞进来', async () => {
     const { mod } = await hydrateWithStored({
       nai: {
@@ -145,9 +165,13 @@ describe('旧连接配置库 → 接入点折叠', () => {
     // ② 迁移前的原样快照,供手工回滚
     const backup = extensionSettings.baibai_image_pre_endpoint_backup as { nai: { connPresets: unknown[] } };
     expect(backup.nai.connPresets).toHaveLength(2);
-    // ③ 常规回写路径(deep watch → persist):新形态与回滚载体都写回
-    mod.settings.ui.navTapClose = !mod.settings.ui.navTapClose;
+    // ③ 常规回写路径(deep watch → persist):新形态与回滚载体都写回。
+    // 先改一个 **nai 域**的字段并断言它出现在持久化对象里 —— 否则这一步无法区分「回写跑了」
+    // 与「看到的是 hydrate 那次立即写的结果」(storedNai 读的是 .nai,ui 域的变化看不到)。
+    const nextSteps = mod.settings.nai.steps + 1;
+    mod.settings.nai.steps = nextSteps;
     await nextTick();
+    expect(storedNai(extensionSettings).steps).toBe(nextSteps);
     expect(storedNai(extensionSettings).endpoints).toHaveLength(2);
     expect(storedNai(extensionSettings).connPresets).toHaveLength(2);
   });
@@ -167,6 +191,13 @@ describe('旧连接配置库 → 接入点折叠', () => {
       nai: { url: OFFICIAL, key: 'official-key' },
     });
     expect(mod.settings.nai.connPresets).toBeUndefined();
+
+    // 必须真触发一次回写:否则这里只是在读我们刚塞进去的输入对象,断言恒真(测不到任何东西)。
+    // 同理要改 **nai 域**的字段(storedNai 只取 .nai),这样才能证明回写确实跑过。
+    const nextSteps = mod.settings.nai.steps + 1;
+    mod.settings.nai.steps = nextSteps;
+    await nextTick();
+    expect(storedNai(extensionSettings).steps).toBe(nextSteps);
     expect('connPresets' in storedNai(extensionSettings)).toBe(false);
   });
 

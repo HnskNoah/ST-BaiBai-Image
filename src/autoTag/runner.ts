@@ -12,6 +12,7 @@ import { buildAutoTagMessages, tagLintMode } from '@/autoTag/prompt';
 import { rebaseImagePositions, type RebaseReport } from '@/autoTag/rebase';
 import { lintImagePlan } from '@/autoTag/taglint';
 import { buildSlotTaskNote } from '@/autoTag/slotPlan';
+import { applyTagRules } from '@/autoTag/tagRules';
 import {
   BBI_CHAR_EXTRA_KEY,
   CHAR_TAG_FIELDS,
@@ -43,6 +44,7 @@ import {
   stripImageTags,
 } from '@/st/imageTagRegex';
 import {
+  activeTagRules,
   getTagGenChannel,
   isCurrentChatExcluded,
   settings,
@@ -499,6 +501,22 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     // 否则「只写 @角色名」这条路径会绕过转义。
     const lintRes = lintImagePlan(plan.images, { mode: tagLintMode(), where: `第 ${floor} 楼` });
     if (lintRes.fixed) console.info(`[柏宝绘] tag lint 修正 ${lintRes.fixed} 处`, lintRes.details);
+
+    // 联动加词(见 autoTag/tagRules.ts):命中触发词就往该画面的 tag / negative 追加配套词。
+    // **放在 taglint 之后**是刻意的——机械修正只管纠正模型输出,不该去改用户手配的词;
+    // 规则表按**当前出图渠道**取(渠道页里配的那份),ComfyUI/WebUI 无表即不注入。
+    // 单槽重写走的是同一段代码,故同样吃规则;注入结果随 tag 一起落正文,
+    // 图库侧写/「复制提示词」因此看到的都是实际用的词。
+    const tagRules = activeTagRules();
+    if (tagRules.enabled && tagRules.rules.length) {
+      const appliedRules: string[] = [];
+      for (let idx = 0; idx < plan.images.length; idx++) {
+        const outcome = applyTagRules(plan.images[idx], tagRules.rules);
+        plan.images[idx] = outcome.image;
+        appliedRules.push(...outcome.applied);
+      }
+      if (appliedRules.length) console.info(`[柏宝绘] 联动加词 ${appliedRules.length} 处`, appliedRules);
+    }
 
     if (unknownNames.size) {
       // 模型认为这是角色、却没给它建档 —— 该角色在图里将完全没有外貌。

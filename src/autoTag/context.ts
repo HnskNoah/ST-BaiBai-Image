@@ -90,7 +90,15 @@ function joinWorldInfoChunks(chunks: string[]): string {
 
 /**
  * 本轮待扫描文本:各楼正文清洗后,带人名前缀帮助关键词命中角色名。
- * 与柏宝书 buildScanText 同构。
+ *
+ * ⚠ **顺序是契约的一部分:必须「最新在前」**(目标楼在 index 0),**别按楼号升序排**。
+ * ST 的扫描缓冲把**数组下标当深度**(`WorldInfoBuffer.#initDepthBuffer`: `buffer[depth] = messages[depth]`),
+ * 关键词只匹配 `slice(0, entry.scanDepth ?? world_info_depth)` —— 也就是「数组前 N 条」;
+ * ST 主对话自己组装时也是先 `.reverse()` 再传(script.js 的 chatForWI),深度语义是「0 = 最新一楼」。
+ * 按楼号升序传的后果:绿灯条目只在**窗口最早**的那几楼里匹配(默认 Scan Depth = 2 ⇒ 几乎全灭),
+ * 而蓝灯走 `constant` 分支、根本不查这段缓冲 —— 症状正是「蓝灯的书读得到、绿灯的书读不到」。
+ * 元素形状与柏宝书同构;**顺序上我们刻意摆成最新在前**(那边沿用升序,是同一个坑)。
+ * `context.test.ts` 锁死这条契约。
  */
 function buildScanText(chat: STMessage[], targets: number[], name1: string, name2: string): string[] {
   return targets
@@ -100,7 +108,9 @@ function buildScanText(chat: STMessage[], targets: number[], name1: string, name
       const who = m.is_user ? name1 || 'User' : m.name || name2 || 'Char';
       return `${who}: ${cleanScanText(m.mes)}`;
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    // 楼号升序 → 摆成「最新在前」:ST 只认数组下标(= 深度),它看不到我们的楼号
+    .reverse();
 }
 
 // ST 内部:WI 实际预算 = world_info_budget(默认25%) × maxContext,超出即截断条目(蓝灯也不例外)。

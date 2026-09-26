@@ -51,6 +51,8 @@ function nai(overrides: Partial<NaiSettings> = {}): NaiSettings {
     vibes: [],
     artistPresets: [],
     activeArtistId: '',
+    tagRules: [],
+    tagRulesEnabled: true,
     ...overrides,
   };
 }
