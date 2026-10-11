@@ -26,7 +26,7 @@ import {
 } from '@/backends/vibeStore';
 import { normalizeTagRules, type TagRule } from '@/autoTag/tagRules';
 import { getContext } from '@/st/context';
-import type { ImageTagContent } from '@/st/imageTagRegex';
+
 import { reactive, watch } from 'vue';
 
 /**
@@ -1522,39 +1522,7 @@ export function artistForTarget(target: 'nai' | 'latent'): NaiArtistPreset | nul
   return userLibrary.find(a => a.id === id) ?? builtins.find(a => a.id === id) ?? null;
 }
 
-export function activeNaiArtist(): NaiArtistPreset | null {
-  // 出图后端是 NAI 系时按渠道取;其它后端(comfy/webui)沿用 NAI 侧的激活项,
-  // 维持「盖章只看 nai 系」的既有口径。共享组件/面板一律走 artistForTarget。
-  return artistForTarget(settings.defaultBackend === 'latent' ? 'latent' : 'nai');
-}
 
-/**
- * 当前出图后端为 NAI 系(nai / latent)时,生效画师串的显示名;其它后端 / 未选画师串返回空串
- * = 不盖章。两渠道画师串库各自独立(activeNaiArtist/artistForTarget 按渠道解析各自的
- * 库与激活项),盖章口径一致。
- * 专供「把画师串名写进 bbi_image 正文」的盖章位使用(runner 注入 + 手动编辑写回)——
- * 拼真正发给 NAI 的画师串走 backends/nai.ts 的 naiArtistPrompt,与本函数无关。
- * 消毒:画师串名是自由文本,剥掉尖括号并折叠空白,防止名字里的字符伪造 <artist> 子标签
- * 破坏 bbi_image 解析(FORBIDDEN_SUBTAG 只拦内容字段,盖进 <artist> 的值靠这里保证干净)。
- */
-export function activeNaiArtistName(): string {
-  if (settings.defaultBackend !== 'nai' && settings.defaultBackend !== 'latent') return '';
-  const name = activeNaiArtist()?.name ?? '';
-  return name.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
-}
-
-/**
- * 给一条待落盘的 tag 盖上「当前生效画师串名」(纯展示元数据,生成侧不读)。
- *
- * **所有写回路径都必须走这里**(runner 的批量注入、runner 的单槽 AI 重写、promptEditor 的
- * 「应用」):漏一条,那条路径产出的 tag 就会缺 `<artist>`,症状很偏——正常出图的图有名、
- * 重写/手改过的图没名。空串 = 非 NAI 后端或未选画师串,序列化时整段省略。
- *
- * 泛型保形:调用方传 ImageInsertion 就拿回 ImageInsertion,不丢 position/sourceLine。
- */
-export function stampArtist<T extends ImageTagContent>(image: T): T & { artist: string } {
-  return { ...image, artist: activeNaiArtistName() };
-}
 
 /**
  * latentAsNai 视图里那条「自己的接入点」的 id。前缀 nep_ 与真实接入点同域,但加了 `_latent`
@@ -1605,7 +1573,7 @@ export type LatentResolution = 'portrait' | 'landscape';
 /**
  * 当前使用的接入点。
  *
- * 不返回 null(同 activeComfyPreset,与 activeNaiArtist 的「可为 null」相反):
+ * 不返回 null(同 activeComfyPreset,与 artistForTarget 的「可为 null」相反):
  * endpoints 恒非空、id 悬空也在 normalize 阶段回落过,这里再兜一层是为了
  * 「UI 运行中把列表改坏」这种时序,让调用方不必到处判空。
  * 刻意只读不写:本函数在 computed 里被调用,写 settings 会引起递归求值。

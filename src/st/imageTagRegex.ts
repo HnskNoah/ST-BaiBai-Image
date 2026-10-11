@@ -188,15 +188,6 @@ export interface ImageTagContent {
   characters: ImageCharacterPrompt[];
   /** 画幅方向：<size> 子标签内容，无/不可识别则竖屏（存量 tag 即走这条，行为与改动前一致）。 */
   size: Orientation;
-  /**
-   * 画师串显示名（<artist> 子标签内容，可选键）——**纯展示元数据，生成侧不读**：
-   * 记录「这条 tag 写进正文时」生效的画师串名，卡片提示词展示串里以 `名字:tags`
-   * 前缀显示（见 floor/Card.vue 的 promptText）。拼真正发给 NAI 的画师串走
-   * backends/nai.ts 的 naiArtistPrompt（按生成时刻的当前画师串），与本字段无关——
-   * 用户中途换画师串后这里就是历史记录，重新写回（编辑弹窗应用/重新生成）时盖章刷新。
-   * 老正文没有此键 → parse 不产出该键（与 NaiArtistPreset.previewPath 同例），零迁移。
-   */
-  artist?: string;
 }
 
 /**
@@ -236,8 +227,9 @@ export function parseImageTagContent(raw: string): ImageTagContent {
   }
   const sizeMatch = inner.match(/<size>([\s\S]*?)<\/size>/i);
   const size = normalizeOrientation(sizeMatch ? oneLine(sizeMatch[1]) : '');
-  const artistMatch = inner.match(/<artist>([\s\S]*?)<\/artist>/i);
-  const artist = artistMatch ? oneLine(artistMatch[1]) : '';
+  // 存量正文里可能仍有 <artist> 子标签(退役前的写回路径盖的),这里继续剥:漏进
+  // tag 串就等于把画师串名发给生图模型。画师串的当时与历史一律由 GenerationMeta
+  // 随图落盘(见 generationMeta.ts),正文不再携带、展示侧也不再读。
   const withoutSubTags = inner
     .replace(/<artist>[\s\S]*?<\/artist>/gi, '')
     .replace(/<nl>[\s\S]*?<\/nl>/gi, '')
@@ -255,9 +247,6 @@ export function parseImageTagContent(raw: string): ImageTagContent {
     negative,
     characters,
     size,
-    // 老正文没有 <artist> 键 → 结果里也缺省该键(而非空串):深比较的测试夹具与
-    // 旧数据零变化;消费方一律 `content.artist ?? ''`。
-    ...(artist ? { artist } : {}),
   };
 }
 
@@ -270,17 +259,17 @@ export function parseImageTagContent(raw: string): ImageTagContent {
  *
  * 标准形态：tag 部分保持裸文本（与存量格式一致），nl/negative/characters 空则整段不写。
  * size **恒写出**：生成是延后的(点卡片才出图)，方向必须随 tag 持久化在正文里。
- * artist 只在非空时写出，且**排在最前**——原文视角就是「画师串名画在 tags 前面」；
- * 盖章(写当前值)由两个写入方负责，本函数只做忠实的读写往返。
+ * 画师串**不写进正文**(0.3.2 起统一由 GenerationMeta 随图落盘):正文会被 promptHash
+ * 吃、又在提示词编辑器里可写,把配方名混进去等于让「换了画师串」看起来像「改了画面
+ * 提示词」,整楼老图凭空被判 stale。
  */
 export function serializeImageTag(content: ImageTagContent): string {
-  const artist = content.artist ? `<artist>${content.artist}</artist>` : '';
   const nl = content.nl ? `<nl>${content.nl}</nl>` : '';
   const negative = content.negative ? `<negative>${content.negative}</negative>` : '';
   const characters = content.characters.length
     ? `<characters>${JSON.stringify(content.characters)}</characters>`
     : '';
-  return `<bbi_image>${artist}${content.tag}${nl}${negative}${characters}<size>${content.size}</size></bbi_image>`;
+  return `<bbi_image>${content.tag}${nl}${negative}${characters}<size>${content.size}</size></bbi_image>`;
 }
 
 /**
@@ -291,14 +280,14 @@ export function serializeImageTag(content: ImageTagContent): string {
  * 图库要显示的必须与卡片上一字不差，否则同一张图在两处看到两种样子。
  *
  * size 刻意不出现:它是画幅方向，不是提示词内容，卡片上也从来不显示。
- * artist(可选,画师串显示名)按「名字:tags」盖在首行——同样只是给人看的前缀,
- * 生成侧不读(真发 NAI 的画师串按生成时刻 naiArtistPrompt 拼装)。
+ * 画师串同样不在这里:它由 meta 单独成行(见 generationMeta.ts 的
+ * formatGenerationMeta),两份都显示会在灯箱里把同一个名字写两遍。
  */
 export function formatPromptText(
-  content: Pick<ImageTagContent, 'tag' | 'nl' | 'negative' | 'characters' | 'artist'>,
+  content: Pick<ImageTagContent, 'tag' | 'nl' | 'negative' | 'characters'>,
 ): string {
   return [
-    content.artist ? `${content.artist}:${content.tag}` : content.tag,
+    content.tag,
     content.nl,
     ...content.characters.map(character =>
       [`角色: ${character.name}`, character.tag, character.nl].filter(Boolean).join('\n'),

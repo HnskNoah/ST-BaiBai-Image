@@ -291,51 +291,23 @@ describe('Latent 渠道设置', () => {
     expect(negative).not.toContain('artist name');
   });
 
-  it('activeNaiArtistName:两渠道库独立,盖章各取各库的激活条目', async () => {
-    const { settings, activeNaiArtistName } = await hydrateWithLatent({});
-    // 两份独立库:NAI 库与 Latent 库各存各的(内容格式也按渠道惯例不同)
+  it('两渠道画师串库各自独立:target 各解析各库,永不互看', async () => {
+    const { settings, artistForTarget } = await hydrateWithLatent({});
     settings.nai.artistPresets = [
       { id: 'n1', name: '水彩', prompt: 'artist:watercolor', quality: '', negative: '' },
     ];
     settings.latent.artistPresets = [
-      { id: 'l1', name: '厚涂 <test>', prompt: '@test', quality: '', negative: '' },
-    ];
-    settings.latent.activeArtistId = 'l1';
-    settings.nai.activeArtistId = 'n1';
-    settings.defaultBackend = 'latent';
-    // latent 盖的是自己库里的激活条目(l1 厚涂),不是 NAI 库的水彩
-    expect(activeNaiArtistName()).toBe('厚涂 test');
-    // 切到 NAI 渠道,盖章换成 NAI 库的激活条目
-    settings.defaultBackend = 'nai';
-    expect(activeNaiArtistName()).toBe('水彩');
-    settings.defaultBackend = 'comfyui';
-    expect(activeNaiArtistName()).toBe('');
-  });
-
-  it('stampArtist:所有写回路径共用的盖章助手保形且只改 artist', async () => {
-    const { settings, stampArtist } = await hydrateWithLatent({});
-    settings.latent.artistPresets = [
       { id: 'l1', name: '厚涂', prompt: '@test', quality: '', negative: '' },
     ];
     settings.latent.activeArtistId = 'l1';
-    settings.defaultBackend = 'latent';
-
-    // 保形:原对象一个字段不丢(正文本地重写/单槽重写传的就是这种带位置信息的对象)
-    const entire = {
-      position: 'p1',
-      sourceLine: 7,
-      tag: '1girl, solo',
-      nl: '',
-      negative: 'outdoor',
-      characters: [],
-      size: 'portrait' as const,
-    };
-    expect(stampArtist(entire)).toEqual({ ...entire, artist: '厚涂' });
-    expect(entire).not.toHaveProperty('artist'); // 不改原对象
-
-    // 非 NAI 系渠道盖空串 = 序列化时整段省略(与 activeNaiArtistName 同口径)
-    settings.defaultBackend = 'comfyui';
-    expect(stampArtist(entire).artist).toBe('');
+    settings.nai.activeArtistId = 'n1';
+    // artistForTarget 刻意**不看出图后端**(面板与共享组件都按自己的 target 取)。
+    // 两份库的写法按渠道惯例不同:NAI 用 `artist:xxx`,Anima 站点用 `@名字`——
+    // 混库等于把 NAI 写法发给 Anima 模型(那条画风不生效,还白占 tag 预算)。
+    expect(artistForTarget('latent')?.id).toBe('l1');
+    expect(artistForTarget('latent')?.prompt).toBe('@test');
+    expect(artistForTarget('nai')?.id).toBe('n1');
+    expect(artistForTarget('nai')?.prompt).toBe('artist:watercolor');
   });
 
   it('端到端:站点固定档 920×1536/1536×920 经 multipleOf64 豁免通过参数构建', async () => {

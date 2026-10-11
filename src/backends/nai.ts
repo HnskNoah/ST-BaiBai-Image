@@ -355,7 +355,7 @@ type JsonObject = Record<string, unknown>;
  * 查找域 = 用户库 ∪ 内置库(用户库优先;id 前缀不同,实际不可能撞)。
  *
  * 刻意吃 nai 而不读全局 settings:本文件的拼装函数都是纯函数、可单测,读全局会让测试
- * 没法用 nai() 工厂控制输入。也刻意不 import state/settings 的 activeNaiArtist ——
+ * 没法用 nai() 工厂控制输入。也刻意不 import state/settings 的画师串解析(artistForTarget)——
  * settings.ts 已 import 本模块的 naiDefaultUndesired,反向加值依赖会成运行时环(TDZ 隐患)。
  * 这一行 find 的重复是有意为之。
  */

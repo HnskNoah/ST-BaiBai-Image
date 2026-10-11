@@ -234,8 +234,8 @@ runForFloor(floor, opts)
  10. rebase.rebaseImagePositions 把插入位置从「请求开始时的正文」平移到「落盘那一刻的正文」
      (清洗后叙事行按文本 LCS 求骨架,空隙按序号比例配对,整句消失的顺延到上一锚点),
      再由 protocol.injectImageTags 在新物理行后插入
-     <bbi_image>[<artist>画师串名</artist>]tag<nl>…</nl><negative>…</negative><size>…</size></bbi_image>
-     (<artist> 为可选展示元数据,见下「画师串显示名盖章」)
+     <bbi_image>tag<nl>…</nl><negative>…</negative><size>…</size></bbi_image>
+     (画师串不在正文里:它随 GenerationMeta 落盘,见下「画师串不进正文」)
  11. 若 autoGenerate 开:先 markForAutoGenerate 每个新槽位(见链路 B 握手)
  12. messageEdit.applyMessageText 写回(正文 + extra 增量一体)。身份 CAS:聊天/消息/swipe
      任一变化即放弃;**正文内容不参与比对**——分析期间别的插件对正文的修改(翻译、润色、
@@ -453,8 +453,8 @@ tag 原文被 DOMPurify 剥壳后当正文显示出来(用户直接看见一串 
   画师串为 **Latent 独立库**(`settings.latent.artistPresets`,与 NAI 渠道的
   `settings.nai.artistPresets` 互不相通,无存量迁移——共用期设计整体废弃):条目同构
   (NaiArtistPreset),激活项在自有库内解析;`latentAsNai` 显式映射库与激活项,
-  画师串拼装/绑定词/盖章(`activeNaiArtistName`,按渠道取——面板与共享组件走
-  `artistForTarget`,不看出图后端)全链经视图自动生效。内置表分册:
+  画师串拼装/绑定词(库与激活项由 `latentAsNai` 显式映射进视图,面板与共享组件按
+  target 走 `artistForTarget`,不看出图后端)全链经视图自动生效。内置表分册:
   NAI = `BUILTIN_NAI_ARTISTS`(bi_default 官方配方),Latent = `BUILTIN_LATENT_ARTISTS`
   (bi_anima_default 是 **@ 格式模板**,prompt 为占位词,默认激活恒「不使用」);
   `naiActivePreset` 的内置查找双表合并(id 全局不相交)。
@@ -497,12 +497,15 @@ release 后立刻 `pump()`,下一个任务在同一 tick 就发出去;而错误�
   两处漂移 = 「解析出的字段」与「落进正文的原文」对不上,而 promptHash 吃的是原文,
   表现为「什么都没改却全变 stale」。同理「改动检测」按**字段值**比对,不比对序列化结果:
   解析是容忍式的、序列化是规范式的,非规范的手写 tag 打开再原样保存,原文会变。
-- **画师串显示名盖章**:`<artist>名</artist>` 是 bbi_image 里的可选展示元数据——记录
-  「写入时」生效的画师串名,卡片 `promptText` 以 `名字:tags` 前缀显示;**生成侧不读**
-  (真正拼画师串走生成时刻的 naiArtistPrompt)。两个写入方统一盖章 `activeNaiArtistName()`
-  (NAI 系渠道(nai/latent)之外的后端、或未选画师串 = 空,序列化整段省略):runner 注入与
-  画师串再「应用」,记录跟着刷新。老正文无此键 → parse 不产出该键(可选键,零迁移);
-  名字消毒剥尖括号(activeNaiArtistName),防自由文本伪造子标签。
+- **画师串不进正文**:曾经把 `<artist>名</artist>` 当可选展示元数据盖进 bbi_image,卡片与
+  图库再以 `名字:tags` 前缀显示。0.3.2 起这条退役——画师串(名字 + 正文快照)、vibe 与采样
+  参数一律由 `GenerationMeta` 随图落盘(见 generationMeta.ts / §6),正文不再携带、展示侧也不读
+  (两份都显示会在灯箱里把同一个名字写两遍)。退役的理由:正文同时被 `promptHash` 吃、又在
+  提示词编辑器里可写,把配方名混进去等于让「换个画师串」看起来像「改了画面提示词」,整楼老图
+  凭空判 stale;用户还能把它改成与出图事实无关的名字。
+  **解析侧继续剥 `<artist>`**(存量正文里可能还有,漏进 tag 串就是把画师串名发给生图模型),
+  写回路径不再产出,旧的在下次注入/应用时自然消失。`FORBIDDEN_SUBTAG` 仍拦 `artist`:这个
+  子标签已无意义,明确拒绝比静默吞掉好。
 - **子标签字面量必须拦**(`containsTagMarkup`,与 AI 侧共用 `FORBIDDEN_SUBTAG`):查找正则
   非贪婪,内容里混进一个 `</bbi_image>` 会让 tag 提前截断、**后半截漏进 DOM 与提示词**。
 - **不可编辑 Card.vue 的 `promptText`**:那是带「角色: 」「Negative: 」前缀的展示串,
@@ -1086,7 +1089,7 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 工作流 AI 自动配置(节点定位) | src/backends/comfyWorkflowAssistant.ts(+ 面板按钮在 ComfyUIPanel.vue) |
 | NAI 参数 / vibe / .naiv4vibe / 智绘姬提示词预设导入 | src/backends/nai.ts + vibeStore.ts + chatu8Vibe.ts(NaiPanel 提供 UI) |
 | Latent 渠道(第三方站 NAI 兼容面精简适配) | state/settings.ts 的 `LatentSettings` + `latentAsNai`(面板 LatentPanel.vue;生成复用 generateNaiImage,画师串库独立分册,多人归属由 nl 承担;视图自带一条 `nep_latent_view` 接入点,保证出口不串到 NAI 渠道) |
-| 画师串显示名盖章(<artist> 展示元数据,不进提示词) | st/imageTagRegex.ts 的 `ImageTagContent.artist` + settings.activeNaiArtistName()(盖章位 runner/promptEditor;展示在 Card.vue promptText) |
+| 出图信息回溯(画师串/vibe/采样参数随图落盘,只读) | src/generationMeta.ts 的 `GenerationMeta` + `formatGenerationMeta`;产出在 generate.ts 的 `GenerateOutput.meta`,落盘在 floor/storage.ts(侧写 json + extra)。**画师串不进 bbi_image 正文**:存量 `<artist>` 仍由 imageTagRegex.ts 剥离,但不再写回、不再展示 |
 | NAI 接入点库(多站地址+密钥切换) | src/state/settings.ts 的 `NaiEndpoint` + `activeNaiEndpoint` / `effectiveNai`(内置官方条 `nep_official` 只读,UI 在 NaiPanel.vue「接入点」区) |
 | 旧「连接配置库」→ 接入点折叠(一次性存量迁移) | src/state/settings.ts 的 `foldConnPresetsIntoEndpoints` + `connPresetsNeedFold`(hydrate 时先落备份快照并当场落盘;`connPresets`/`activeConnId` 此后只作回滚载体,零消费) |
 | 联动加词(命中触发词 → 给画面加配套词) | src/autoTag/tagRules.ts(纯逻辑 + 清洗口径;runner 写回前注入,见 §5 步骤 9.5)+ 渠道页共用组件 pages/backend/panels/TagRulesRow.vue(规则表存 `settings.<渠道>.tagRules`) |
@@ -1098,8 +1101,8 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 图被删后卡片不显示破图 | src/floor/missingImages.ts(模块级 reactive 册,HEAD 确认 404 才落册)+ Card.vue 的 `liveHistory` / `liveStale` / `@error` |
 | 图库点图看提示词 | src/floor/storage.ts 的 `sidecarFileName` / `sidecarPathFor`(存图时写侧写)+ gallery/index.vue(当前聊天读 extra、其余取侧写;展示口径 `formatPromptText`) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
-| 画幅锁(固定横/竖,各渠道尺寸旁) | src/state/settings.ts 的 `activeOrientationLock`(NAI `nai.orientationLock` / ComfyUI 每套预设的 `orientationLock`)+ size.ts 的 `effectiveOrientation`;出图生效在 generate.ts,协议改口在 prompt.ts 的 `sizeRule`(UI 在 NaiPanel / ComfyUIPanel) |
-| 「生成自然语言」开关(ComfyUI 每套预设 / NAI 渠道级) | src/autoTag/prompt.ts 的 `autoTagProfile`(协议与 runner 共用)+ `expandNlSections`(`{{#nl}}`/`{{^nl}}` 条件段);NAI 字段 `settings.nai.naturalLanguage` |
+| 画幅锁(固定横/竖,各渠道尺寸旁) | src/state/settings.ts 的 `activeOrientationLock`(NAI `nai.orientationLock` / ComfyUI 每套预设的 `orientationLock` / Latent `latent.orientationLock`)+ size.ts 的 `normalizeOrientationLock`;出图生效在 generate.ts 的 `traits.lockedSize`,协议改口在 prompt.ts 的 `sizeRule`(UI 在 NaiPanel / ComfyUIPanel / LatentPanel) |
+| 「生成自然语言」开关(ComfyUI 每套预设 / NAI 渠道级) | src/backends/channelTraits.ts 的 `nl`(协议与 runner 共用这一份)+ `expandNlSections`(`{{#nl}}`/`{{^nl}}` 条件段);NAI 字段 `settings.nai.naturalLanguage` |
 | 楼层图片显示大小(聊天里显示多大,不是出图分辨率) | src/state/settings.ts 的 `IMAGE_DISPLAY_SIZES` / `imageDisplayMaxHeight` + Card.vue(`data-capped`)+ card.css「显示大小封顶」段(UI 在 settings/index.vue) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |
 | 手动编辑生图提示词(卡片 ⋯ 铅笔) | src/floor/PromptEditor.vue + promptEditor.ts(序列化在 st/imageTagRegex.ts) |

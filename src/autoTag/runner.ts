@@ -48,7 +48,6 @@ import {
   getTagGenChannel,
   isCurrentChatExcluded,
   settings,
-  stampArtist,
 } from '@/state/settings';
 import { triageAssistantText } from '@/autoTag/triage';
 
@@ -577,9 +576,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         // 开跑时快照的原文对不上 = 期间被用户/别的流程改过,放弃覆盖(同提示词编辑弹窗)。
         if (slot) {
           if (parseImageTags(currentText)[slot.seq] !== slotRawTag) return null;
-          // 盖章走共享助手(与下方批量路径同一口径):单槽重写换的是内容,不该顺手丢掉
-          // `<artist>` —— 否则「重写过的图不显示画师串名」。
-          return replaceImageTagAt(currentText, slot.seq, serializeImageTag(stampArtist(plan.images[0])));
+          return replaceImageTagAt(currentText, slot.seq, serializeImageTag(plan.images[0]));
         }
         // replace 路径同样以当前正文为基底剔除旧 tag,不能用旧快照
         const base = opts.replace ? stripImageTags(currentText) : currentText;
@@ -594,9 +591,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         );
         if (!rebased) return null;
         rebaseNote = describeRebase(rebased.report);
-        // 盖章:写进正文的每条 tag 记下当前生效画师串名(纯展示,生成侧不读;
-        // 空 = 非 NAI 后端 / 未选画师串,序列化时整段省略)
-        return injectImageTags(base, rebased.images.map(stampArtist));
+        return injectImageTags(base, rebased.images);
       },
       chatId,
       swipeId,

@@ -162,7 +162,7 @@ describe('NAI 画师串库', () => {
     expect(settings.nai.activeArtistId).toBe('art_a');
   });
 
-  it('activeNaiArtist 取当前项;未选 / 悬空时返回 null', async () => {
+  it('artistForTarget 取当前项;未选 / 悬空时返回 null', async () => {
     mocks.context = {
       extensionSettings: {
         baibai_image: {
@@ -177,19 +177,19 @@ describe('NAI 画师串库', () => {
       },
       saveSettingsDebounced: vi.fn(),
     };
-    const { hydrateSettings, activeNaiArtist, settings } = await import('@/state/settings');
+    const { hydrateSettings, artistForTarget, settings } = await import('@/state/settings');
     await hydrateSettings();
 
-    expect(activeNaiArtist()?.name).toBe('B');
-    expect(activeNaiArtist()?.prompt).toBe('artist:b');
+    expect(artistForTarget('nai')?.name).toBe('B');
+    expect(artistForTarget('nai')?.prompt).toBe('artist:b');
 
     // 切到「不使用」
     settings.nai.activeArtistId = '';
-    expect(activeNaiArtist()).toBeNull();
+    expect(artistForTarget('nai')).toBeNull();
 
     // 悬空(UI 运行中把库改坏这种时序)也返回 null,而不是兜底成第一条
     settings.nai.activeArtistId = 'art_gone';
-    expect(activeNaiArtist()).toBeNull();
+    expect(artistForTarget('nai')).toBeNull();
   });
 
   it('newNaiArtist 连续调用 id 不重复(同一毫秒内也不撞)', async () => {

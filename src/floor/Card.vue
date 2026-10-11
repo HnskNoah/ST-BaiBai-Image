@@ -67,11 +67,6 @@ const props = defineProps<{
   characters: ImageCharacterPrompt[];
   /** 画幅方向(模型判定,随 tag 持久化):决定用渠道配置里的竖屏还是横屏尺寸;渠道锁了横竖时以锁为准(见 effectiveSize)。 */
   size: Orientation;
-  /**
-   * 写入时盖章的画师串显示名(纯展示;老正文无此键 → 空串,提示词展示串不加前缀)。
-   * 只进 promptText 这类「拼给人看」的串,不进生成提交(生成走生成时刻的当前画师串)。
-   */
-  artist?: string;
   /** tag 原文(含 <bbi_image> 壳):生成提交与 promptHash 的输入。 */
   tag: string;
   messageId: number;
@@ -185,7 +180,6 @@ const promptText = computed(() =>
     nl: props.nl,
     negative: props.negative,
     characters: props.characters,
-    artist: props.artist,
   }),
 );
 /**

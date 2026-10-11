@@ -270,24 +270,17 @@ describe('parseImageTagContent', () => {
     expect(parseImageTagContent('<bbi_image>1girl<size>乱写</size></bbi_image>').size).toBe('portrait');
   });
 
-  it('extracts <artist> as display metadata without leaking it into the tag part', () => {
-    // 展示名绝不进提示词:剥干净是硬要求
-    expect(
-      parseImageTagContent('<bbi_image><artist>画师串 1</artist>1girl, moonlight<size>portrait</size></bbi_image>'),
-    ).toEqual({
+  it('strips a legacy <artist> sub-tag and does not surface it as a field', () => {
+    // 盖章已退役:正文不再携带画师串,但**存量正文里可能还有**,必须继续剥干净——
+    // 漏进 tag 串就等于把画师串名发给生图模型。剥掉后也不再返回 artist 键。
+    expect(parseImageTagContent('<bbi_image><artist>画师串 1</artist>1girl, moonlight<size>portrait</size></bbi_image>')).toEqual({
       tag: '1girl, moonlight',
       nl: '',
       negative: '',
       characters: [],
       size: 'portrait',
-      artist: '画师串 1',
     });
-  });
-
-  it('omits the artist key entirely for legacy tags without <artist>', () => {
-    // 键缺省(而非空串):存量数据与深比较夹具零变化
-    const content = parseImageTagContent('<bbi_image>1girl</bbi_image>');
-    expect('artist' in content).toBe(false);
+    expect(parseImageTagContent('<bbi_image>1girl</bbi_image>')).not.toHaveProperty('artist');
   });
 });
 
@@ -314,22 +307,12 @@ describe('serializeImageTag', () => {
     ).toBe('<bbi_image>1girl<size>portrait</size></bbi_image>');
   });
 
-  it('writes <artist> first — the display name sits in front of the tags in raw text', () => {
-    expect(
-      serializeImageTag({
-        tag: '1girl',
-        nl: '',
-        negative: '',
-        characters: [],
-        size: 'portrait',
-        artist: '画师串 1',
-      }),
-    ).toBe('<bbi_image><artist>画师串 1</artist>1girl<size>portrait</size></bbi_image>');
-  });
-
-  it('round-trips an artist-stamped tag through parse and back', () => {
+  it('drops a legacy <artist> on the round trip — 写回即彻底移出正文', () => {
+    // 存量带章的 tag 被再次写回(重新生成/编辑应用)时,子标签就地消失,不再回来。
     const raw = '<bbi_image><artist>画师串 1</artist>1girl<nl>A girl.</nl><size>portrait</size></bbi_image>';
-    expect(serializeImageTag(parseImageTagContent(raw))).toBe(raw);
+    expect(serializeImageTag(parseImageTagContent(raw))).toBe(
+      '<bbi_image>1girl<nl>A girl.</nl><size>portrait</size></bbi_image>',
+    );
   });
 
   it('always writes <size> — generation is deferred, so orientation must persist in the text', () => {
@@ -382,18 +365,11 @@ describe('formatPromptText', () => {
     expect(formatPromptText({ tag: '', nl: '', negative: '', characters: [] })).toBe('');
   });
 
-  it('stamps the artist display name over the first line when present', () => {
-    // 画师串名只是给人看的展示前缀,生成侧不读;老正文无 artist 键则不产前缀
-    expect(
-      formatPromptText({
-        tag: '1girl, moonlight',
-        nl: '',
-        negative: '',
-        characters: [],
-        artist: '梦二',
-      }),
-    ).toBe('梦二:1girl, moonlight');
-    expect(formatPromptText({ tag: '1girl', nl: '', negative: '', characters: [] })).toBe('1girl');
+  it('does not prefix an artist name — 画师串由 meta 单独成行', () => {
+    // 展示串与卡片/图库同源;画师串再出现一遍就会和 formatGenerationMeta 那行重复。
+    expect(formatPromptText({ tag: '1girl, moonlight', nl: '', negative: '', characters: [] })).toBe(
+      '1girl, moonlight',
+    );
   });
 
   it('renders what parseImageTagContent produces (gallery reads tags this way)', () => {

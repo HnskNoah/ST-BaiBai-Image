@@ -226,8 +226,9 @@ describe('auto tag position protocol', () => {
     );
   });
 
-  it('writes the artist display name as a leading <artist> sub-tag when stamped', () => {
-    // 盖章由 runner 负责(协议解析恒不产 artist);这里只锁序列化形状
+  it('keeps the artist out of the tag text — 画师串随 GenerationMeta 落盘,不进正文', () => {
+    // 0.3.2 起画师串只由出图元信息记录(见 generationMeta.ts):正文会被 promptHash 吃、
+    // 又在提示词编辑器里可写,混进配方名等于让「换画师串」看起来像「改画面提示词」。
     expect(
       injectImageTags('第一行', [
         {
@@ -238,10 +239,9 @@ describe('auto tag position protocol', () => {
           negative: '',
           characters: [],
           size: 'portrait',
-          artist: '画师串 1',
         },
       ]),
-    ).toBe('第一行\n<bbi_image><artist>画师串 1</artist>1girl<size>portrait</size></bbi_image>');
+    ).toBe('第一行\n<bbi_image>1girl<size>portrait</size></bbi_image>');
   });
 
   it('wraps the dynamic negative part in a <negative> sub-tag', () => {

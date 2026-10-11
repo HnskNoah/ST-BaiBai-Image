@@ -16,7 +16,6 @@ import {
   type ImageTagContent,
 } from '@/st/imageTagRegex';
 import { applyMessageText, type ApplyMessageResult } from '@/st/messageEdit';
-import { stampArtist } from '@/state/settings';
 
 /**
  * 命令式打开「编辑提示词」弹窗(供楼层卡片调用)。
@@ -103,9 +102,7 @@ async function writeBack(
     return false;
   }
 
-  // 盖章:写回时刷新画师串显示名(与 runner 注入同一口径)——用户换过画师串再「应用」,
-  // 记录就跟着换;空 = 非 NAI 后端 / 未选画师串,序列化时整段省略。
-  const nextTag = serializeImageTag(stampArtist(content));
+  const nextTag = serializeImageTag(content);
   // 标记必须挂在写回**之前**:写回即触发重水合、卡片挂载时消费标记(同 autoTag/runner.ts)。
   // force 模式无条件开跑 —— 用户点的就是「重新生成」,即便这条提示词以前出过图。
   if (regenerate) {
