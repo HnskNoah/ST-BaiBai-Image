@@ -6,6 +6,7 @@ import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import {
   artistForTarget,
+  ORIENTATION_LOCKS,
   LATENT_SAMPLERS,
   LATENT_SCHEDULERS,
   latentAsNai,
@@ -30,7 +31,8 @@ import {
  * Latent 渠道:第三方站点 NovelAI 兼容面的精简适配。
  * 生成完全复用 NAI 机器(latentAsNai 映射后走 generateNaiImage),面板只暴露
  * 站点 openapi 真实存在的参数:无模型下拉(单模型站点,GenerationRequest 无 model 字段)、
- * 无 Scale(无 CFG 字段)、无尺寸输入(resolution 是枚举,按 tag 判向发 portrait/landscape)、
+ * 无 Scale(无 CFG 字段)、无尺寸输入(resolution 是枚举,按 tag 判向发 portrait/landscape,
+ * 但**有画幅锁**:锁定后恒发那一档)、
  * 无 Vibe、无 rescale/variety。画师串为**本渠道独立库**(settings.latent.artistPresets,
  * 内容按 Anima 口径写 @ 格式),管理 UI 与 NAI 渠道同形(ArtistLibraryRow + 库管理弹窗)。
  *
@@ -421,7 +423,27 @@ function resetPromptDraft() {
             />
           </div>
         </div>
-        <p class="bbi-field-hint">尺寸为站点固定两档(竖 920×1536 / 横 1536×920),按 tag 判向自动选择,无输入项。</p>
+        <div class="bbi-select-row">
+          <span class="bbi-field-label">画幅方向</span>
+          <div class="bbi-segmented" role="tablist" aria-label="Latent 画幅方向">
+            <button
+              v-for="opt in ORIENTATION_LOCKS"
+              :key="opt.value"
+              class="bbi-seg"
+              :class="{ 'is-on': settings.latent.orientationLock === opt.value }"
+              type="button"
+              role="tab"
+              :aria-selected="settings.latent.orientationLock === opt.value"
+              @click="settings.latent.orientationLock = opt.value"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+        </div>
+        <p class="bbi-field-hint">
+          尺寸为站点固定两档(竖 920×1536 / 横 1536×920),没有输入项。「自动」由自动 tag 按画面
+          判横竖;锁定后本渠道每张图都出那个方向,自动 tag 也按这个画幅构图。
+        </p>
       </Collapsible>
     </div>
 

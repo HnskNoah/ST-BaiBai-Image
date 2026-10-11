@@ -391,10 +391,12 @@ tag 原文被 DOMPurify 剥壳后当正文显示出来(用户直接看见一串 
 **画幅锁(`OrientationLock` = `'auto' | 'portrait' | 'landscape'`)**:「只出横图 / 只出竖图」的旧办法是把横竖
 两格尺寸填成一样——能出,但 AI 写 tag 时仍按竖图/横图各自构图,出图端再硬塞进同一格尺寸。
 - **放在各渠道的尺寸旁边**:NAI 渠道级一份(`settings.nai.orientationLock`),ComfyUI **每套工作流各一份**
-  (`ComfyWorkflowPreset.orientationLock`,与横竖尺寸同属底模属性,切工作流即切走锁)。
+  (`ComfyWorkflowPreset.orientationLock`,与横竖尺寸同属底模属性,切工作流即切走锁),
+  Latent 渠道级一份(`settings.latent.orientationLock`——本分支接进:站点尺寸是固定两档,
+  锁方向=恒发那一档的 `resolution` 枚举)。
   判据只此一处 `activeOrientationLock()`(按当前后端取对应那份,其余后端 `'auto'`),
-  协议(§5 `autoTagProfile`)、出图(generate.ts)、卡片、编辑弹窗四处共用。
-- **只在出图那一刻生效**:`generateImage` 里 `effectiveOrientation(lock, input.size)` 决定这一次用哪格尺寸,
+  协议(§5 `channelTraits` 的 `lockedSize`)、出图(generate.ts)、卡片、编辑弹窗四处共用。
+- **只在出图那一刻生效**:`generateImage` 里 `traits.lockedSize ?? input.size`(锁值即 `activeOrientationLock()` 的产物)决定这一次用哪格尺寸,
   卡片与公开接口同走这里(锁定时公开接口传的 size 不算数),`GenerateOutput.size` 回报实际方向——
   卡片的历史记录/无图占位比例与公开接口的图库侧写都按它记,如实描述这张图。
   **tag 原文不改**:promptHash 吃原文,改写会让老图无辜变 stale;渠道改回「自动」,老 tag 记的方向原样生效。

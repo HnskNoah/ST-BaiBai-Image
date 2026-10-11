@@ -150,6 +150,7 @@ describe('activeChannelTraits', () => {
       naiLock: settings.nai.orientationLock,
       presetNl: preset.naturalLanguage,
       presetLock: preset.orientationLock,
+      latentLock: settings.latent.orientationLock,
     };
     return {
       preset,
@@ -160,6 +161,7 @@ describe('activeChannelTraits', () => {
         settings.nai.orientationLock = saved.naiLock;
         preset.naturalLanguage = saved.presetNl;
         preset.orientationLock = saved.presetLock;
+        settings.latent.orientationLock = saved.latentLock;
       },
     };
   }
@@ -202,7 +204,7 @@ describe('activeChannelTraits', () => {
       state.preset.orientationLock = 'auto';
       expect(activeChannelTraits()).toMatchObject({ nl: false, lockedSize: null });
 
-      // latent:恒开 nl,且不吃 NAI 面板的画幅锁(activeOrientationLock 对 latent 返回 auto)
+      // latent:naturalLanguage 恒 true(不跟 NAI 面板那个开关走),画幅锁取**它自己那份**
       settings.defaultBackend = 'latent';
       settings.nai.naturalLanguage = false;
       settings.nai.orientationLock = 'landscape';
@@ -212,6 +214,13 @@ describe('activeChannelTraits', () => {
         lockedSize: null,
         flatPrompt: true,
       });
+
+      settings.latent.orientationLock = 'landscape';
+      expect(activeChannelTraits()).toMatchObject({ nl: true, lockedSize: 'landscape' });
+      // 反向不串:latent 自己回到 auto 就不锁,哪怕 NAI 面板锁着竖屏
+      settings.latent.orientationLock = 'auto';
+      settings.nai.orientationLock = 'portrait';
+      expect(activeChannelTraits().lockedSize).toBeNull();
     } finally {
       state.restore();
     }

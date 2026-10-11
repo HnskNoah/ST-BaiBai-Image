@@ -406,6 +406,12 @@ export interface LatentSettings extends BackendConn {
   /** 同时出图数(1–4):站点 409=在途任务超上限,复用 NAI 客户端闸门堵住这一面。 */
   concurrency: number;
   /**
+   * 画幅方向锁(与 NAI 渠道级、ComfyUI 每套预设的那份同构,见 activeOrientationLock):
+   * 'auto' = 由自动 tag 按画面判横竖;锁定后本渠道每张图都出那个方向——站点固定两档里取
+   * 对应那一格,协议侧也改口要求模型按锁定值填(prompt.ts 的 sizeRule)。
+   */
+  orientationLock: OrientationLock;
+  /**
    * **Latent 渠道专属画师串库**——与 NAI 渠道的 settings.nai.artistPresets 完全独立,
    * 两份列表互不可见;条目同构(NaiArtistPreset),内容按 Anima 口径写(@名字 格式,
    * NAI 的 artist: 写法在 Anima 上无效)。管理 UI 与 NAI 渠道同形(ArtistLibraryRow +
@@ -1339,6 +1345,8 @@ function latentDefaults(): LatentSettings {
     scale: 5,
     seed: 0,
     concurrency: 1,
+    // 出生不锁方向 = 加这个开关之前的行为(自动 tag 按画面判横竖)
+    orientationLock: 'auto',
     // 独立画师串库(与 NAI 渠道的库互不相通):出生即空,激活项「不使用」。
     // 内置条 bi_anima_default 是 @ 格式模板(占位词),同样不默认塞给用户。
     artistPresets: [],
@@ -1468,7 +1476,8 @@ export const ORIENTATION_LOCKS: { value: OrientationLock; label: string }[] = [
 ];
 
 /**
- * 当前出图后端的画幅锁:NAI 取渠道级那一份,ComfyUI 取当前工作流预设那一份;其余后端不锁。
+ * 当前出图后端的画幅锁:NAI 与 Latent 各取渠道级那一份,ComfyUI 取当前工作流预设那一份;
+ * 其余后端(webui 存量类型)返回 'auto'。
  *
  * 出图(generate.ts)、自动 tag 协议与收尾(autoTag/prompt.ts、runner.ts)、卡片占位与
  * 提示词编辑弹窗都从这里取——判据只此一处,免得「协议说锁竖、出图却按 tag 出横」。
@@ -1477,6 +1486,7 @@ export const ORIENTATION_LOCKS: { value: OrientationLock; label: string }[] = [
 export function activeOrientationLock(): OrientationLock {
   if (settings.defaultBackend === 'nai') return settings.nai.orientationLock;
   if (settings.defaultBackend === 'comfyui') return activeComfyPreset().orientationLock;
+  if (settings.defaultBackend === 'latent') return settings.latent.orientationLock;
   return 'auto';
 }
 
@@ -1558,10 +1568,14 @@ export function latentAsNai(latent: LatentSettings = settings.latent): NaiSettin
     varietyBoost: false,
     cfgRescale: 0,
     normalizeRefStrength: false,
-    // 站点底层吃自然语言(与 NAI 面板那个开关无关,见 channelTraits 的 nlAlways),画幅锁
-    // 也不适用——latent 的方向由 tag 记的 size 与自己的横竖尺寸决定。这两个键是上游
-    // 0.3.2 新加进 NaiSettings 的:`...settings.nai` 会静默带过来,类型对得上但语义串台
-    // (用户在 NAI 面板关掉自然语言/锁了横屏,latent 出图跟着变),故必须显式钉死。
+    // 这两个键是上游 0.3.2 新加进 NaiSettings 的:`...settings.nai` 会静默带过来,
+    // 类型对得上但语义串台,故显式钉死;两条理由各是各的:
+    // - naturalLanguage 恒 true:站点底层吃自然语言,与 NAI 面板那个开关无关
+    //   (见 channelTraits 的 nlAlways)。
+    // - orientationLock 恒 'auto':**不代表 latent 没有画幅锁**(它有渠道级自己那份
+    //   settings.latent.orientationLock,由 activeOrientationLock 按当前后端取)。方向在
+    //   generate.ts 就已按 traits.lockedSize 定死、随 values.size 传进来,视图里这一级不再
+    //   参与选档;钉 'auto' 是为了别让 NAI 面板的锁串进这张视图。
     naturalLanguage: true,
     orientationLock: 'auto',
   };
@@ -2004,6 +2018,9 @@ function normalizeLatent(raw: unknown, def: LatentSettings): LatentSettings {
     // 联动加词:与 NAI 渠道各一份,清洗口径同一份(见 tagRules.ts);同样必须显式接住(§8 纪律)
     tagRules: normalizeTagRules(o.tagRules),
     tagRulesEnabled: typeof o.tagRulesEnabled === 'boolean' ? o.tagRulesEnabled : def.tagRulesEnabled,
+    // 画幅锁:同样**必须显式列在这里**——normalizeLatent 是逐字段重建,漏掉就是
+    // 「载入即剥、首次写回永久丢」(architecture.md §8 纪律)。脏值容忍成 'auto'。
+    orientationLock: normalizeOrientationLock(o.orientationLock),
   };
 }
 

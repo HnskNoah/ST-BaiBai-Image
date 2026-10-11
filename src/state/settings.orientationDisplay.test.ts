@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * 0.3.1 新增的三项设置:画幅锁(NAI 渠道级一份、ComfyUI 每套工作流各一份)、
- * NAI「生成自然语言」、楼层图片显示大小。
+ * 0.3.1 新增的三项设置:画幅锁(NAI 渠道级一份、ComfyUI 每套工作流各一份、Latent 一份由本
+ * 分支接进)、NAI「生成自然语言」、楼层图片显示大小。
  *
  * 看点:
  * 1. 老配置缺字段一律落默认,不做迁移。画幅锁默认「自动」、NAI 自然语言默认开,都等于升级前的行为;
@@ -44,12 +44,14 @@ describe('画幅锁 / NAI 自然语言 / 显示大小 · 读取兜底', () => {
     expect(settings.nai.orientationLock).toBe('auto');
     expect(settings.nai.naturalLanguage).toBe(true);
     expect(settings.comfyui.workflows[0].orientationLock).toBe('auto');
+    expect(settings.latent.orientationLock).toBe('auto');
     expect(settings.ui.imageDisplaySize).toBe('medium');
   });
 
   it('合法值原样保留,各套工作流的锁各管各的', async () => {
     const { settings } = await hydrateWith({
       nai: { naturalLanguage: false, orientationLock: 'landscape' },
+      latent: { orientationLock: 'portrait' },
       comfyui: {
         workflows: [
           { id: 'wf_a', name: 'A', workflow: '', orientationLock: 'portrait' },
@@ -67,12 +69,14 @@ describe('画幅锁 / NAI 自然语言 / 显示大小 · 读取兜底', () => {
       'landscape',
       'auto',
     ]);
+    expect(settings.latent.orientationLock).toBe('portrait');
     expect(settings.ui.imageDisplaySize).toBe('full');
   });
 
   it('脏值 → 各自回落默认,不抛错', async () => {
     const { settings } = await hydrateWith({
       nai: { naturalLanguage: 'no', orientationLock: 'sideways' },
+      latent: { orientationLock: 'sideways' },
       comfyui: {
         workflows: [{ id: 'wf_a', name: 'A', workflow: '', orientationLock: 1 }],
         activeWorkflowId: 'wf_a',
@@ -82,6 +86,7 @@ describe('画幅锁 / NAI 自然语言 / 显示大小 · 读取兜底', () => {
     expect(settings.nai.naturalLanguage).toBe(true);
     expect(settings.nai.orientationLock).toBe('auto');
     expect(settings.comfyui.workflows[0].orientationLock).toBe('auto');
+    expect(settings.latent.orientationLock).toBe('auto');
     expect(settings.ui.imageDisplaySize).toBe('medium');
   });
 
@@ -117,6 +122,22 @@ describe('activeOrientationLock:按当前后端取对应那份', () => {
 
     settings.comfyui.activeWorkflowId = 'wf_b';
     expect(activeOrientationLock()).toBe('auto');
+  });
+
+  it('Latent 取自己那份,与 NAI 渠道的锁互不串', async () => {
+    const { settings, activeOrientationLock } = await hydrateWith({
+      defaultBackend: 'latent',
+      // NAI 侧故意锁成横屏:切到 latent 不能把它带过来
+      nai: { orientationLock: 'landscape' },
+    });
+    expect(activeOrientationLock()).toBe('auto');
+
+    settings.latent.orientationLock = 'portrait';
+    expect(activeOrientationLock()).toBe('portrait');
+
+    // 反向也不串:切回 NAI 用它自己那份
+    settings.defaultBackend = 'nai';
+    expect(activeOrientationLock()).toBe('landscape');
   });
 });
 
