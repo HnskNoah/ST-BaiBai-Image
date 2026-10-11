@@ -6,6 +6,7 @@ import type { Orientation } from '@/backends/size';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
+import { activeOrientationLock } from '@/state/settings';
 import { containsTagMarkup, type ImageTagContent } from '@/st/imageTagRegex';
 
 /**
@@ -73,6 +74,16 @@ const size = ref<Orientation>(props.content.size);
 const characters = ref<ImageCharacterPrompt[]>(
   props.content.characters.map(character => ({ ...character })),
 );
+
+/**
+ * 当前渠道的画幅锁(null = 未锁,见 settings.ts 的 activeOrientationLock)。
+ * 锁定时方向按钮显示锁定值并禁用:出图一律按锁走(generate.ts),这里再让人选只是个
+ * 不起作用的开关。草稿里的 size 不动——正文里记下的方向原样保留,渠道改回「自动」即恢复。
+ */
+const lockedSize = computed<Orientation | null>(() => {
+  const lock = activeOrientationLock();
+  return lock === 'auto' ? null : lock;
+});
 
 /** 换行折成空格:与 parseImageTagContent 的 oneLine 同口径(提示词里换行没有意义)。 */
 function oneLine(text: string): string {
@@ -311,25 +322,31 @@ onBeforeUnmount(() => {
         <div class="bbi-segmented" role="tablist" aria-label="画幅方向">
           <button
             class="bbi-seg"
-            :class="{ 'is-on': size === 'portrait' }"
+            :class="{ 'is-on': (lockedSize ?? size) === 'portrait' }"
             type="button"
             role="tab"
-            :aria-selected="size === 'portrait'"
+            :aria-selected="(lockedSize ?? size) === 'portrait'"
+            :disabled="!!lockedSize"
             @click="size = 'portrait'"
           >
             竖屏
           </button>
           <button
             class="bbi-seg"
-            :class="{ 'is-on': size === 'landscape' }"
+            :class="{ 'is-on': (lockedSize ?? size) === 'landscape' }"
             type="button"
             role="tab"
-            :aria-selected="size === 'landscape'"
+            :aria-selected="(lockedSize ?? size) === 'landscape'"
+            :disabled="!!lockedSize"
             @click="size = 'landscape'"
           >
             横屏
           </button>
         </div>
+        <span v-if="lockedSize" class="bbi-field-hint">
+          当前渠道已锁定{{ lockedSize === 'portrait' ? '竖屏' : '横屏' }},出图一律按此方向;
+          想按每张图各自的方向出,到「渠道」页尺寸旁改回「自动」。
+        </span>
       </div>
 
       <div class="bbi-modal-field">

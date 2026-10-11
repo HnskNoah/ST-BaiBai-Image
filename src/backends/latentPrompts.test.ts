@@ -12,7 +12,7 @@ describe('latentPrompts', () => {
   const NL_MACRO = /\{\{[#^/]nl\}\}/;
 
   it('不带自然语言条件段宏:latent 侧没有 expandNlSections 接线,宏会原样发给站点', () => {
-    // latent 恒吃自然语言(caps.nlAlways),nl 段无条件写死在文本里,不需要条件段。
+    // latent 恒吃自然语言(traits.nlAlways),nl 段无条件写死在文本里,不需要条件段。
     // 上游 0.3.2 给 DEFAULT_NAI_* 加了 {{#nl}}/{{^nl}} 宏——那份文本一旦经回落链流到
     // latent,花括号会直接进请求(这两类文本不经 ST 宏替换,宿主也不会吃掉它)。
     expect(DEFAULT_LATENT_SPEC).not.toMatch(NL_MACRO);

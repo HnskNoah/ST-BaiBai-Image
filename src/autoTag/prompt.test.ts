@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAutoTagMessages } from '@/autoTag/prompt';
+import { buildAutoTagMessages, expandNlSections } from '@/autoTag/prompt';
 import {
   activeComfyPreset,
+  DEFAULT_JAILBREAK_PROMPT,
+  DEFAULT_NAI_V5_SPEC,
+  DEFAULT_NAI_V5_THINKING,
   settings,
   type AutoTagPrompts,
   type AutoTagSettings,
@@ -24,7 +27,6 @@ function prompts(overrides: Partial<AutoTagPrompts> = {}): AutoTagPrompts {
     naiThinking: '',
     latentThinking: '',
     naiV5Thinking: '',
-    prefill: '',
     ...overrides,
   };
 }
@@ -94,7 +96,7 @@ describe('auto tag prompt', () => {
     // 已撤销的 characters 审计:不得回流到协议里
     expect(messages.some(m => m.content.includes('characters'))).toBe(false);
     expect(messages.some(m => m.content.includes('"tag":"@小雪'))).toBe(false);
-    const user = messages[messages.length - 2];
+    const user = messages[messages.length - 1];
     expect(user.role).toBe('user');
     expect(user.content).toContain('【角色固定外貌库】[system-maintained; currently empty]');
     expect(user.content).toContain('当前为空，没有任何角色已建档');
@@ -141,7 +143,7 @@ describe('auto tag prompt', () => {
         segments: [{ id: 'P9', sourceLine: 7, text: '请求开始时的正文快照' }],
       },
     );
-    const user = messages[messages.length - 2];
+    const user = messages[messages.length - 1];
 
     expect(user.content).toContain('请求开始时的正文快照 ⟦P9⟧');
     expect(user.content).not.toContain('目标第一行 ⟦P1⟧');
@@ -185,7 +187,7 @@ describe('auto tag prompt', () => {
         settings.excludes.customStripTags = oldTags;
       }
     })();
-    const user = messages[messages.length - 2];
+    const user = messages[messages.length - 1];
     expect(user.content).not.toContain('更早用户楼');
     expect(user.content).toContain('上一个 AI 楼');
     expect(user.content).toContain('<bbi_image>1girl, long silver hair, red eyes<size>portrait</size></bbi_image>');
@@ -198,7 +200,7 @@ describe('auto tag prompt', () => {
     expect(user.content).not.toContain('上一个 AI 楼 ⟦P');
   });
 
-  it('attaches the built-in thinking checklist and <thinking> prefill by default', async () => {
+  it('attaches the built-in thinking checklist by default', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
@@ -229,7 +231,7 @@ describe('auto tag prompt', () => {
     expect(thinkingMsg?.content).toContain('两项都不得留空，面无表情也要主动填 expressionless');
     expect(thinkingMsg?.content).toContain('表情与视线填后端规范给出的标准 danbooru 词');
     expect(thinkingMsg?.content).toContain('没有漏掉表情、视线或环境光');
-    // 只开一个 thinking 块:prefill 已经是 <thinking>,模型再开一个会破坏 protocol.ts 的成对剥离。
+    // 不再发送 assistant 预填充,消息以 user 任务消息收尾。
     expect(thinkingMsg?.content).toContain('不得开启第二个 <thinking> 块');
 
     // 以下是重写前就必须守住的既有约束,逐条确认没有在重构中丢失。
@@ -297,11 +299,11 @@ describe('auto tag prompt', () => {
     expect(messages.some(m => m.content.includes('不得为了丰富画面自行添加泥地、土路'))).toBe(true);
     expect(messages.some(m => m.content.includes('允许为了完成画面作合理猜测'))).toBe(false);
     const last = messages[messages.length - 1];
-    expect(last.role).toBe('assistant');
-    expect(last.content).toBe('<thinking>');
+    expect(last.role).toBe('user');
+    expect(last.content).toContain('目标正文');
   });
 
-  it('uses custom thinking/prefill when provided', async () => {
+  it('uses custom thinking when provided', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
@@ -309,13 +311,14 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
-      prompts: prompts({ comfyThinking: '自定义清单', prefill: 'custom>' }),
+      prompts: prompts({ comfyThinking: '自定义清单' }),
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
 
     expect(messages.some(m => m.content.includes('自定义清单'))).toBe(true);
     expect(messages.some(m => m.content.includes('输出前思考清单'))).toBe(false);
-    expect(messages[messages.length - 1].content).toBe('custom>');
+    // 预填充功能已移除:消息里不应再出现 assistant 角色。
+    expect(messages.some(m => m.role === 'assistant')).toBe(false);
   });
 
   // 思维链按后端各存一份。改 ComfyUI 那份不能影响 NAI——共用一份正是 V5 被要求填
@@ -459,13 +462,19 @@ describe('auto tag prompt', () => {
     };
     const oldBackend = settings.defaultBackend;
     const oldModel = settings.nai.model;
+    /**
+     * 去掉置顶破限词后再断言。本用例里的 not.toContain(成年人) 断的是「NSFW 条款不带
+     * 年龄限定」,不是「整份请求里不许出现这三个字」——0.3.2 起内置破限词换成 NVWA 那份,
+     * 正文含「成年人之间的禁忌关系」,整串断言会被破限词顶穿(上游 main 上这条自己就是
+     * 红的,1187528 实测:同一份 not.toContain 在 main 上就挂)。
+     */
+    const withoutJailbreak = (messages: { content: string }[]) =>
+      messages.map(m => m.content).join('\n').replace(DEFAULT_JAILBREAK_PROMPT, '');
     try {
       // ComfyUI:身份 tag 定词 + 括号转义提醒 + negative 条件自查(只有 Comfy 工作流会有
       // negative 键);Comfy spec 无 NSFW 条款,思维链也不加。
       settings.defaultBackend = 'comfyui';
-      let text = (await buildAutoTagMessages(context(), 1, options, null))
-        .map(m => m.content)
-        .join('\n');
+      let text = withoutJailbreak(await buildAutoTagMessages(context(), 1, options, null));
       expect(text).toContain('判定为同人时同一行定出最终身份 tag 词');
       expect(text).toContain(
         '每个同人角色的 tag 串里都有 B 段定下的 character name \\(copyright name\\) 身份 tag',
@@ -485,9 +494,7 @@ describe('auto tag prompt', () => {
       // 负面词由后端按模型固定附加,AI 不写 negative——不该有 negative 条件自查。
       settings.defaultBackend = 'nai';
       settings.nai.model = 'nai-diffusion-4-5-full';
-      text = (await buildAutoTagMessages(context(), 1, options, null))
-        .map(m => m.content)
-        .join('\n');
+      text = withoutJailbreak(await buildAutoTagMessages(context(), 1, options, null));
       expect(text).toContain('判定为同人时同一行定出最终身份 tag 词');
       expect(text).toContain('不转义圆括号');
       expect(text).toContain('若正文明确为显式 NSFW 场景');
@@ -501,9 +508,7 @@ describe('auto tag prompt', () => {
       // NAI V5:身份 tag 落点是 characters[].tag 首位;NSFW 按 Base/角色块分工;
       // contentRule 明令禁止 negative tags,不该有 negative 条件自查。
       settings.nai.model = 'nai-diffusion-5-full';
-      text = (await buildAutoTagMessages(context(), 1, options, null))
-        .map(m => m.content)
-        .join('\n');
+      text = withoutJailbreak(await buildAutoTagMessages(context(), 1, options, null));
       expect(text).toContain('身份 tag 必须写进档案');
       expect(text).toContain('每个同人角色的身份 tag 都逐字照抄自档案 fandom 字段');
       expect(text).toContain('若正文明确为显式 NSFW 场景');
@@ -819,8 +824,8 @@ describe('auto tag prompt', () => {
     }
   });
 
-  // 判据层(Character Prompts 支持面、taglint 模式、规范族)已收进 backends/channelCaps.ts,
-  // 相应断言移到 channelCaps.test.ts——那是纯函数,不必改全局 settings 再还原。
+  // 判据层(Character Prompts 支持面、taglint 模式、规范族)已收进 backends/channelTraits.ts,
+  // 相应断言移到 channelTraits.test.ts——那是纯函数,不必改全局 settings 再还原。
   // 本文件只留「判据落到消息文本上」的行为断言(下面各用例)。
 
   // 单串口径(latent)的多人规则必须有示例兜底:只有条文没有示例时模型照抄不到写法。
@@ -885,8 +890,8 @@ describe('auto tag prompt', () => {
     // 照抄库中字段 + 一张图只写一遍,是本次回退的两条核心措辞
     expect(messages.some(m => m.content.includes('照抄库中/刚建档的字段值'))).toBe(true);
     expect(messages.some(m => m.content.includes('只写一遍'))).toBe(true);
-    expect(messages[messages.length - 2].content).toContain(library);
-    expect(messages[messages.length - 2].content).not.toContain('currently empty');
+    expect(messages[messages.length - 1].content).toContain(library);
+    expect(messages[messages.length - 1].content).not.toContain('currently empty');
   });
 
   it('forbids poses and scenes from entering the appearance profile', async () => {
@@ -1143,6 +1148,209 @@ describe('auto tag prompt', () => {
       settings.defaultBackend = oldBackend;
       preset.mode = oldMode;
       preset.simple.template = oldTemplate;
+    }
+  });
+});
+
+describe('自然语言条件段 expandNlSections', () => {
+  it('{{#nl}} 段只在开启时保留,{{^nl}} 段只在关闭时保留', () => {
+    const text = 'A{{#nl}}-on{{/nl}}{{^nl}}-off{{/nl}}B';
+    expect(expandNlSections(text, true)).toBe('A-onB');
+    expect(expandNlSections(text, false)).toBe('A-offB');
+  });
+
+  it('段内可以跨行;没有条件段的文本原样返回(整段替换的 {{nl}} 宏不归它管)', () => {
+    const text = 'x{{#nl}}\n第一行\n第二行\n{{/nl}}y';
+    expect(expandNlSections(text, true)).toBe('x\n第一行\n第二行\ny');
+    expect(expandNlSections(text, false)).toBe('xy');
+    expect(expandNlSections('plain {{nl}} text', false)).toBe('plain {{nl}} text');
+  });
+
+  it('配不上对的标记原样留着,不吞掉后文', () => {
+    // 写错了在请求历史里看得见;静默吞掉的话,漏闭合会把后面整份规范一起删光
+    expect(expandNlSections('a{{#nl}}b', false)).toBe('a{{#nl}}b');
+    expect(expandNlSections('a{{/nl}}b', true)).toBe('a{{/nl}}b');
+  });
+
+  // 内置文本里的标记一旦写错(漏闭合、错拼),整段会连标记带内容原样漏给模型
+  it.each([true, false])('内置 NAI 规范与思维链展开后不留任何标记(nl=%s)', nlOn => {
+    for (const text of [DEFAULT_NAI_V5_SPEC, DEFAULT_NAI_V5_THINKING]) {
+      expect(expandNlSections(text, nlOn)).not.toMatch(/\{\{[#^/]nl\}\}/);
+    }
+  });
+});
+
+// NAI 4.5 的提示词 token 上限比 V5 紧,自然语言是最占预算的部分 —— 这是开关的由来。
+// 口径与 ComfyUI 那个开关相同:只管 AI 写不写,已写进正文的 nl 照常发送。
+describe('NAI「生成自然语言」开关与渠道画幅锁', () => {
+  function options(overrides: Partial<AutoTagPrompts> = {}): AutoTagSettings {
+    return {
+      enabled: true,
+      contextMessages: 2,
+      minImages: 0,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      prompts: prompts(overrides),
+    };
+  }
+
+  /** 每条用例都会拨后端与开关:进来时快照,出去时原样放回(settings 是模块级单例)。 */
+  function snapshot() {
+    const preset = activeComfyPreset();
+    const saved = {
+      backend: settings.defaultBackend,
+      model: settings.nai.model,
+      naiNl: settings.nai.naturalLanguage,
+      naiLock: settings.nai.orientationLock,
+      presetNl: preset.naturalLanguage,
+      presetLock: preset.orientationLock,
+    };
+    return {
+      preset,
+      restore() {
+        settings.defaultBackend = saved.backend;
+        settings.nai.model = saved.model;
+        settings.nai.naturalLanguage = saved.naiNl;
+        settings.nai.orientationLock = saved.naiLock;
+        preset.naturalLanguage = saved.presetNl;
+        preset.orientationLock = saved.presetLock;
+      },
+    };
+  }
+
+  const CONTRACT_MARK = '你是严谨的剧情画面规划与生图提示词编写员';
+  const NAI_SPEC_MARK = '[NovelAI 4.5/V5 Prompt Specification]';
+  const THINKING_MARK = '输出前思考清单';
+
+  function pick(messages: { content: string }[], mark: string): string {
+    const found = messages.find(m => m.content.includes(mark));
+    expect(found, mark).toBeTruthy();
+    return found!.content;
+  }
+
+  it.each(['nai-diffusion-4-5-full', 'nai-diffusion-5-full'] as const)(
+    '关掉后 %s 的协议、规范、思维链整套切成纯 tag;拨回开启即恢复',
+    async model => {
+      const state = snapshot();
+      try {
+        settings.defaultBackend = 'nai';
+        settings.nai.model = model;
+        settings.nai.naturalLanguage = false;
+        const messages = await buildAutoTagMessages(context(), 1, options(), null);
+        const contract = pick(messages, CONTRACT_MARK);
+        const spec = pick(messages, NAI_SPEC_MARK);
+        const thinking = pick(messages, THINKING_MARK);
+
+        // 示例 JSON 里一个 nl 键都不留:模型照抄示例的倾向比照读规则强得多
+        expect(contract).not.toContain('"nl"');
+        expect(contract).toContain('"characters":[{"name":"小雪"');
+        expect(contract).toContain('This output is tag-only');
+        expect(contract).toContain('name and tag are both required');
+        // 建档也不再要 nl —— runner 验收同一口径(profile.nl),否则会为不存在的要求白耗重试
+        expect(contract).not.toContain('every field:"new" change must include a non-empty nl');
+
+        // 规范第 6 条整条换成 tag-only 版本(编号不动),示例与条目形状同步去掉 nl
+        expect(spec).toContain('This output is tag-only: write no nl key anywhere');
+        expect(spec).toContain('{"name":"...","tag":"..."}');
+        expect(spec).not.toContain('"nl":');
+        expect(spec).not.toContain('Save adjectival nuance for nl');
+        expect(thinking).toContain('本次只写 tag');
+        expect(thinking).not.toContain('不写完整 nl 句');
+        // 多角色提示词本身不受开关影响:关的只是 nl,characters[] 照样要
+        expect(thinking).toContain('characters[]');
+
+        settings.nai.naturalLanguage = true;
+        const on = (await buildAutoTagMessages(context(), 1, options(), null))
+          .map(m => m.content)
+          .join('\n');
+        expect(on).toContain('"nl":"A girl stands in a classroom');
+        expect(on).toContain('Save adjectival nuance for nl.');
+        expect(on).toContain('every field:"new" change must include a non-empty nl');
+        expect(on).toContain('不写完整 nl 句');
+        expect(on).not.toContain('This output is tag-only');
+        expect(on).not.toContain('本次只写 tag');
+      } finally {
+        state.restore();
+      }
+    },
+  );
+
+  it('自定义规范与思维链同样按开关展开条件段(两个后端各认各的开关)', async () => {
+    const state = snapshot();
+    const custom = options({
+      naiV5Spec: 'NAI-SPEC{{#nl}} with-nl{{/nl}}{{^nl}} tag-only{{/nl}}',
+      naiV5Thinking: 'NAI-THINK{{#nl}} with-nl{{/nl}}{{^nl}} tag-only{{/nl}}',
+      comfySpec: 'COMFY-SPEC{{#nl}} with-nl{{/nl}}{{^nl}} tag-only{{/nl}}',
+      comfyThinking: 'COMFY-THINK{{#nl}} with-nl{{/nl}}{{^nl}} tag-only{{/nl}}',
+    });
+    const run = async () =>
+      (await buildAutoTagMessages(context(), 1, custom, null)).map(m => m.content).join('\n');
+    try {
+      settings.defaultBackend = 'nai';
+      settings.nai.model = 'nai-diffusion-4-5-full';
+      settings.nai.naturalLanguage = false;
+      // ComfyUI 那份开着也不该影响 NAI
+      state.preset.naturalLanguage = true;
+      let text = await run();
+      expect(text).toContain('NAI-SPEC tag-only');
+      expect(text).toContain('NAI-THINK tag-only');
+      expect(text).not.toContain('with-nl');
+
+      settings.nai.naturalLanguage = true;
+      text = await run();
+      expect(text).toContain('NAI-SPEC with-nl');
+      expect(text).toContain('NAI-THINK with-nl');
+
+      settings.defaultBackend = 'comfyui';
+      state.preset.naturalLanguage = false;
+      text = await run();
+      expect(text).toContain('COMFY-SPEC tag-only');
+      expect(text).toContain('COMFY-THINK tag-only');
+      expect(text).not.toContain('with-nl');
+
+      state.preset.naturalLanguage = true;
+      text = await run();
+      expect(text).toContain('COMFY-SPEC with-nl');
+      expect(text).toContain('COMFY-THINK with-nl');
+    } finally {
+      state.restore();
+    }
+  });
+
+  // 只锁出图不改协议的话,模型照样按横竖判据取景:锁竖时为群像构思宽画面,出图却是竖的
+  it('NAI 锁横屏:协议改口为每张都填 landscape,示例同步,不再给选向兜底', async () => {
+    const state = snapshot();
+    try {
+      settings.defaultBackend = 'nai';
+      settings.nai.model = 'nai-diffusion-4-5-full';
+      settings.nai.orientationLock = 'landscape';
+      const contract = pick(await buildAutoTagMessages(context(), 1, options(), null), CONTRACT_MARK);
+      expect(contract).toContain('锁定为横图，每张图都填 "landscape"');
+      expect(contract).toContain('判据本次不适用');
+      expect(contract).toContain('"size":"landscape"}],"changes":[]}');
+      expect(contract).not.toContain('拿不准就填 "portrait"');
+    } finally {
+      state.restore();
+    }
+  });
+
+  it('ComfyUI 锁看当前工作流那份;NAI 的锁不串过来', async () => {
+    const state = snapshot();
+    try {
+      settings.defaultBackend = 'comfyui';
+      settings.nai.orientationLock = 'landscape';
+      state.preset.orientationLock = 'portrait';
+      let contract = pick(await buildAutoTagMessages(context(), 1, options(), null), CONTRACT_MARK);
+      expect(contract).toContain('锁定为竖图，每张图都填 "portrait"');
+      expect(contract).toContain('"size":"portrait"}],"changes":[]}');
+
+      state.preset.orientationLock = 'auto';
+      contract = pick(await buildAutoTagMessages(context(), 1, options(), null), CONTRACT_MARK);
+      expect(contract).toContain('拿不准就填 "portrait"');
+      expect(contract).not.toContain('已由用户在渠道设置里锁定');
+    } finally {
+      state.restore();
     }
   });
 });

@@ -23,8 +23,14 @@
  */
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
-import { channelCaps } from '@/backends/channelCaps';
-import { validateSimpleConfig } from '@/backends/comfyTemplates';
+import { activeChannelTraits } from '@/backends/channelTraits';
+import {
+  comfySimpleParams,
+  composeNegative,
+  composePositive,
+  validateSimpleConfig,
+  type SimpleGenValues,
+} from '@/backends/comfyTemplates';
 import { generateComfyImage, randomSeed, type ComfyImageResult } from '@/backends/comfyui';
 import {
   generateNaiImage,
@@ -32,8 +38,9 @@ import {
   naiRandomSeed,
   naiSupportsCharacterPrompts,
 } from '@/backends/nai';
-import type { Orientation } from '@/backends/size';
+import { parseSize, pickSize, type Orientation } from '@/backends/size';
 import { acquireNaiSlot } from '@/floor/genQueue';
+import type { GenerationMeta } from '@/generationMeta';
 import {
   activeComfyPreset,
   activeNaiEndpoint,
@@ -54,7 +61,10 @@ export interface GenerateInput {
   negative?: string;
   /** NAI 4.5/V5 原生多角色提示;ComfyUI 不支持(见 charactersApplied)。 */
   characters?: ImageCharacterPrompt[];
-  /** 画幅方向;缺省竖屏。具体像素取渠道配置里的横竖尺寸。 */
+  /**
+   * 画幅方向;缺省竖屏。具体像素取渠道配置里的横竖尺寸。
+   * 渠道锁定了方向(activeOrientationLock)时一律按锁定方向出,这里传什么都不算数。
+   */
   size?: Orientation;
   /** 本次种子。由调用方经 decideSeed() 先行确定(埋点要在发请求前拿到它)。 */
   seed: number;
@@ -74,6 +84,8 @@ export interface GenerateOutput {
   result: ComfyImageResult;
   /** 本次实际使用的种子(原样回传,调用方不必自己记)。 */
   seed: number;
+  /** 本次实际出图的画幅方向(渠道锁定时即锁定方向,可能与入参 size 不同)。 */
+  size: Orientation;
   backend: BackendId;
   /**
    * characters 是否真的发给了后端。
@@ -82,6 +94,11 @@ export interface GenerateOutput {
    * 不在这里「降级拼进 prompt」:那正是 0.2.3 修掉的重叠躯干问题(一张图里多份完整外貌)。
    */
   charactersApplied: boolean;
+  /**
+   * 本次实际使用的画师串 / vibe / 采样参数 / 模型，供落盘随图记录（见 generationMeta.ts）。
+   * NAI 的画师串与 vibe 不在 tag 文本里，不在这里冒泡出去就只能永久丢失。
+   */
+  meta: GenerationMeta;
 }
 
 /** 后端就绪状态。 */
@@ -144,7 +161,7 @@ export function backendStatus(): BackendStatus {
   if (backend === 'latent') {
     // Latent 渠道(站点的 NovelAI 兼容面):判据同 NAI(url + key)。
     // supportsCharacters **恒 false**:站点不收 v4_prompt/characterPrompts 这套双层结构
-    // (caps.charPrompts 对 latent 恒 false,发送侧 latentFlatPrompt 一律剥掉),人物外貌
+    // (traits.charPrompts 对 latent 恒 false,发送侧 latentFlatPrompt 一律剥掉),人物外貌
     // 是 AI 写进主 tag 串的。报 true 会让公开接口的 charactersApplied 说谎——第三方据此
     // 以为多角色提示生效了,实际载荷里一个 characters 都没有。
     const base = {
@@ -204,7 +221,7 @@ export async function generateImage(
   // 真漏到这里说明上游判据漂了,宁可明说也别发一个注定 401/404 的请求。
   if (!status.configured) throw new Error(status.reason || '出图后端未配置');
 
-  const caps = channelCaps(status.backend, settings.nai.model);
+  const traits = activeChannelTraits();
   const characters = input.characters ?? [];
   // 支持与否由后端说了算:ComfyUI 恒不支持;NAI/Latent 看模型是否 4.5/V5
   const charactersApplied = characters.length > 0 && status.supportsCharacters;
@@ -214,18 +231,22 @@ export async function generateImage(
     // 持槽:取到槽位后本函数内一直持有,直到 finally 释放。
     // 走 NAI 机器的渠道(nai 与 latent)同为阻塞式 POST、无服务端队列,共用本闸门——
     // latent 站点在途超限是 409,堵住这一面同样要靠它(见 floor/genQueue.ts)。
-    if (caps.usesNaiMachine) release = await acquireNaiSlot(signal);
+    if (traits.usesNaiMachine) release = await acquireNaiSlot(signal);
     progress.onStart?.();
 
-    const size = input.size ?? 'portrait';
+    // 画幅锁在这里统一生效(卡片与公开接口同走本函数):只决定这一次用哪格尺寸,
+    // tag 里记的方向原样不动——promptHash 吃 tag 原文,改写会让老图无辜变 stale。
+    // 锁定值取自 traits(判据只有一处),latent/webui 恒为 null = 按 tag 记的方向出。
+    const size = traits.lockedSize ?? input.size ?? 'portrait';
     let result: ComfyImageResult;
-    if (caps.usesNaiMachine) {
+    let meta: GenerationMeta;
+    if (traits.usesNaiMachine) {
       // Latent 渠道完全复用 NAI 机器:latentAsNai 映射成 NaiSettings 后走同一个
-      // generateNaiImage,站点原生面的差异全部由 caps 表达(别搬回调用方——卡片与公开
+      // generateNaiImage,站点原生面的差异全部由 traits 表达(别搬回调用方——卡片与公开
       // 接口共用本函数)。出口自洽由 latentAsNai 保证:视图里只有 latent 自己的接入点,
       // 不会被 settings.nai 的接入点串台(那会把 latent 的图发到官方站/镜像站去)。
       const view = status.backend === 'latent' ? latentAsNai(settings.latent) : effectiveNai();
-      result = await generateNaiImage(
+      const output = await generateNaiImage(
         view,
         {
           prompt: input.prompt,
@@ -235,7 +256,7 @@ export async function generateImage(
           characters,
           seed: input.seed,
           size,
-          ...(caps.frameNegative
+          ...(traits.frameNegative
             ? {
                 // 负面 = naiUndesiredContent 链(画师串绑定词 > 渠道级 negativePrompt >
                 // Anima 推荐默认 latentDefaultUndesired,启用画师串时自动剔掉 artist name)。
@@ -254,21 +275,29 @@ export async function generateImage(
         signal,
         {
           onRetry: info => progress.onRetry?.({ attempt: info.attempt, max: info.max }),
-          noRetry429: caps.noRetry429,
-          allowNon64Size: caps.allowNon64Size,
-          latentFlatPrompt: caps.flatPrompt,
+          noRetry429: traits.noRetry429,
+          allowNon64Size: traits.allowNon64Size,
+          latentFlatPrompt: traits.flatPrompt,
           // 站点原生面收分辨率枚举(portrait/landscape)而非宽高数字对;square 档不暴露。
           latentResolution:
-            caps.sizeEncoding === 'orientationEnum'
+            traits.sizeEncoding === 'orientationEnum'
               ? size === 'landscape'
                 ? 'landscape'
                 : 'portrait'
               : undefined,
         },
       );
+      result = output.result;
+      // latent 与 nai 共用机器,但溯源要分清是哪台配方(见 generationMeta.ts 的 backend 注释)。
+      meta = {
+        backend: traits.channel === 'latent' ? 'latent' : 'nai',
+        model: status.model,
+        ...output.usage,
+      };
     } else {
+      const conn = effectiveComfyConn();
       result = await generateComfyImage(
-        effectiveComfyConn(),
+        conn,
         {
           prompt: input.prompt,
           nl: input.nl ?? '',
@@ -279,11 +308,36 @@ export async function generateImage(
         signal,
         { onQueue: ahead => progress.onQueue?.(ahead) },
       );
+      // ComfyUI 没有运行期跳过的概念，配方全在预设里，可在此直接快照。
+      // 尺寸解析口径与 generateComfyImage 一致（未解析出时 0 = 用工作流自带尺寸）。
+      const px = parseSize(pickSize(conn, size));
+      const width = px?.width ?? 0;
+      const height = px?.height ?? 0;
+      const simpleValues: SimpleGenValues = {
+        prompt: input.prompt,
+        nl: input.nl,
+        negative: input.negative,
+        seed: input.seed,
+        width,
+        height,
+      };
+      meta = {
+        backend: 'comfyui',
+        model: status.model,
+        width,
+        height,
+        // custom 模式的提示词由工作流里的占位符决定，无法在这里拼出全文，留空。
+        positive: conn.mode === 'simple' ? composePositive(conn.simple, simpleValues) : '',
+        negative: conn.mode === 'simple' ? composeNegative(conn.simple, simpleValues) : '',
+        artist: null,
+        vibes: [],
+        params: conn.mode === 'simple' ? comfySimpleParams(conn.simple) : { mode: 'custom' },
+      };
     }
 
     // 退避文案到此为止:图已拿到,落盘还要一会儿,不该继续显示「稍后重试」
     progress.onRetry?.(null);
-    return { result, seed: input.seed, backend: status.backend, charactersApplied };
+    return { result, seed: input.seed, size, backend: status.backend, charactersApplied, meta };
   } finally {
     release?.();
   }

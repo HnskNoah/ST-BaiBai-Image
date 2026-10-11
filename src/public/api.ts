@@ -3,6 +3,7 @@ import { normalizeOrientation } from '@/backends/size';
 import { NaiError } from '@/backends/nai';
 import { ComfyUIError } from '@/backends/comfyui';
 import { backendStatus, decideSeed, generateImage } from '@/generate';
+import type { GenerationMeta } from '@/generationMeta';
 import { saveExternalImage } from '@/floor/storage';
 import { getContext } from '@/st/context';
 import { serializeImageTag } from '@/st/imageTagRegex';
@@ -281,7 +282,8 @@ export async function generate(
     let path: string | null = null;
     if (wantSave) {
       report({ phase: 'saving' });
-      path = await saveToGallery(request, prompt, nl, negative, characters, size, seed, result);
+      // 存实际出图的方向:渠道锁定时它与请求的 size 不同,图库里的 tag 要如实描述这张图
+      path = await saveToGallery(request, prompt, nl, negative, characters, output.size, seed, result, output.meta);
     }
     return {
       apiVersion: PUBLIC_API_VERSION,
@@ -315,6 +317,7 @@ async function saveToGallery(
   size: ReturnType<typeof normalizeOrientation>,
   seed: number,
   result: Parameters<typeof saveExternalImage>[3],
+  meta: GenerationMeta,
 ): Promise<string | null> {
   // 存的是 **tag 原文**(含 <bbi_image> 壳),不是拼好的展示文本:
   // 图库读侧写后要 parseImageTagContent 再 formatPromptText(与楼层卡片同一口径),
@@ -325,7 +328,7 @@ async function saveToGallery(
     getContext()?.name2?.trim() ||
     '未命名角色';
   try {
-    return await saveExternalImage(name, tag, seed, result);
+    return await saveExternalImage(name, tag, seed, result, meta);
   } catch (error) {
     console.warn('[柏宝绘] 公共接口生成的图片落盘失败（图片本身已返回给调用方）', error);
     return null;

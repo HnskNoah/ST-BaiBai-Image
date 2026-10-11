@@ -49,7 +49,7 @@ src/
 ├── autoTag/           # ★ 链路 A:自动生 tag(独立 LLM 请求 → 协议校验 → 注入正文)
 │   ├── runner.ts      # 事件监听、去重、重试、编排(入口)
 │   ├── generationGate.ts # 生成门:把自动 tag 与真实生成配对(GENERATION_STARTED 武装 → 最终 RENDERED 消费)
-│   ├── prompt.ts      # 组装消息:破限/角色/人设/世界书/规范/协议/思维链/预填充
+│   ├── prompt.ts      # 组装消息:破限/角色/人设/世界书/规范/协议/思维链
 │   ├── protocol.ts    # 段尾位置 ID、JSON 严格解析校验、tag 注入格式
 │   ├── clean.ts       # 历史/目标正文清洗(共享排除标签;历史保留 bbi_image)
 │   ├── context.ts     # 世界书激活(条目级渲染:展宏+EJS)、角色卡、user 人设
@@ -69,7 +69,8 @@ src/
 │   ├── chatu8Vibe.ts  # 从智绘姬(st-chatu8)只读导入 vibe / 提示词预设
 │   │                  # (collect/detect/import 纯函数三件套,绝不写回智绘姬)
 │   ├── vibeGroups.ts  # Vibe 分组纯逻辑(装箱 key/归拢/搜索/启用集合判定)
-│   └── size.ts        # 画幅方向归一 / 尺寸解析 / 按方向取配置(刻意不 import settings)
+│   └── size.ts        # 画幅方向归一 / 尺寸解析 / 按方向取配置 / 画幅锁(effectiveOrientation)
+│                      # (刻意不 import settings)
 ├── generate.ts        # ★ 一次出图的共用中段:NAI 闸门 → 按后端分派 → 拿到图。
 │                      # 楼层卡片与公开接口的**唯一**生成路径(不落盘/不显示/不埋点)
 ├── public/            # ★ 开放给第三方插件的接口(globalThis.STBaiBaiImage,见 §9)
@@ -114,6 +115,7 @@ src/
 ├── styles/           # base.css(全局基础样式)、theme.css(主题变量,data-theme 切换)
 ├── bytes.ts          # 字节数 → 人读体积(1024 进制、单位写 KB/MB 与资源管理器对齐;非有限值返回空串)
 ├── pool.ts           # 限并发 map(mapLimit,返回顺序=输入顺序);图库量体积/批量删图用
+├── generationMeta.ts # ★ 随图落盘的出图元信息 schema(画师串/vibe/采样参数)+ 只读展示格式化;叶子模块零 import,避免 settings↔nai 成环
 ├── menu.ts           # 魔杖菜单入口注入(轮询等懒加载)
 ├── topbar.ts         # ST 顶栏快速打开按钮(受 ui.showTopBar 开关控制)
 └── version.ts        # 版本号(__BBI_VERSION__)+ 带 ver 的资源 URL
@@ -243,11 +245,23 @@ runForFloor(floor, opts)
 ```
 
 消息顺序(prompt.ts 固定):破限 system → 角色卡 system → persona system → 世界书 system →
-后端规范 system(ComfyUI/NAI 内置 spec,`{{nl}}` 宏按「生成自然语言」开关展开)→ 固定协议
-(身份定义 + 输出契约:一个 `<thinking>` 块和一个 JSON 对象,JSON 含 images + changes)→ 思维链 system → user(角色参考 + 角色库 + 清洗后的最近 N 个 AI 故事楼及其间 user 楼 + 带段尾位置 ID 的目标正文)
-→ assistant 预填充(`<thinking>`,渠道关闭 prefill 时由 client 丢弃)。
+后端规范 system(ComfyUI/NAI 内置 spec,`{{nl}}` 宏与 `{{#nl}}`/`{{^nl}}` 条件段按「生成自然语言」开关展开)→ 固定协议
+(身份定义 + 输出契约:一个 `<thinking>` 块和一个 JSON 对象,JSON 含 images + changes)→ 思维链 system → user(角色参考 + 角色库 + 清洗后的最近 N 个 AI 故事楼及其间 user 楼 + 带段尾位置 ID 的目标正文)。
 
-全部可编辑提示词(破限/规范/思维链/预填充)在 `state/settings.ts` 有内置默认常量
+**协议形态只算一次(prompt.ts 的 `autoTagProfile()`)**:`{naiCharPrompts, nl, lockedSize}` 按默认后端
+与其开关算出,写协议(prompt.ts)与验收/收尾(runner.ts,每次开跑快照一份)共用同一份——两边各算各的
+迟早会漂:协议说只写 tag,验收却还在要 nl。
+- `nl`:ComfyUI 取当前工作流的「生成自然语言」,NAI 取 `settings.nai.naturalLanguage`(仅 4.5/V5 有意义)。
+  两个开关同一口径,**只管 AI 写不写**:关掉时 runner 丢弃模型照写的 nl(留着就会照常发送,开关等于没关)、
+  跳过「4.5/V5 建档必带 nl」的校验;**已写进 tag 的 nl 照常发送**(tag 原文是真源,不回头改)。
+- 条件段(`expandNlSections`):`{{#nl}}…{{/nl}}` 开启时保留、`{{^nl}}…{{/nl}}` 关闭时保留,两个后端的
+  规范与思维链都展开(含用户自定义的)——一份文本在开关两侧各自自洽,不必维护两份会漂的副本。
+  不支持嵌套;配不上对的标记原样留着(写错了在请求历史里看得见,比静默吞掉好查)。
+- `lockedSize`(`activeOrientationLock()`,见 §6 画幅锁):锁定时协议的 size 规则改成「每张都填锁定值」,
+  示例 JSON 也填它——让 AI **按锁定画幅构图**,而不是照竖图写完再被出图端强转横图;
+  未锁照旧「拿不准就填 portrait」。runner 收尾再把 size 统一改记锁定值,tag 里记的方向与实际画幅一致。
+
+全部可编辑提示词(破限/规范/思维链)在 `state/settings.ts` 有内置默认常量
 (`DEFAULT_*_PROMPT`/`DEFAULT_*_SPEC`),留空回落默认 —— 改默认提示词内容先看这里。
 
 ⚠ **世界书扫描文本的顺序是契约:必须「最新在前」(目标楼在 index 0)**。ST 的扫描缓冲把
@@ -265,11 +279,11 @@ Latent 对是 `latentSpec` / `latentThinking`(设置页「Latent 规范/思维�
 此前 latent 实际在用的提示词没有任何编辑入口)。另有 `naiSpec` / `naiThinking` 是 4.5 以下的
 单串 tag 版本(含多人邻接绑定口径),NAI 渠道:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 →
 那两份对 NAI 走不到,内置文本随上游维护(留作遗留单串分支的回归锁)。
-**Latent 渠道恒走单串口径**(站点收扁平串:tag 与 nl 拼一段,caps.charPrompts 对 latent 恒 false),
+**Latent 渠道恒走单串口径**(站点收扁平串:tag 与 nl 拼一段,traits.charPrompts 对 latent 恒 false),
 取值链 `latentSpec → naiSpec(旧键,存量自定义不失效)→ DEFAULT_LATENT_SPEC/THINKING`——终端那两份
 是 latent **自己的**内置文本(`backends/latentPrompts.ts`),不借 `DEFAULT_NAI_*`:上游会改那两份
 (0.3.2 往里加了 `{{#nl}}` 条件段宏),共用一个常量等于让上游的改动顺着回落链流进 latent 的请求。
-分流按能力表的规范族判定(`caps.spec === 'latent'`,见 backends/channelCaps.ts;不再逐处问渠道名),
+分流按渠道特性表的规范族判定(`traits.spec === 'latent'`,见 backends/channelTraits.ts;不再逐处问渠道名),
 NAI 渠道(含遗留单串分支)不读 latent 键。别按键名猜归属。
 
 ## 6. 链路 B:楼层卡片与出图(floor/ + backends/)
@@ -373,6 +387,19 @@ tag 原文被 DOMPurify 剥壳后当正文显示出来(用户直接看见一串 
 - **埋点刻意留给调用方**:一条历史记录的「成功」判据各家不同——楼层卡片要等落盘成功才算成,
   还要把「图拿到了却因任务被取代而丢弃」记成已取消;本模块只知道请求本身的成败,
   替调用方下结论会把那两种情形谎报成成功。故 `decideSeed` 单独导出,调用方先定种子再传进来。
+
+**画幅锁(`OrientationLock` = `'auto' | 'portrait' | 'landscape'`)**:「只出横图 / 只出竖图」的旧办法是把横竖
+两格尺寸填成一样——能出,但 AI 写 tag 时仍按竖图/横图各自构图,出图端再硬塞进同一格尺寸。
+- **放在各渠道的尺寸旁边**:NAI 渠道级一份(`settings.nai.orientationLock`),ComfyUI **每套工作流各一份**
+  (`ComfyWorkflowPreset.orientationLock`,与横竖尺寸同属底模属性,切工作流即切走锁)。
+  判据只此一处 `activeOrientationLock()`(按当前后端取对应那份,其余后端 `'auto'`),
+  协议(§5 `autoTagProfile`)、出图(generate.ts)、卡片、编辑弹窗四处共用。
+- **只在出图那一刻生效**:`generateImage` 里 `effectiveOrientation(lock, input.size)` 决定这一次用哪格尺寸,
+  卡片与公开接口同走这里(锁定时公开接口传的 size 不算数),`GenerateOutput.size` 回报实际方向——
+  卡片的历史记录/无图占位比例与公开接口的图库侧写都按它记,如实描述这张图。
+  **tag 原文不改**:promptHash 吃原文,改写会让老图无辜变 stale;渠道改回「自动」,老 tag 记的方向原样生效。
+  新写的 tag 由 runner 直接记成锁定值(§5),老 tag 不回头改写。
+- 默认 `'auto'`(= 升级前行为):老配置缺字段、脏值一律落 `'auto'`,不做迁移。
 
 **并发是后端属性,不是全局设置**:
 - **ComfyUI 一次性全发**:`POST /prompt` 拿到 `prompt_id` 即入**服务端**队列,轮询各查各的
@@ -485,6 +512,9 @@ release 后立刻 `pump()`,下一个任务在同一 tick 就发出去;而错误�
 - ⚠ stale 态只显示**一张**(`latestStaleEntry` 返回单条,且 `pageable` 要求
   `history.length > 1`,翻页器整个不出现)。旧提示词下有 N 张时改提示词 → 只剩最新一张可见
   (文件与指针都没删,改回原样即全部找回)。弹窗里据此给了明确提示。
+- 渠道锁了画幅方向(`activeOrientationLock()`)时,方向按钮显示锁定值并禁用 + 一行说明:出图一律
+  按锁走,再让人选只是个不起作用的开关。**草稿里的 size 不动**——正文记下的方向原样保留
+  (也就不会凭空换 promptHash),渠道改回「自动」即恢复按各张自己的方向出图。
 
 **「AI 重写提示词」(入口在编辑弹窗里;runner.ts 的 `requestSlotTag` + slotPlan.ts)**:与「重绘」
 的区别——重绘用**同一条提示词**再出一张,这里是让 AI 重读本楼正文、**重写这一条 tag 的内容**。
@@ -543,6 +573,21 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 操作分工:**头部只放「对当前这张图」的操作**(下载/删除/重绘),提示词的操作(复制)
 跟着提示词放进展开区——展开区里的复制按钮**绝对定位**,并排 flex 会让它随长文本高度飘到中间。
 
+**楼层图片显示大小(`settings.ui.imageDisplaySize`,设置页「楼层图片显示大小」)**:只管**聊天里显示多大**,
+不碰出图分辨率、不改图片文件。小/中/大 = 显示高度封顶 400/600/800px(默认「中」),「铺满」= 旧版
+铺满楼层宽度。Card.vue 按 `imageDisplayMaxHeight()` 挂 `data-capped='1'` + `--bbi-figure-max-h`:
+- **封高度不封宽度**:PC 上嫌大的是竖图铺满楼层宽后比一屏还高;按宽度封顶,竖图照样高、横图反被压小。
+- 舞台 `width: fit-content` 收成图片本身的宽——⋯ 钮、翻页器、角标都以舞台绝对定位,舞台不收窄
+  它们就飘在图片旁的空白里。宽度仍 `max-width: 100%`,窄屏照旧按宽缩放。
+- 无图占位没有内容可撑宽(fit-content 会塌成 0),按画幅比例反推「高度恰好顶到上限」的宽。
+- 默认「中」而不是「铺满」是刻意的:老配置缺这个字段就落「中」,不做迁移——旧行为正是要修的问题,
+  想要回去在下拉里选「铺满」。
+
+**⋯ 菜单全平台横排(card.css 的 `.bbi-figure__actions`)**:菜单在 ⋯ 左侧横向排开,放不下就折行
+(`max-width` 不越过舞台左缘,`row-reverse` + `align-items: flex-start` 让 ⋯ 在展开/折行时都钉在右上角)。
+触屏曾在 ⋯ 下方竖排展开:横图在手机上只有两百来像素高,六七颗钮竖排越出舞台底边、被 `overflow:hidden`
+裁掉,后面几个按不到。桌面 hover 浮现、触屏点 ⋯ 展开的交互分工不变。
+
 **图片放大与长按保存(Lightbox.vue)**:ST 原生灯箱够不着——入口 `.mes_img` 只是 class,
 `expandMessageMedia` 读 `chat[mesid].extra.media[data-index]` 且模块私有未导出;走官方
 `extra.media` 会把图挂到 `.mes_media_wrapper`(`.mes_text` 的兄弟),脱离 tag 行内位置。故自建。
@@ -556,13 +601,20 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   (角色名优先取消息发言者,其次取当前聊天角色名,空值回退「未命名角色」;
   `st/images.ts` 上传时由服务端清洗目录名,文件名保留 promptHash 稳定哈希);
 - 元数据 → `message.extra.bbiImage = { [swipeId]: { [promptHash]: BbiImageEntry[] } }`
-  (历史时间正序,卡片翻页;`slotSeq` 隔离同楼多 tag)。
-- 侧写(sidecar)→ `user/files/<与图片同名>.json`,存 tag 原文 + seed,**只为图库服务**:
+  (历史时间正序,卡片翻页;`slotSeq` 隔离同楼多 tag;`meta` 存出图元信息,供图库当前聊天免抓侧写)。
+- 侧写(sidecar)→ `user/files/<与图片同名>.json`,存 tag 原文 + seed + `meta`(出图元信息),
+  **只为图库服务**:
   图库跨全部聊天按目录列图,而提示词只在某一个聊天的 extra 里,扫全库 JSONL 反查不可行
   (单角色 chats 目录可达 GB 级、`/api/chats/get` 整文件返回无分页)。
   文件名由 `sidecarFileName` 纯函数从图片名推出,不维护索引(`/api/files/upload` 原样落盘只校验不清洗)。
   json 进不了 `user/images`(上传接口的 format 必须是媒体扩展名),故落 `user/files`。
   **写失败只 warn 不抛** —— 图已存好,不能因附属 json 丢图;老图没有侧写属正常。
+- **出图元信息(GenerationMeta)** 随图落盘,填的是「不在 tag 文本里」的溯源信息:画师串(名字+正文快照)、
+  实际叠加的 vibe(名字/配置强度/归一后的实际强度)、模型、画幅像素、实际发送的正/负面词、采样参数
+  (以及 ComfyUI 简易模式的模板/底模/VAE/CLIP/LoRA)。**必须在出图那一刻从后端冒泡出来**
+  (NAI 的 `generateNaiImage` 返回 `usage`,经 `generate.ts` 组装成 `GenerateOutput.meta`),不能落盘时再读设置:
+  一是并发下会张冠李戴,二是只有后端才知道「哪些 vibe 实际没被跳过」。自定义工作流正文一律不存。
+  侧写 `v` 升到 2 以标记新增 `meta`,读侧对老 `v:1` 文件与无 `meta` 的旧 entry 自然降级。
 - 写回用 CAS 循环(`mutateStore`,引用比对 + `saveChat`);保存顺序:先文件后指针 / 删时先指针后文件。
 - 旧 `user/files` 图片不迁移、不删除,按原路径显示;删除旧记录仅移除指针,只对 `user/images` 图片调用文件删除接口(连同它的侧写)。
 - **图库删图是另一条路**(`deleteImageFileOnly`):没有指针可摘——图库按**目录**列图,指针散在
@@ -616,6 +668,12 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   几倍 token(4.5 的 base + 全部 character prompts 合计约 512 T5 token)。**角色名是唯一例外**:
   characters[].name / changes[].name 与 tag/nl 里出现的角色名必须逐字保持原文(中文名写
   中文,不音译不意译)——插件按名字逐字匹配库条目做替换,名字对不上档案/正文锚定就断。
+  **「生成自然语言」开关(`settings.nai.naturalLanguage`,默认开 = 升级前行为)**:就是为这 512 token
+  的预算加的——4.5 上 nl 与 tag 抢同一份预算,超出部分被截掉,画面就开始走样;4.5 读自然语言也不如 V5。
+  口径与 ComfyUI 的同名开关一致(§5 `autoTagProfile`):关掉后协议/规范/思维链改成纯 tag 版
+  (`{{^nl}}` 条件段)、runner 丢弃模型照写的 nl 并跳过「建档必带 nl」校验;**已写进 tag 的 nl 照常发送**,
+  多角色 Character Prompts 照常拆分(只是每条 caption 只剩 tag)。开关在 NaiPanel「默认参数」的模型选择下方,
+  不按模型隐藏:可选模型只剩 4.5/V5(见下),开关恒有效。
   **真正的 V5 专属差异只有三处**:`params_version: 4`、采样器限子集(列表随模型过滤,面板同步)、
   varietyBoost 无效(`skipCfgAboveSigma` 对 V5 返回 null,4.5 用 magic 58)。
   **Vibe 对 V5 同样可用**:`vibeModelKey` 已含 v5full/v5curated 键,V5 走与 v4 系相同的编码
@@ -648,7 +706,8 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   `ready` 守门标志防默认值覆盖服务器设置;deep watch → 防抖 `saveSettingsDebounced()`。
   订阅者用 `onSettingsReady(cb)` 等 hydrate 完成(如 ui.ts 回灌主题)。
 - **ComfyUI 工作流库**:`settings.comfyui.workflows`(`ComfyWorkflowPreset[]`)+ `activeWorkflowId`。
-  - 一条预设 = 名字 + `mode`(custom/simple 互斥)+ 工作流 JSON + `simple` 参数 + `naturalLanguage` + 横竖尺寸。
+  - 一条预设 = 名字 + `mode`(custom/simple 互斥)+ 工作流 JSON + `simple` 参数 + `naturalLanguage` + 横竖尺寸
+    + `orientationLock`(画幅锁,见 §6;老预设缺字段落 `'auto'`)。
     这些跟着工作流走而非留在渠道级,因为它们是**底模的属性**(Illustrious 要短 tag + 832×1216,
     Flux 要自然语言 + 1024 方图);留在渠道级的话每次切工作流还得手改两处。
     `url` 反过来仍是渠道级(一台服务器跑所有工作流)。
@@ -806,7 +865,8 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
   (autoTag/excludes.ts);清洗标签 → 扫描/正文清洗整块删除(autoTag/clean.ts)。
   共享存储创建时播种默认条目名规则 `\[mvu[\s\S]*?\]`(只发一次,删了不补回)。
 - **ui(本机 + 同步)**:窗口开关/当前页(activePage 存 localStorage)是纯本机态;
-  主题/导航/悬浮球/楼层图片默认折叠(autoCollapseImages)属真设置,写入 `settings.ui` 走跨设备同步。
+  主题/导航/悬浮球/楼层图片默认折叠(autoCollapseImages)/楼层图片显示大小(imageDisplaySize,§6)
+  属真设置,写入 `settings.ui` 走跨设备同步。
   图库分组默认折叠,仅将手动展开的目录名存入本机 `bbi.ui.galleryExpanded.v1`;
   旧 `galleryCollapsed.v1` 不反推展开态,未记录的新目录默认收起。`v-if` + Transition
   使图片仅在展开时挂载、收起动画结束后卸载,保留原生 `loading="lazy"`。
@@ -986,6 +1046,8 @@ genState 同构(chatId|messageId|swipeId|seq),重建后按 key 认领。手动�
 `dataUrl` 里了,因为存不进图库就让第三方连图都拿不到是本末倒置(`path` 返回 null 让它看得出来)。
 ⚠ 文件名必须过 `sidecarPathFor` 的正则,否则图库压根不去请求侧写——症状是**图在、提示词空白、
 且没有任何报错**(`storage.test.ts` 把上传用的真实文件名喂回 `sidecarPathFor` 锁这条)。
+侧写里的 size 记**实际出图方向**(`GenerateOutput.size`):用户锁了画幅(§6)时它与请求的 size 不同,
+图库里的 tag 要如实描述这张图。返回值结构不变(不加字段,apiVersion 仍为 1)。
 
 **变更通知**:`register.ts` 只 `watch(() => charTagLib.entries, …, {deep:true})` —— 角色库是
 **响应式派生结果**,一律 watch 它本身,不去逐个订阅那些**导致**它变的事件(切聊天/删楼/滑动/
@@ -1004,7 +1066,7 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 出图链路中段(闸门 / 后端分派 / 就绪判据) | src/generate.ts(卡片与公开接口共用;**绕过它就绕过了 NAI 闸门**) |
 | 设置项(新增字段/默认值/迁移) | src/state/settings.ts(类型 + defaults + normalize 三处) |
 | 设置窗口 UI | src/pages/settings/index.vue |
-| 提示词内置默认(破限/规范/思维链/预填充) | src/state/settings.ts 的 `DEFAULT_*` 常量(NAI 那对是 `DEFAULT_NAI_V5_*`) |
+| 提示词内置默认(破限/规范/思维链) | src/state/settings.ts 的 `DEFAULT_*` 常量(NAI 那对是 `DEFAULT_NAI_V5_*`) |
 | 自动 tag 触发条件 / 去重 / 重试 | src/autoTag/runner.ts + generationGate.ts(生成门配对) |
 | API 错误/空回正文不触发副 API | src/autoTag/triage.ts(纯函数,规则同源 ST-Quicker-Api response-triage;接入点 runner.runForFloor 第 1.5 步) |
 | 发给 LLM 的消息组装(顺序/内容) | src/autoTag/prompt.ts(NAI 一律走 DEFAULT_NAI_V5_SPEC:Base+Character 双提示) |
@@ -1036,6 +1098,9 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 图被删后卡片不显示破图 | src/floor/missingImages.ts(模块级 reactive 册,HEAD 确认 404 才落册)+ Card.vue 的 `liveHistory` / `liveStale` / `@error` |
 | 图库点图看提示词 | src/floor/storage.ts 的 `sidecarFileName` / `sidecarPathFor`(存图时写侧写)+ gallery/index.vue(当前聊天读 extra、其余取侧写;展示口径 `formatPromptText`) |
 | 画幅方向 / 尺寸解析 | src/backends/size.ts(刻意不依赖 settings) |
+| 画幅锁(固定横/竖,各渠道尺寸旁) | src/state/settings.ts 的 `activeOrientationLock`(NAI `nai.orientationLock` / ComfyUI 每套预设的 `orientationLock`)+ size.ts 的 `effectiveOrientation`;出图生效在 generate.ts,协议改口在 prompt.ts 的 `sizeRule`(UI 在 NaiPanel / ComfyUIPanel) |
+| 「生成自然语言」开关(ComfyUI 每套预设 / NAI 渠道级) | src/autoTag/prompt.ts 的 `autoTagProfile`(协议与 runner 共用)+ `expandNlSections`(`{{#nl}}`/`{{^nl}}` 条件段);NAI 字段 `settings.nai.naturalLanguage` |
+| 楼层图片显示大小(聊天里显示多大,不是出图分辨率) | src/state/settings.ts 的 `IMAGE_DISPLAY_SIZES` / `imageDisplayMaxHeight` + Card.vue(`data-capped`)+ card.css「显示大小封顶」段(UI 在 settings/index.vue) |
 | 楼层卡片显示 / 水合 / 状态机 | src/floor/hydrate.ts + Card.vue |
 | 手动编辑生图提示词(卡片 ⋯ 铅笔) | src/floor/PromptEditor.vue + promptEditor.ts(序列化在 st/imageTagRegex.ts) |
 | 「AI 重写提示词」(只重写某一槽位的提示词,画的仍是原来那个瞬间) | src/autoTag/runner.ts 的 `requestSlotTag` + src/autoTag/slotPlan.ts;入口在编辑弹窗(PromptEditor.vue + promptEditor.ts);运行态与「关窗不中断/重开续上」src/floor/tagPlanState.ts |

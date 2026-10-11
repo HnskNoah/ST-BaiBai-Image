@@ -1,5 +1,5 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
-import { channelCaps } from '@/backends/channelCaps';
+import { activeChannelTraits } from '@/backends/channelTraits';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
   applyPositionedCharRefs,
@@ -215,9 +215,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     abort(floor, 'chat-excluded', opts.manual, '该角色已被排除，不生成生图 tag');
     return;
   }
-  // 渠道能力算一次,验收门(建档 nl 校验)与出图前守卫(taglint)共用同一份——两处各算
-  // 各的迟早会漂:协议说只写 tag,验收却还在要 nl(见 backends/channelCaps.ts)。
-  const caps = channelCaps(settings.defaultBackend, settings.nai.model);
+  // 渠道特性算一次,验收门(建档 nl 校验)与出图前守卫(taglint)共用同一份——两处各算
+  // 各的迟早会漂:协议说只写 tag,验收却还在要 nl(见 backends/channelTraits.ts)。
+  const traits = activeChannelTraits();
   const message = context.chat[floor];
   const messageDiagnostic = message
     ? {
@@ -339,6 +339,8 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const promptOptions = slot
       ? { ...settings.autoTag, minImages: 1, maxImages: 1 }
       : settings.autoTag;
+    // 协议形态用的就是上面开跑时快照的那份 traits:写协议、验收与收尾同一份,
+    // 用户中途拨开关也不会前后不一。
     const messages = await buildAutoTagMessages(
       context,
       floor,
@@ -347,6 +349,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       preparedTarget,
       anchors.text,
       slot ? buildSlotTaskNote(rawSource, slot.seq) : '',
+      traits,
     );
     const channel = getTagGenChannel();
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
@@ -373,13 +376,15 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             promptOptions.maxImages,
           );
           // Character Prompts 协议(NAI 官方 4.5/V5)要求 new 建档必须带 nl 外貌描述。
-          // 判据取 caps.charPrompts,与 prompt.ts 下发 newCharacterNlRule 的那一份同源:
-          // 规范没要求 nl 的渠道就不能在这里拦。latent 恒否——它不收 v4_prompt 双层结构,
+          // 判据取 traits.charPrompts && traits.nl,与 prompt.ts 下发 newCharacterNlRule 的那一份
+          // 同源:规范没要求 nl 的渠道就不能在这里拦。latent 恒否——它不收 v4_prompt 双层结构,
           // 档案 nl 只是给 nl 段供素材的可选记录,拦了每条建档都会被拒、自动 tag 必然失败。
+          // NAI 关了自然语言时协议同样不要 nl,也就不验。
           // 单槽重写(!slot)同样不在此列:本次 changes 会被丢弃,校验它只白耗重试次数。
           if (
             !slot &&
-            caps.charPrompts &&
+            traits.charPrompts &&
+            traits.nl &&
             candidate.changes.some(change => change.field === 'new' && !change.nl?.trim())
           ) {
             throw new Error('NAI 4.5/V5 建档必须附带 nl 外貌描述');
@@ -443,6 +448,14 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     // @占位符按正文位置替换：变化前图片用旧档，变化位置及之后用新档。
     const unknownNames = new Set<string>();
     for (const image of plan.images) {
+      // 协议只要 tag 时,模型照写的 nl 一律丢掉(ComfyUI 关自然语言同一口径):
+      // 留着它就会照常发送,开关等于没关。渠道锁了方向则统一改记锁定值——出图本就按锁走,
+      // 这里只是让 tag 里记的方向与实际画幅一致。
+      if (!traits.nl) {
+        image.nl = '';
+        for (const character of image.characters) character.nl = '';
+      }
+      if (traits.lockedSize) image.size = traits.lockedSize;
       const tagRes = applyPositionedCharRefs(
         image.tag,
         anchors.entries,
@@ -499,7 +512,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     // nl 中文 / 同人括号未转义。放在 @占位符替换**之后**是必须的——库里的 fandom 存的是未转义
     // 原文(存储形态,见 DEFAULT_NAI_THINKING 的 B 段),落 tag 才转义;替换进来的库值也得过网,
     // 否则「只写 @角色名」这条路径会绕过转义。
-    const lintRes = lintImagePlan(plan.images, { mode: caps.lintMode, where: `第 ${floor} 楼` });
+    const lintRes = lintImagePlan(plan.images, { mode: traits.lintMode, where: `第 ${floor} 楼` });
     if (lintRes.fixed) console.info(`[柏宝绘] tag lint 修正 ${lintRes.fixed} 处`, lintRes.details);
 
     // 联动加词(见 autoTag/tagRules.ts):命中触发词就往该画面的 tag / negative 追加配套词。

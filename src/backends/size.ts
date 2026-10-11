@@ -76,3 +76,28 @@ export function pickSize(pair: SizePair, orientation: Orientation): string {
   const text = orientation === 'landscape' ? pair.landscapeSize : pair.portraitSize;
   return (text ?? '').trim();
 }
+
+/**
+ * 画幅锁:'auto' = 由自动 tag 按画面判定横竖(默认,即改动前的行为);
+ * 'portrait' / 'landscape' = 该渠道一律出这个方向。
+ *
+ * 归属与尺寸对相同(NAI 渠道级一份、ComfyUI 每套工作流各一份),面板上也与横竖尺寸并排:
+ * 它本质是「这对尺寸只用哪一格」。从前的替代做法是把两格填成同一个尺寸——
+ * 出图是统一了,AI 却仍按横竖判据取景(锁竖时照样为群像构思宽画面)。
+ */
+export type OrientationLock = 'auto' | Orientation;
+
+/** 容忍式归一:只认两个方向值,其余(含老数据缺字段)一律 'auto' = 维持改动前的行为。 */
+export function normalizeOrientationLock(value: unknown): OrientationLock {
+  return value === 'portrait' || value === 'landscape' ? value : 'auto';
+}
+
+/**
+ * 实际出图方向:锁了用锁定方向,否则用 tag 里记的那个(AI 判定或用户手改)。
+ *
+ * 只在出图时覆盖,**tag 原文不改写**:promptHash 吃的是 tag 原文,批量改写会让老图
+ * 无辜变成「旧提示词」;解锁后每张图仍按自己记的方向出。
+ */
+export function effectiveOrientation(lock: OrientationLock, size: Orientation): Orientation {
+  return lock === 'auto' ? size : lock;
+}

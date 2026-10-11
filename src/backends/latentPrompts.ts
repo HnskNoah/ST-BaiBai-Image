@@ -11,7 +11,7 @@
  * 现在两个渠道各自一份:本模块归 latent,settings.ts 的 DEFAULT_NAI_* 交回上游维护
  * (NAI 遗留单串分支的回归锁)。改 NAI 渠道的规范请改 DEFAULT_NAI_V5_SPEC。
  *
- * 【刻意不带宏】latent 恒吃自然语言(caps.nlAlways,见 backends/channelCaps.ts),nl 段
+ * 【刻意不带宏】latent 恒吃自然语言(traits.nlAlways,见 backends/channelTraits.ts),nl 段
  * 无条件写死在文本里,不需要条件段——少一层展开就少一处会漂的接线。
  */
 

@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import { cancelFloorTags } from '@/autoTag/runner';
-import type { Orientation } from '@/backends/size';
+import { effectiveOrientation, type Orientation } from '@/backends/size';
 import Icon from '@/components/Icon.vue';
 import { confirmDialog } from '@/components/confirm';
 import { backendStatus, decideSeed, generateImage } from '@/generate';
@@ -34,7 +34,8 @@ import {
   type BbiImageEntry,
 } from '@/floor/storage';
 import { isTagPlanning } from '@/floor/tagPlanState';
-import { activeComfyPreset, settings } from '@/state/settings';
+import { formatGenerationMeta } from '@/generationMeta';
+import { activeComfyPreset, activeOrientationLock, imageDisplayMaxHeight, settings } from '@/state/settings';
 import { filterCharTagByName } from '@/state/charTags';
 import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
 import { copyText } from '@/st/clipboard';
@@ -64,7 +65,7 @@ const props = defineProps<{
   /** tag 原文解析出的动态负面部分(无则空串;生成时写入 %negative_prompt% 占位符)。 */
   negative: string;
   characters: ImageCharacterPrompt[];
-  /** 画幅方向(模型判定,随 tag 持久化):决定用渠道配置里的竖屏还是横屏尺寸。 */
+  /** 画幅方向(模型判定,随 tag 持久化):决定用渠道配置里的竖屏还是横屏尺寸;渠道锁了横竖时以锁为准(见 effectiveSize)。 */
   size: Orientation;
   /**
    * 写入时盖章的画师串显示名(纯展示;老正文无此键 → 空串,提示词展示串不加前缀)。
@@ -163,6 +164,19 @@ const latentActive = computed(() => settings.defaultBackend === 'latent');
  */
 const configured = computed(() => backendStatus().configured);
 
+/**
+ * 实际出图方向:当前渠道锁了横竖就按锁(settings.ts 的 activeOrientationLock),否则按 tag 里记的。
+ * generate.ts 出图时本就会按锁改写;这里再算一遍,是让历史记录与无图占位的比例跟真正出的图
+ * 一致——否则锁了横屏,占位还按 tag 里的竖屏留出一大块。tag 原文不改(改了 promptHash 就变)。
+ */
+const effectiveSize = computed(() => effectiveOrientation(activeOrientationLock(), props.size));
+
+/**
+ * 设置项「楼层图片显示大小」:图片显示高度上限(px;null = 铺满楼层宽度,0.3.0 及以前的样子)。
+ * 只经 data-capped + CSS 变量交给 card.css 处理,不量图片尺寸。
+ */
+const displayMaxHeight = computed(() => imageDisplayMaxHeight(settings.ui.imageDisplaySize));
+
 const current = computed(() => liveHistory.value[index.value] ?? null);
 /** 提示词全文:复制、灯箱、展开区共用。口径与图库同源(st/imageTagRegex.ts)。 */
 const promptText = computed(() =>
@@ -180,6 +194,14 @@ const promptText = computed(() =>
  */
 const shownEntry = computed(() => (liveHistory.value.length ? current.value : liveStale.value));
 const imageSrc = computed(() => shownEntry.value?.path ?? '');
+/**
+ * 灯箱展示用:提示词 + 只读元信息(画师串/vibe/采样参数)。
+ * 与卡片内可编辑的 `promptText` 分开 —— 元信息只读,绝不能混进可写回的 tag 文本。
+ */
+const lightboxPrompt = computed(() => {
+  const meta = shownEntry.value?.meta;
+  return [promptText.value, meta ? formatGenerationMeta(meta) : ''].filter(Boolean).join('\n\n');
+});
 
 /**
  * `<img>` 加载失败:确认确实是 404 再落册,让上面那些 live* 把它摘掉。
@@ -268,7 +290,7 @@ async function generate(): Promise<void> {
       ...character,
       tag: filterCharTagByName(character.name, character.tag),
     })),
-    size: props.size,
+    size: effectiveSize.value,
   };
   // NAI 系(latent 与 nai 同为阻塞式 POST、无服务端队列)需要闸门排队 → 先显示「排队中」;
   // ComfyUI 有服务端队列,直接进 generating。闸门本身在 generateImage 里(见 generate.ts),
@@ -307,7 +329,7 @@ async function generate(): Promise<void> {
     );
     // 闸门、后端分派都在 generateImage 里(公开接口走同一条路,见 generate.ts);
     // 本组件只把进度回调接到自己的槽位运行态上。
-    const { result } = await generateImage({ ...job, seed }, signal, {
+    const { result, meta } = await generateImage({ ...job, seed }, signal, {
       onStart: () => setGenPhase(slot, token, 'generating'),
       onQueue: ahead => setQueueAhead(slot, token, ahead),
       onRetry: retry => setGenRetry(slot, token, retry),
@@ -322,7 +344,7 @@ async function generate(): Promise<void> {
     }
     // 落盘:图片进 ST 文件系统 + extra 写指针。成功后重水合,
     // 卡片从 extra 恢复为 ready(blob/dataURL 生命周期随之结束)。
-    await saveImageResult(job.messageId, job.swipeId, job.seq, job.tag, seed, result);
+    await saveImageResult(job.messageId, job.swipeId, job.seq, job.tag, seed, result, meta);
     result.revoke();
     if (historyId !== null) safeHistory(() => finishImage(historyId!));
     // 先清运行态再重水合:重水合会重建本组件,清完才不会带着 generating 复活
@@ -354,7 +376,7 @@ function openImage(): void {
   const at = { messageId: props.messageId, swipeId: props.swipeId };
   openLightbox({
     src: entry.path,
-    prompt: promptText.value,
+    prompt: lightboxPrompt.value,
     filename: downloadFileName(entry),
     onDelete: () => void removeEntry(entry, at),
   });
@@ -469,7 +491,12 @@ onMounted(() => {
 <template>
   <!-- 沉浸式设计:图即卡片。无边框/无背景面板/无品牌栏,控件悬浮在图上,
        桌面 hover 浮现、触屏常驻淡显;提示词收进悬浮按钮唤起的面板,平时零占位。 -->
-  <div class="bbi-figure" :data-phase="phase">
+  <div
+    class="bbi-figure"
+    :data-phase="phase"
+    :data-capped="displayMaxHeight ? '1' : ''"
+    :style="displayMaxHeight ? { '--bbi-figure-max-h': `${displayMaxHeight}px` } : undefined"
+  >
     <!-- 折叠态:收成一条细条,职责只有「占位 + 展开」——整条点击展开,
          生成中/出错在条上给状态但不放操作按钮(要操作先展开)。 -->
     <button
@@ -494,7 +521,7 @@ onMounted(() => {
          高度归零 + 淡出,<img> 不卸载——展开瞬间图就在,不会重新发起请求。 -->
     <div class="bbi-figure__collapse" :data-collapsed="collapsed ? '1' : ''">
       <div class="bbi-figure__collapse-inner">
-    <div class="bbi-figure__stage" :data-size="size" :data-placeholder="imageSrc ? '' : '1'">
+    <div class="bbi-figure__stage" :data-size="effectiveSize" :data-placeholder="imageSrc ? '' : '1'">
       <img
         v-if="imageSrc"
         class="bbi-figure__img"
@@ -535,8 +562,8 @@ onMounted(() => {
       <!-- 提示词已改:角标提示,不再整图压暗 -->
       <span v-if="isStale && !busy && !planning" class="bbi-figure__badge">旧提示词</span>
 
-      <!-- 悬浮操作组:⋯ 收纳钮钉在右上角常驻淡显;桌面 hover 在其左侧横向浮现一排,
-           触屏点开在其下方竖排展开,点任意操作后自动收起(图片平时只有一颗小点) -->
+      <!-- 悬浮操作组:⋯ 收纳钮钉在右上角常驻淡显;桌面 hover、触屏点开,菜单都在其左侧横向排开
+           (窄图放不下就折行),点任意操作后自动收起(图片平时只有一颗小点) -->
       <span v-if="!busy && !planning" class="bbi-figure__actions" :data-open="menuOpen ? '1' : ''">
         <button
           class="bbi-fab bbi-figure__more"

@@ -47,7 +47,6 @@ const channel: ApiChannel = {
   maxTokens: 1024,
   timeoutSec: 60,
   stream: false,
-  prefill: true,
   excludeParams: [],
   reasoningEffort: '',
 };

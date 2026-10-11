@@ -6,7 +6,7 @@
  * size 词混进 tag 串、nl 混中文这几类跨模型版本稳定复发。本模块在 parseImagePlan 之后、
  * 写回正文之前做**零语义**的机械修正——模型不听话时,这几条硬规则说了算。
  *
- * 【模式】按规范族分三种,判据在 backends/channelCaps.ts 的 caps.lintMode(由规范族派生):
+ * 【模式】按规范族分三种,判据在 backends/channelTraits.ts 的 traits.lintMode(由规范族派生):
  * - latent :单串口径,且规范**禁止 tag 区归属**(归属全在 nl)。绑定类规则只剥「不许接 on
  *           的词」,合法形态(`white dress on green hair girl`)不动——剥了会丢归属,
  *           而归属本该在 nl,那属于规范层的问题、不该由机械规则替它决定。
@@ -18,7 +18,7 @@
  * 命中即修正并在 details 里留痕(调用方 console.info 上报,不弹 toast)。
  */
 
-/** 规范族(与 channelCaps 的 lintMode 同源,由 spec 族派生)。 */
+/** 规范族(与 channelTraits 的 lintMode 同源,由 spec 族派生)。 */
 export type TagLintMode = 'latent' | 'comfyui' | 'v5';
 
 export interface LintableImage {
