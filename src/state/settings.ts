@@ -127,8 +127,8 @@ export type NaiModel =
  * 可选模型:只留 4.5 与 V5。两代共用同一套「Base + 原生 Character Prompts + 英文自然
  * 语言」协议,收窄后 naiSupportsCharacterPrompts 对全部可选模型恒真 —— NAI 渠道自身
  * 不再走单串 tag 的 DEFAULT_NAI_SPEC / DEFAULT_NAI_THINKING,设置页相应撤掉了入口。
- * 但 **latent 渠道恒走单串口径**(站点收扁平串:tag + nl 拼一段,见 autoTag/prompt.ts 的
- * characterPromptsOn),回落链 latentSpec → naiSpec(存量旧值)→ DEFAULT_NAI_SPEC,
+ * 但 **latent 渠道恒走单串口径**(站点收扁平串:tag + nl 拼一段,见 backends/channelCaps.ts
+ * 的 caps.charPrompts),回落链 latentSpec → naiSpec(存量旧值)→ DEFAULT_NAI_SPEC,
  * 那两份内置模板经此仍然可达,并作为「Latent 规范/思维链」重新有了编辑入口。
  *
  * ⚠ 存量选着已下线模型的配置会被 normalizeNai 回落到 naiDefaults().model:画风、Anlas
@@ -366,7 +366,7 @@ export interface LatentSettings extends BackendConn {
   /**
    * 仅作副 API 规范族的历史字段。**站点无模型参数**(底层 Anima 系,面板无模型 UI),
    * 但**吃自然语言**(Qwen 编码器):Character Prompts 双层结构对 latent 恒关
-   * (characterPromptsOn),nl 与 tag 拼在同一个扁平串里下发(latentFlatPrompt)。
+   * (caps.charPrompts),nl 与 tag 拼在同一个扁平串里下发(latentFlatPrompt)。
    * 字段保留只为 latentAsNai 映射成 NaiSettings 时形状完整,值恒默认 4.5-full。
    */
   model: NaiModel;

@@ -1,5 +1,5 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
-import { naiSupportsCharacterPrompts } from '@/backends/nai';
+import { channelCaps } from '@/backends/channelCaps';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
   applyPositionedCharRefs,
@@ -8,7 +8,7 @@ import {
 } from '@/autoTag/charAnchors';
 import { prepareTargetText } from '@/autoTag/clean';
 import { beginGeneration, clearGeneration, consumeGeneration } from '@/autoTag/generationGate';
-import { buildAutoTagMessages, tagLintMode } from '@/autoTag/prompt';
+import { buildAutoTagMessages } from '@/autoTag/prompt';
 import { rebaseImagePositions, type RebaseReport } from '@/autoTag/rebase';
 import { lintImagePlan } from '@/autoTag/taglint';
 import { buildSlotTaskNote } from '@/autoTag/slotPlan';
@@ -215,6 +215,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     abort(floor, 'chat-excluded', opts.manual, '该角色已被排除，不生成生图 tag');
     return;
   }
+  // 渠道能力算一次,验收门(建档 nl 校验)与出图前守卫(taglint)共用同一份——两处各算
+  // 各的迟早会漂:协议说只写 tag,验收却还在要 nl(见 backends/channelCaps.ts)。
+  const caps = channelCaps(settings.defaultBackend, settings.nai.model);
   const message = context.chat[floor];
   const messageDiagnostic = message
     ? {
@@ -369,17 +372,14 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             promptOptions.minImages,
             promptOptions.maxImages,
           );
-          // NAI 官方 4.5/V5 的 Character Prompts 协议要求 new 建档必须带 nl 外貌描述:
-          // 三条件缺一不可——渠道是 NAI、模型支持 CP(与 newCharacterNlRule 下发判据
-          // 同源,NAI3 等旧模型规范不要求 nl 就不能拦)、且确有缺 nl 的建档。
-          // latent 不在此列:它不收 v4_prompt 双层结构(见 prompt.ts characterPromptsOn
-          // 注释),档案 nl 只是给 nl 段供素材的可选记录,协议不强制——若在这里拦,
-          // 每条建档都会被拒,自动 tag 必然失败。
+          // Character Prompts 协议(NAI 官方 4.5/V5)要求 new 建档必须带 nl 外貌描述。
+          // 判据取 caps.charPrompts,与 prompt.ts 下发 newCharacterNlRule 的那一份同源:
+          // 规范没要求 nl 的渠道就不能在这里拦。latent 恒否——它不收 v4_prompt 双层结构,
+          // 档案 nl 只是给 nl 段供素材的可选记录,拦了每条建档都会被拒、自动 tag 必然失败。
           // 单槽重写(!slot)同样不在此列:本次 changes 会被丢弃,校验它只白耗重试次数。
           if (
             !slot &&
-            settings.defaultBackend === 'nai' &&
-            naiSupportsCharacterPrompts(settings.nai.model) &&
+            caps.charPrompts &&
             candidate.changes.some(change => change.field === 'new' && !change.nl?.trim())
           ) {
             throw new Error('NAI 4.5/V5 建档必须附带 nl 外貌描述');
@@ -499,7 +499,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     // nl 中文 / 同人括号未转义。放在 @占位符替换**之后**是必须的——库里的 fandom 存的是未转义
     // 原文(存储形态,见 DEFAULT_NAI_THINKING 的 B 段),落 tag 才转义;替换进来的库值也得过网,
     // 否则「只写 @角色名」这条路径会绕过转义。
-    const lintRes = lintImagePlan(plan.images, { mode: tagLintMode(), where: `第 ${floor} 楼` });
+    const lintRes = lintImagePlan(plan.images, { mode: caps.lintMode, where: `第 ${floor} 楼` });
     if (lintRes.fixed) console.info(`[柏宝绘] tag lint 修正 ${lintRes.fixed} 处`, lintRes.details);
 
     // 联动加词(见 autoTag/tagRules.ts):命中触发词就往该画面的 tag / negative 追加配套词。

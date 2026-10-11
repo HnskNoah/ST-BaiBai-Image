@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAutoTagMessages, characterPromptsOn, tagLintMode } from '@/autoTag/prompt';
+import { buildAutoTagMessages } from '@/autoTag/prompt';
 import {
   activeComfyPreset,
   settings,
@@ -819,50 +819,9 @@ describe('auto tag prompt', () => {
     }
   });
 
-  // 验收门判据(runner.ts 引用):Character Prompts 只对 NAI 官方渠道生效,
-  // latent 恒关——站长确认站点不支持自然语言,与模型名无关。
-  it('characterPromptsOn: true only for NAI 4.5/V5 models, always false for latent', () => {
-    const oldBackend = settings.defaultBackend;
-    const oldNaiModel = settings.nai.model;
-    try {
-      settings.defaultBackend = 'latent';
-      settings.latent.model = 'nai-diffusion-4-5-full';
-      expect(characterPromptsOn()).toBe(false);
-
-      settings.defaultBackend = 'nai';
-      settings.nai.model = 'nai-diffusion-4-5-full';
-      expect(characterPromptsOn()).toBe(true);
-      settings.nai.model = 'nai-diffusion-3';
-      expect(characterPromptsOn()).toBe(false);
-    } finally {
-      settings.defaultBackend = oldBackend;
-      settings.nai.model = oldNaiModel;
-    }
-  });
-
-  // taglint 的模式判据(见 autoTag/taglint.ts):与 backendPromptSpec 同源,按规范族分流。
-  // 顺序承重——characterPromptsOn 只对 nai 为真,先判 NAI 系会把 V5 送进单串规则。
-  it('tagLintMode: routes by spec family (v5 / latent / comfyui)', () => {
-    const oldBackend = settings.defaultBackend;
-    const oldNaiModel = settings.nai.model;
-    try {
-      settings.defaultBackend = 'latent';
-      expect(tagLintMode()).toBe('latent');
-
-      settings.defaultBackend = 'comfyui';
-      expect(tagLintMode()).toBe('comfyui');
-
-      settings.defaultBackend = 'nai';
-      settings.nai.model = 'nai-diffusion-5-full';
-      expect(tagLintMode()).toBe('v5');
-      // 已下线模型的遗留单串分支与 latent 共用 DEFAULT_NAI_SPEC,故同走 latent 规则
-      settings.nai.model = 'nai-diffusion-4-full';
-      expect(tagLintMode()).toBe('latent');
-    } finally {
-      settings.defaultBackend = oldBackend;
-      settings.nai.model = oldNaiModel;
-    }
-  });
+  // 判据层(Character Prompts 支持面、taglint 模式、规范族)已收进 backends/channelCaps.ts,
+  // 相应断言移到 channelCaps.test.ts——那是纯函数,不必改全局 settings 再还原。
+  // 本文件只留「判据落到消息文本上」的行为断言(下面各用例)。
 
   // 原版 NAI4 的 char_captions 恒为空(nai.ts),协议形态与 ComfyUI 一样是单条 tag 串,
   // 一样需要邻接绑定——但 NAI 规范里此前一条多人规则、一个示例都没有。
