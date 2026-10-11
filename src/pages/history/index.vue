@@ -89,11 +89,27 @@ function tokenTitle(record: LlmRecord): string {
     : '上游返回的真实用量（usage）';
 }
 
+/**
+ * 返回段的文本。三种「没有原文」的原因必须分得清,否则又会回到
+ * 「到底是没返回还是界面没显示」的困惑(移植自 fork 侧 ff3637f):
+ * - 进行中:还没回来,不是空;
+ * - 已取消:用户主动中断,上游没给完整回复;
+ * - 其余(连接失败/超时/空体):真的空。
+ */
+function responseText(record: LlmRecord): string {
+  if (record.response) return record.response;
+  if (record.status === 'running') return '（等待返回…）';
+  if (record.status === 'aborted') return '（已取消，未返回）';
+  return '（返回为空）';
+}
+
 /** 把一条记录摊成「按顺序的若干段」——展开区就是照这个顺序渲染的。 */
 function segments(record: HistoryRecord): Segment[] {
   if (record.kind === 'llm') {
     const out: Segment[] = record.messages.map(m => ({ label: m.role, text: m.content }));
-    if (record.response) out.push({ label: '返回', text: record.response });
+    // 返回段**恒推**:解析/校验失败时 HTTP 其实已经成功,原文就在 record.response 里,
+    // 旧写法 `if (record.response)` 把它藏了 —— 那正是「失败时看不到返回」的原因。
+    out.push({ label: '返回', text: responseText(record) });
     return out;
   }
   const out: Segment[] = [{ label: '正向提示词', text: record.prompt }];
