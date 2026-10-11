@@ -364,4 +364,36 @@ describe('Latent 渠道设置', () => {
       buildNaiParameters(view, { prompt: '1girl', seed: 42 }),
     ).toThrow(/64/);
   });
+
+  // latentAsNai 用 `...settings.nai` 打头,故 NaiSettings 里 latent 没有、函数体也没显式
+  // 覆盖的键会**静默继承**——编译不报错,后果是 NAI 面板的开关串到 latent 出图上
+  // (上游 0.3.2 给 NaiSettings 加的 naturalLanguage 就是这一类)。
+  // 这条是那道闸:逐键给 NAI 渠道打哨兵值,看哪些渗进视图。上游每加一个键,这里就红一次,
+  // 逼人当场决定 latent 该覆盖它还是有意继承(有意继承就加进下面的允许清单并写明理由)。
+  // 键集取 hydrate 后的默认键(上游新增字段都会落进 naiDefaults,故逃不过这道闸);
+  // connPresets / activeConnId 是存量死键、不在默认键集里,零消费,继承与否都不影响出图。
+  it('latentAsNai:不静默继承 NAI 渠道的键——新增键必须显式决定归属', async () => {
+    const { settings, latentAsNai } = await hydrateWithLatent({});
+    // 有意继承的键(必须是零消费或确已与 latent 无关的存量键,写明理由)。当前为空:
+    // NaiSettings 的每个默认键要么 latent 自己也有(...latent 覆盖掉),要么函数体显式覆盖。
+    const INHERITED_FROM_NAI: string[] = [];
+    const SENTINEL = '__nai_sentinel__';
+    const nai = settings.nai as unknown as Record<string, unknown>;
+    // 防空转:键集若塌成 0(比如 hydrate 口径变了),上面那条闸就形同虚设、还会绿
+    expect(Object.keys(nai).length).toBeGreaterThan(10);
+    const originals = new Map<string, unknown>();
+    const leaked: string[] = [];
+    try {
+      for (const key of Object.keys(nai)) {
+        originals.set(key, nai[key]);
+        nai[key] = SENTINEL;
+        const view = latentAsNai() as unknown as Record<string, unknown>;
+        if (view[key] === SENTINEL) leaked.push(key);
+        nai[key] = originals.get(key);
+      }
+    } finally {
+      for (const [key, value] of originals) nai[key] = value;
+    }
+    expect(leaked.sort()).toEqual([...INHERITED_FROM_NAI].sort());
+  });
 });

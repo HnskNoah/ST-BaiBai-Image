@@ -55,9 +55,34 @@ export interface ChannelCaps {
    * 那是运行时判据,不在本表里(见 prompt.ts 的 negativeOn)。
    */
   frameNegative: boolean;
+  /**
+   * 出图是否走 NAI 那台机器:latent 经 latentAsNai 映射成 NaiSettings 后复用
+   * generateNaiImage,故与 nai 同为真。同时决定并发闸门归属(两者都是阻塞式 POST、
+   * 无服务端队列,共用 floor/genQueue.ts 的 NAI 槽位)。
+   */
+  usesNaiMachine: boolean;
+  /**
+   * 提示词发扁平单串:tag 与 nl 拼成一段,剥掉 v4_prompt / v4_negative_prompt /
+   * characterPrompts 双层结构(兼容层不认那套;characters[].tag 的内容副 API 已按
+   * 邻接绑定写进主串,丢弃的是冗余副本而非信息)。
+   */
+  flatPrompt: boolean;
+  /**
+   * 画幅的发送形态:'pixels' = width/height 数字对;'orientationEnum' = 站点原生枚举
+   * (openapi GenerationRequest.resolution,只有 portrait/landscape 两档,无 square)。
+   * 宽高在本地仍用于 skip_cfg 等派生计算,枚举形态只把它们从载荷里移除。
+   */
+  sizeEncoding: 'pixels' | 'orientationEnum';
+  /** 尺寸豁免 64 倍数协议校验(站点固定档 920×1536 不是 64 的倍数;格式与范围检查仍生效)。 */
+  allowNon64Size: boolean;
+  /**
+   * 429 视为配额耗尽而非限流:站点 429 = 周配额用完(openapi quota_exhausted),
+   * 退避等不来额度,与配置错误同类立刻抛;NAI 官方 429 是限流,照旧退避。
+   */
+  noRetry429: boolean;
 }
 
-/** latent 站点:单串 + nl,不吃双层结构,画面级负面生效。 */
+/** latent 站点:单串 + nl,不吃双层结构,画面级负面生效,出图复用 NAI 机器但载荷按站点原生面改。 */
 const LATENT: ChannelCaps = {
   channel: 'latent',
   spec: 'latent',
@@ -66,6 +91,11 @@ const LATENT: ChannelCaps = {
   charPrompts: false,
   nlAlways: true,
   frameNegative: true,
+  usesNaiMachine: true,
+  flatPrompt: true,
+  sizeEncoding: 'orientationEnum',
+  allowNon64Size: true,
+  noRetry429: true,
 };
 
 const COMFY: ChannelCaps = {
@@ -76,6 +106,11 @@ const COMFY: ChannelCaps = {
   charPrompts: false,
   nlAlways: false,
   frameNegative: false,
+  usesNaiMachine: false,
+  flatPrompt: false,
+  sizeEncoding: 'pixels',
+  allowNon64Size: false,
+  noRetry429: false,
 };
 
 /**
@@ -90,7 +125,21 @@ const WEBUI: ChannelCaps = {
   charPrompts: false,
   nlAlways: false,
   frameNegative: false,
+  usesNaiMachine: false,
+  flatPrompt: false,
+  sizeEncoding: 'pixels',
+  allowNon64Size: false,
+  noRetry429: false,
 };
+
+/** NAI 官方渠道:出图侧全按协议默认走,差异只在模型决定的 Character Prompts 支持面。 */
+const NAI_OFFICIAL = {
+  usesNaiMachine: true,
+  flatPrompt: false,
+  sizeEncoding: 'pixels',
+  allowNon64Size: false,
+  noRetry429: false,
+} as const;
 
 /**
  * 取当前渠道的能力表。
@@ -111,5 +160,6 @@ export function channelCaps(channel: BackendId, naiModel: string): ChannelCaps {
     charPrompts,
     nlAlways: false,
     frameNegative: false,
+    ...NAI_OFFICIAL,
   };
 }

@@ -23,6 +23,7 @@
  */
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
+import { channelCaps } from '@/backends/channelCaps';
 import { validateSimpleConfig } from '@/backends/comfyTemplates';
 import { generateComfyImage, randomSeed, type ComfyImageResult } from '@/backends/comfyui';
 import {
@@ -203,80 +204,82 @@ export async function generateImage(
   // 真漏到这里说明上游判据漂了,宁可明说也别发一个注定 401/404 的请求。
   if (!status.configured) throw new Error(status.reason || '出图后端未配置');
 
-  const isNai = status.backend === 'nai';
-  const isLatent = status.backend === 'latent';
+  const caps = channelCaps(status.backend, settings.nai.model);
   const characters = input.characters ?? [];
   // 支持与否由后端说了算:ComfyUI 恒不支持;NAI/Latent 看模型是否 4.5/V5
   const charactersApplied = characters.length > 0 && status.supportsCharacters;
 
-  // Latent 渠道:完全复用 NAI 机器(latentAsNai 映射后走 generateNaiImage),站点原生面
-  // 的差异全在这一段兜住(别搬回调用方——卡片与公开接口共用本函数)。
-  // 负面 = naiUndesiredContent 链(画师串绑定词 > 渠道级 negativePrompt > Anima 推荐默认
-  // latentDefaultUndesired,启用画师串时自动剔掉 artist name);本画面 <negative> **不在这里拼**
-  // ——链在 buildNaiParameters 里才求值,提前拼进 undesiredContent 会被画师串绑定值短路掉
-  // (`bound || …`),本画面负面整个丢失(实测:绑定 boundneg + 本画面 outdoor → 载荷只剩 boundneg)。
-  // 改由 values.negativeExtra 在链值之后合并 + 去重(见 nai.ts 的 mergeNegativePrompts)。
-  // 无本地长度上限(站长确认站点支持超 2000 字符)。
-  const latentView = isLatent ? latentAsNai(settings.latent) : null;
-
   let release: (() => void) | null = null;
   try {
     // 持槽:取到槽位后本函数内一直持有,直到 finally 释放。
-    // NAI 系(nai 与 latent)同为阻塞式 POST、无服务端队列,共用本闸门——latent 站点
-    // 在途超限是 409,堵住这一面同样要靠它(见 floor/genQueue.ts)。
-    if (isNai || isLatent) release = await acquireNaiSlot(signal);
+    // 走 NAI 机器的渠道(nai 与 latent)同为阻塞式 POST、无服务端队列,共用本闸门——
+    // latent 站点在途超限是 409,堵住这一面同样要靠它(见 floor/genQueue.ts)。
+    if (caps.usesNaiMachine) release = await acquireNaiSlot(signal);
     progress.onStart?.();
 
     const size = input.size ?? 'portrait';
-    const result = isNai
-      ? await generateNaiImage(
-          effectiveNai(),
+    let result: ComfyImageResult;
+    if (caps.usesNaiMachine) {
+      // Latent 渠道完全复用 NAI 机器:latentAsNai 映射成 NaiSettings 后走同一个
+      // generateNaiImage,站点原生面的差异全部由 caps 表达(别搬回调用方——卡片与公开
+      // 接口共用本函数)。出口自洽由 latentAsNai 保证:视图里只有 latent 自己的接入点,
+      // 不会被 settings.nai 的接入点串台(那会把 latent 的图发到官方站/镜像站去)。
+      const view = status.backend === 'latent' ? latentAsNai(settings.latent) : effectiveNai();
+      result = await generateNaiImage(
+        view,
+        {
+          prompt: input.prompt,
+          nl: input.nl ?? '',
           // characters 原样透传:不支持的模型由 buildNaiParameters 自己滤掉(同一口径
           // naiSupportsCharacterPrompts),在这儿再滤一遍只会多一处会漂的判据
-          { prompt: input.prompt, nl: input.nl ?? '', characters, seed: input.seed, size },
-          signal,
-          { onRetry: info => progress.onRetry?.({ attempt: info.attempt, max: info.max }) },
-        )
-      : latentView
-        ? await generateNaiImage(
-            latentView,
-            {
-              prompt: input.prompt,
-              nl: input.nl ?? '',
-              characters,
-              seed: input.seed,
-              size,
-              // 本画面负面:在链值之后合并 + 去重,不会被画师串绑定值顶掉
-              negativeExtra: (input.negative ?? '').trim(),
-              // Anima 分册回落:留空时替换「模型官方词」那一级(链在 buildNaiParameters 里求值)
-              negativeFallback: latentDefaultUndesired(latentView),
-            },
-            signal,
-            {
-              // 站点 429 = 周配额耗尽(openapi quota_exhausted),退避等不来额度,与配置
-              // 错误同类立刻抛;NAI 官方 429 = 限流,照旧退避。
-              noRetry429: true,
-              // 站点原生档尺寸(920×1536 等)不是 64 的倍数,豁免协议校验(格式/范围检查仍生效)。
-              allowNon64Size: true,
-              // 扁平 prompt 串:tag + nl 拼一段,剥掉 v4_prompt 系双层结构。
-              latentFlatPrompt: true,
-              // 站点原生面收分辨率枚举(portrait/landscape)而非宽高数字对。
-              latentResolution: size === 'landscape' ? 'landscape' : 'portrait',
-              onRetry: info => progress.onRetry?.({ attempt: info.attempt, max: info.max }),
-            },
-          )
-        : await generateComfyImage(
-            effectiveComfyConn(),
-            {
-              prompt: input.prompt,
-              nl: input.nl ?? '',
-              negative_prompt: input.negative ?? '',
-              seed: input.seed,
-              size,
-            },
-            signal,
-            { onQueue: ahead => progress.onQueue?.(ahead) },
-          );
+          characters,
+          seed: input.seed,
+          size,
+          ...(caps.frameNegative
+            ? {
+                // 负面 = naiUndesiredContent 链(画师串绑定词 > 渠道级 negativePrompt >
+                // Anima 推荐默认 latentDefaultUndesired,启用画师串时自动剔掉 artist name)。
+                // 本画面 <negative> **不在这里拼进 undesiredContent**——链在
+                // buildNaiParameters 里才求值,提前拼会被画师串绑定值短路掉(`bound || …`),
+                // 本画面负面整个丢失(实测:绑定 boundneg + 本画面 outdoor → 载荷只剩 boundneg)。
+                // 改由 negativeExtra 在链值之后合并 + 去重(见 nai.ts 的 mergeNegativePrompts)。
+                negativeExtra: (input.negative ?? '').trim(),
+                // Anima 分册回落:留空时替换「模型官方词」那一级。画面级负面目前只有站点
+                // 这一家有,故与分册回落共用一个 cap;真有第三个渠道要画面级负面而不吃这份
+                // 分册时,再把两件事拆开。
+                negativeFallback: latentDefaultUndesired(view),
+              }
+            : {}),
+        },
+        signal,
+        {
+          onRetry: info => progress.onRetry?.({ attempt: info.attempt, max: info.max }),
+          noRetry429: caps.noRetry429,
+          allowNon64Size: caps.allowNon64Size,
+          latentFlatPrompt: caps.flatPrompt,
+          // 站点原生面收分辨率枚举(portrait/landscape)而非宽高数字对;square 档不暴露。
+          latentResolution:
+            caps.sizeEncoding === 'orientationEnum'
+              ? size === 'landscape'
+                ? 'landscape'
+                : 'portrait'
+              : undefined,
+        },
+      );
+    } else {
+      result = await generateComfyImage(
+        effectiveComfyConn(),
+        {
+          prompt: input.prompt,
+          nl: input.nl ?? '',
+          negative_prompt: input.negative ?? '',
+          seed: input.seed,
+          size,
+        },
+        signal,
+        { onQueue: ahead => progress.onQueue?.(ahead) },
+      );
+    }
 
     // 退避文案到此为止:图已拿到,落盘还要一会儿,不该继续显示「稍后重试」
     progress.onRetry?.(null);

@@ -264,11 +264,13 @@ runForFloor(floor, opts)
 Latent 对是 `latentSpec` / `latentThinking`(设置页「Latent 规范/思维链」,2026-09 新增——
 此前 latent 实际在用的提示词没有任何编辑入口)。另有 `naiSpec` / `naiThinking` 是 4.5 以下的
 单串 tag 版本(含多人邻接绑定口径),NAI 渠道:可选模型只剩 4.5/V5 → `naiCharPromptsOn` 恒真 →
-那两份对 NAI 走不到;**Latent 渠道恒走单串口径**(站点收扁平串:tag 与 nl 拼一段,
-caps.charPrompts 对 latent 恒 false)——取值链 `latentSpec → naiSpec(旧键,存量自定义不失效)
-→ DEFAULT_NAI_SPEC/THINKING`,分流按能力表的规范族判定(`caps.spec === 'latent'`,见
-backends/channelCaps.ts;不再逐处问渠道名),NAI 渠道
-(含遗留单串分支)不读 latent 键。别按键名猜归属。
+那两份对 NAI 走不到,内置文本随上游维护(留作遗留单串分支的回归锁)。
+**Latent 渠道恒走单串口径**(站点收扁平串:tag 与 nl 拼一段,caps.charPrompts 对 latent 恒 false),
+取值链 `latentSpec → naiSpec(旧键,存量自定义不失效)→ DEFAULT_LATENT_SPEC/THINKING`——终端那两份
+是 latent **自己的**内置文本(`backends/latentPrompts.ts`),不借 `DEFAULT_NAI_*`:上游会改那两份
+(0.3.2 往里加了 `{{#nl}}` 条件段宏),共用一个常量等于让上游的改动顺着回落链流进 latent 的请求。
+分流按能力表的规范族判定(`caps.spec === 'latent'`,见 backends/channelCaps.ts;不再逐处问渠道名),
+NAI 渠道(含遗留单串分支)不读 latent 键。别按键名猜归属。
 
 ## 6. 链路 B:楼层卡片与出图(floor/ + backends/)
 
