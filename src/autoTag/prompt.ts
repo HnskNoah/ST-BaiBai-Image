@@ -280,7 +280,8 @@ export async function buildAutoTagMessages(
     : traits.spec === 'latent'
     ? '- 画面中的角色只要已在【角色固定外貌库】，或在本次 changes 中建了档，tag 与 nl 就必须照抄库中/刚建档的字段值，用词一字不改，不得自行改写或增删其固定外貌。同人角色的 fandom 身份 tag（库里存的是未转义形态，如 kasumi (blue archive)）照抄在人数/构图之后、普通外貌之前，**落 tag 时把圆括号转义**成 kasumi \\(blue archive\\)——站点把未转义圆括号当权重语法，不转义会被当成权重而不是身份的一部分（与后端规范/思维链的定位口径一致）。\n   - 同一角色的固定外貌在一张图里只写一遍：同一图内再次提到他时用简短指代（the boy、the silver-haired girl）承接，禁止把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成互不相连的几块。'
     : '- 画面中的角色只要已在【角色固定外貌库】，或在本次 changes 中建了档，tag 与 nl 就必须照抄库中/刚建档的字段值，用词一字不改，不得自行改写或增删其固定外貌。fandom 字段只作档案记录，ComfyUI 画图时不照抄它，同人身份 tag 按下发的 ComfyUI 规范现场判定并按规范转义括号。\n   - 同一角色的固定外貌在一张图里只写一遍：同一图内再次提到他时用简短指代（the boy、the silver-haired girl）承接，禁止把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成互不相连的几块。';
-  // 建档 nl 只在协议含 nl 时要求(runner 的验收同一口径,见 autoTagProfile)
+  // 建档 nl 只在协议含 nl 时要求(判据 traits.charPrompts && traits.nl,runner 的验收
+  // 同一口径,见 backends/channelTraits.ts)
   const newCharacterNlRule = !traits.charPrompts
     ? ''
     : nlOn

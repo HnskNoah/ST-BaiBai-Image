@@ -121,7 +121,7 @@ if (!status.configured) {
 {
   apiVersion: 1,
   pluginVersion: "0.2.5",
-  backend: "nai",              // 'nai' | 'comfyui'
+  backend: "nai",              // 'nai' | 'comfyui' | 'latent'
   configured: true,
   model: "nai-diffusion-4-5-full",  // NAI 是模型名；ComfyUI 是当前工作流预设名
   supportsCharacters: true,    // 当前后端支不支持多角色提示
@@ -153,7 +153,7 @@ myPanel.querySelector('img').src = result.dataUrl;   // 想显示在哪就显示
 | --- | --- | --- |
 | `prompt` | `string` | **必填**，正向 danbooru 短 tag。空串抛 `invalid_args` |
 | `nl` | `string?` | 自然语言描述 |
-| `negative` | `string?` | 本画面动态负面。**只对 ComfyUI 生效**；NAI 的负面取用户渠道配置 |
+| `negative` | `string?` | 本画面动态负面。ComfyUI 走工作流占位符 `%negative_prompt%`；Latent 合并进站点负面（按逗号去重）；**NAI 官方渠道不消费**，它的负面取用户渠道配置 |
 | `characters` | `PublicCharacterPrompt[]?` | 多角色提示，见下 |
 | `size` | `'portrait' \| 'landscape'?` | 画幅方向，缺省 `'portrait'`。具体像素取用户在渠道页配的尺寸。**用户在渠道里锁定了画幅方向时一律按锁定方向出图**，这里传什么都不算数（0.3.1 起） |
 | `seed` | `number?` | 指定种子（正整数）。省略 = 按用户设置决定 |
@@ -170,7 +170,7 @@ myPanel.querySelector('img').src = result.dataUrl;   // 想显示在哪就显示
   format: "png",
   path: "/user/images/柏宝绘_阿黛尔/bbi_....png",  // 落盘路径；save=false 或落盘失败为 null
   seed: 3847562910,       // 本次实际使用的种子；想复现就把它填回 seed
-  backend: "nai",
+  backend: "nai",         // 'nai' | 'comfyui' | 'latent'
   charactersApplied: true,
 }
 ```

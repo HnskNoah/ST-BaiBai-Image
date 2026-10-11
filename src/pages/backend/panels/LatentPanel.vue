@@ -225,8 +225,12 @@ function closePrompt() {
 }
 function savePrompt() {
   const target = editingPrompt.value;
-  if (!target) return;
-  target.write(promptDraft.value);
+  if (!target || target.readonly) return; // 内置配方的绑定位只读(按钮已隐藏,双保险)
+  // 草稿与回落值一致 → 存空串(= 跟随下一级)。少了这一句,「打开默认项直接点完成」
+  // 会把 Anima 默认词固化进 settings.latent.qualityTags:徽标变「已自定义」,
+  // 以后插件更新默认词也不再跟随。与 NaiPanel 的 saveNaiPrompt 同一口径。
+  const v = promptDraft.value.trim();
+  target.write(v === target.fallback().trim() ? '' : promptDraft.value);
   closePrompt();
 }
 function resetPromptDraft() {

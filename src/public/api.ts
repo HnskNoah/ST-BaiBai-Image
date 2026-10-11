@@ -1,4 +1,5 @@
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
+import { activeChannelTraits } from '@/backends/channelTraits';
 import { normalizeOrientation } from '@/backends/size';
 import { NaiError } from '@/backends/nai';
 import { ComfyUIError } from '@/backends/comfyui';
@@ -257,8 +258,10 @@ export async function generate(
   const size = normalizeOrientation(request.size);
   const seed = decideSeed(status.backend, request.seed);
 
-  // NAI 要过并发闸门,可能先排一会儿队;ComfyUI 直接发,队列在服务端
-  report({ phase: status.backend === 'nai' ? 'queued' : 'generating' });
+  // NAI 系(走 NAI 机器的渠道:nai 与 latent)要过并发闸门,可能先排一会儿队;
+  // ComfyUI 直接发,队列在服务端。判据取渠道特性(见 backends/channelTraits.ts)——
+  // 别再按渠道名特判:漏一个渠道就会让第三方在等槽期间看到「generating」。
+  report({ phase: activeChannelTraits().usesNaiMachine ? 'queued' : 'generating' });
 
   let output;
   try {

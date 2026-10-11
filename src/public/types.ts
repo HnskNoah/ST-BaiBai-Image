@@ -120,7 +120,8 @@ export interface GenerateRequest {
   nl?: string;
   /**
    * 本画面的动态负面(可空)。
-   * 只对 ComfyUI 生效(填进工作流的 %negative_prompt%);NAI 的负面取用户渠道配置。
+   * ComfyUI 填进工作流的 %negative_prompt%;Latent 合并进站点负面(按逗号去重);
+   * NAI 官方渠道不消费,它的负面取用户渠道配置。
    */
   negative?: string;
   /**
