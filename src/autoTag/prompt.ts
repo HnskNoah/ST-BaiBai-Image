@@ -2,6 +2,7 @@ import type { ChatMsg } from '@/api/client';
 import { channelCaps, type ChannelCaps } from '@/backends/channelCaps';
 import { templateSupportsNegative } from '@/backends/comfyTemplates';
 import { getWorkflowPlaceholders } from '@/backends/comfyui';
+import { DEFAULT_LATENT_SPEC, DEFAULT_LATENT_THINKING } from '@/backends/latentPrompts';
 import {
   cleanHistoryText,
   prepareTargetText,
@@ -37,7 +38,8 @@ import {
  * - comfy → comfySpec(留空回落内置默认);{{nl}} 宏按自然语言开关展开/置空,
  *   自定义内容不含宏时开启开关会把自然语言规范追加在末尾(防止开关静默失效)。
  * - latent → 恒走单串口径(站点无 v4_prompt 双层结构;nl 拼在同一串里):latentSpec(设置页「Latent 规范」)
- *   → naiSpec(旧 4.5 键,存量自定义不失效)→ 内置 DEFAULT_NAI_SPEC。
+ *   → naiSpec(旧 4.5 键,存量自定义不失效)→ 内置 DEFAULT_LATENT_SPEC(latent 自己那份,
+ *   不借 NAI 的常量——上游改 NAI 文本不该动到 latent,见 backends/latentPrompts.ts)。
  * - naiV5 → NAI 4.5/V5 的 Base + Character Prompts 那份(可选模型只剩 4.5/V5,故这是 NAI 的常态)。
  * - naiSingle → 已下线模型的遗留单串分支,仅作回归锁。
  * - null(webui)→ 暂不附加。
@@ -58,7 +60,7 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, caps: Channe
     return (
       (options.prompts?.latentSpec ?? '').trim() ||
       (options.prompts?.naiSpec ?? '').trim() ||
-      DEFAULT_NAI_SPEC
+      DEFAULT_LATENT_SPEC
     );
   }
   if (caps.spec === 'naiV5') {
@@ -77,7 +79,7 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, caps: Channe
  * V5 的规范讲的是 Base + Character Prompts,没有景别词表、没有横竖判据,也明令禁止
  * 邻接绑定——共用一份 ComfyUI 口径的思维链会让它被要求填规范从未教过的东西。
  * latent 与 NAI 单串同形态但独立成键(latentThinking,设置页「Latent 思维链」),
- * 留空回落 naiThinking(旧 4.5 键,存量自定义不失效)再回落内置。
+ * 留空回落 naiThinking(旧 4.5 键,存量自定义不失效)再回落内置 DEFAULT_LATENT_THINKING。
  * webui 暂无专属规范,回落 comfy 那份(该后端尚未接入)。
  */
 function backendThinkingPrompt(options: AutoTagSettings, caps: ChannelCaps): string {
@@ -85,7 +87,7 @@ function backendThinkingPrompt(options: AutoTagSettings, caps: ChannelCaps): str
     return (
       (options.prompts?.latentThinking ?? '').trim() ||
       (options.prompts?.naiThinking ?? '').trim() ||
-      DEFAULT_NAI_THINKING
+      DEFAULT_LATENT_THINKING
     );
   }
   if (caps.thinking === 'naiV5') {

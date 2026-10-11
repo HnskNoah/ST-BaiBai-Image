@@ -6,13 +6,12 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { fetchModels, testChannel } from '@/api/client';
+import { DEFAULT_LATENT_SPEC, DEFAULT_LATENT_THINKING } from '@/backends/latentPrompts';
 import {
   BACKENDS,
   DEFAULT_COMFY_SPEC,
   DEFAULT_COMFY_THINKING,
   DEFAULT_JAILBREAK_PROMPT,
-  DEFAULT_NAI_SPEC,
-  DEFAULT_NAI_THINKING,
   DEFAULT_NAI_V5_SPEC,
   DEFAULT_NAI_V5_THINKING,
   DEFAULT_PREFILL_PROMPT,
@@ -154,16 +153,16 @@ const TAG_PROMPT_METAS: TagPromptMeta[] = [
     key: 'latentSpec',
     label: 'Latent \u89c4\u8303',
     hint: 'Latent 渠道(第三方站点兼容面)拼进自动 tag 请求的 tag 与 nl 书写规范。站点收扁平单串(tag + nl 拼一段,区分性称谓邻接绑定),不收 NAI 的 v4_prompt 双层结构,与那份 V5 规范互不相干。留空回落旧 4.5 键 naiSpec(更旧版本的存量自定义,弹窗里已预填生效值)再回落内置默认;改这份不影响 NAI 渠道。',
-    fallback: () => settings.autoTag.prompts.naiSpec.trim() || DEFAULT_NAI_SPEC,
-    builtin: DEFAULT_NAI_SPEC,
+    fallback: () => settings.autoTag.prompts.naiSpec.trim() || DEFAULT_LATENT_SPEC,
+    builtin: DEFAULT_LATENT_SPEC,
     macros: [],
   },
   {
     key: 'latentThinking',
     label: 'Latent 思维链',
     hint: 'Latent 渠道使用的输出前思考清单,作为 system 压在任务消息之后(解析时会自动剥掉思考块)。单串形态,与「Latent 规范」配套,槽位块与 comfy 那份同形。留空回落旧 4.5 键 naiThinking 再回落内置默认;改这份不影响 NAI 渠道。',
-    fallback: () => settings.autoTag.prompts.naiThinking.trim() || DEFAULT_NAI_THINKING,
-    builtin: DEFAULT_NAI_THINKING,
+    fallback: () => settings.autoTag.prompts.naiThinking.trim() || DEFAULT_LATENT_THINKING,
+    builtin: DEFAULT_LATENT_THINKING,
     macros: [],
   },
   {

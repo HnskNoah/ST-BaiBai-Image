@@ -737,7 +737,7 @@ describe('auto tag prompt', () => {
   });
 
   // latent:站点不支持自然语言,必须用 tag(站长确认)——恒走单串口径
-  // (latentSpec → 旧 naiSpec 存量值 → 内置 DEFAULT_NAI_SPEC,见 Latent 键优先级用例)
+  // (latentSpec → 旧 naiSpec 存量值 → 内置 DEFAULT_LATENT_SPEC,见 Latent 键优先级用例)
   // (邻接绑定多人规则),不拿 V5 判据,不要求 Base+characters 双层结构。
   it('gives latent the single-string doctrine with nl-owned binding, nl included', async () => {
     const options: AutoTagSettings = {
@@ -823,10 +823,11 @@ describe('auto tag prompt', () => {
   // 相应断言移到 channelCaps.test.ts——那是纯函数,不必改全局 settings 再还原。
   // 本文件只留「判据落到消息文本上」的行为断言(下面各用例)。
 
-  // 原版 NAI4 的 char_captions 恒为空(nai.ts),协议形态与 ComfyUI 一样是单条 tag 串,
-  // 一样需要邻接绑定——但 NAI 规范里此前一条多人规则、一个示例都没有。
-  // (4.5 起走 Character Prompts 分支,归属另一份规范,不适用邻接绑定。)
-  it('gives NAI 4 the multi-character binding rules and a worked example', async () => {
+  // 单串口径(latent)的多人规则必须有示例兜底:只有条文没有示例时模型照抄不到写法。
+  // 原先这条从 NAI4 进去断言(那时 latent 与 NAI 遗留单串共用 DEFAULT_NAI_SPEC);文本已
+  // 归位到 backends/latentPrompts.ts,故改从 latent 断言。NAI 遗留单串分支的内置文本
+  // 交回上游维护(模型列表收窄后不可达,normalizeNai 会把存量 id 回落),本地不再锁它。
+  it('gives the single-string doctrine a multi-character worked example', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
@@ -837,24 +838,21 @@ describe('auto tag prompt', () => {
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
-    const oldModel = settings.nai.model;
     try {
-      settings.defaultBackend = 'nai';
-      settings.nai.model = 'nai-diffusion-4-full';
+      settings.defaultBackend = 'latent';
       const messages = await buildAutoTagMessages(context(), 1, options, null);
       const text = messages.map(m => m.content).join('\n');
 
       expect(text).toContain('多人画面（两人及以上）额外规则');
-      // 单串口径的多人规则与示例(与 latent 共用同一份常量:归属交给 nl,tag 只放袋装词)
+      // 归属交给 nl,tag 只放袋装词(站点是 Qwen 编码器,读句子不读邻接位置)
       expect(text).toContain('tag 区只放袋装词');
       expect(text).toContain('归属与配对全部交给 nl');
       expect(text).toContain('dark trousers');
-      // 示例是规则的靠山:只有条文没有示例时模型照抄不到写法。
       expect(text).toContain('多人示例（tag 与 nl 是同一画面');
       expect(text).toContain('No other people or duplicate identities are present');
-      // NAI 不吃 ComfyUI 的权重括号转义,那条不该跟着复制过来。
+      // 转义口径按站点写,ComfyUI 那句不该跟着复制过来。
       expect(text).not.toContain('ComfyUI 会把未转义圆括号当作权重语法');
-      // 排序统一到「构图紧跟人数」口径:与 Comfy 一致,也与多人规则原文一致;
+      // 排序统一到「构图紧跟人数」口径:与多人规则原文一致;
       // 旧的「镜头构图放末尾」排序表和示例曾与此自相矛盾。
       expect(text).toContain('人数/主体 → 镜头构图 → 外貌');
       expect(text).not.toContain('场景 → 光线氛围 → 镜头构图');
@@ -864,7 +862,6 @@ describe('auto tag prompt', () => {
       expect(text).not.toContain('eyes closed');
     } finally {
       settings.defaultBackend = oldBackend;
-      settings.nai.model = oldModel;
     }
   });
 
